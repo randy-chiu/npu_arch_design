@@ -50,7 +50,7 @@ module npu_v0_top (
         end
     end
 
-    always_comb begin
+    always @* begin
         host_rdata = 32'h0;
         if (host_addr >= 12'h200 && host_addr < 12'h240) begin
             host_rdata = mat_c[host_addr[5:0]];
@@ -126,6 +126,7 @@ module npu_v0_top (
         logic signed [7:0] max_v;
         logic [7:0] exp_v [0:7];
         logic [11:0] sum_v;
+        logic [23:0] norm_prod;
         integer s;
         begin
             max_v = sm_x[0];
@@ -138,9 +139,9 @@ module npu_v0_top (
                 sum_v = sum_v + exp_v[s];
             end
             for (s = 0; s < 8; s = s + 1) begin
-                sm_y[s] = (sum_v == 0) ? 8'd0 : ((exp_v[s] * 8'd255) / sum_v);
+                norm_prod = {16'h0, exp_v[s]} * 24'd255;
+                sm_y[s] = (sum_v == 0) ? 8'd0 : (norm_prod / {12'h0, sum_v});
             end
         end
     endtask
 endmodule
-

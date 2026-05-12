@@ -59,7 +59,7 @@ module npu_v0_tb;
             @(posedge clk);
             if (host_rdata !== expected) begin
                 $display("FAIL addr=%h actual=%0d expected=%0d", addr, host_rdata, expected);
-                $finish;
+                $fatal(1);
             end
         end
     endtask
@@ -108,4 +108,3 @@ module npu_v0_tb;
         end
     endtask
 endmodule
-
