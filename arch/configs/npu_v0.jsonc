@@ -1,0 +1,147 @@
+{
+  // Human/AI co-owned architecture specification.
+  //
+  // This file is the source of truth for Phase 0. Humans review this file to
+  // judge whether the architecture is reasonable. AI agents consume this file
+  // to update compiler, simulator, RTL, runtime, tests, and PPA tooling.
+  //
+  // Change rule:
+  //   Any change here must be followed by validator/compiler/simulator/RTL/test
+  //   updates as needed, then the full verification flow must pass.
+
+  "name": "npu_v0",
+  "version": 0,
+
+  "scope": {
+    // Keep Phase 0 intentionally small. These are the only graph operators the
+    // compiler is allowed to lower today.
+    "operators": ["matmul", "softmax"],
+
+    // Dynamic shapes are disabled so compiler legality and RTL storage sizing
+    // are deterministic.
+    "dynamic_shapes": false,
+
+    // Edge tiles are disabled. Matrix dimensions must be exact multiples of
+    // array_m, array_n, and k_step.
+    "edge_tiles": false
+  },
+
+  "data_types": {
+    // Phase 0 matmul path: int8 activations and weights, int32 accumulation.
+    "activation": "int8",
+    "weight": "int8",
+    "accumulator": "int32",
+
+    // Software simulator currently models softmax with fp32 math. The Phase 0
+    // RTL softmax block uses an integer LUT approximation and returns Q0.8
+    // probabilities; this difference is intentional until Phase 1 tightens
+    // numerical equivalence.
+    "softmax": "fp32"
+  },
+
+  "isa": {
+    // Program format emitted by the Phase 0 compiler and consumed by the
+    // functional simulator. Binary encoding comes later.
+    "program_format": "json_uop_v0",
+
+    // Minimal micro-op set required for matmul and softmax.
+    // Agents must update compiler, simulator, RTL decoder/control, and tests
+    // whenever this list changes.
+    "instructions": [
+      "LOAD",
+      "STORE",
+      "MATMUL",
+      "VREDMAX",
+      "VSUB",
+      "VEXP",
+      "VREDSUM",
+      "VDIV",
+      "HALT"
+    ]
+  },
+
+  "compute": {
+    // Output-stationary is easiest to verify: partial sums remain in the
+    // accumulator while input tiles are consumed.
+    "dataflow": "output_stationary",
+
+    // Phase 0 tile shape. The current compiler accepts only shapes that are
+    // multiples of these values.
+    "array_m": 8,
+    "array_n": 8,
+    "k_step": 8,
+
+    // In Phase 0 this must equal array_m * array_n. Later versions may model
+    // time-multiplexed arrays where logical tile size differs from MAC lanes.
+    "mac_lanes": 64,
+
+    // Accumulator bit width for int8 x int8 products.
+    "accumulator_width_bits": 32
+  },
+
+  "vector_sfu": {
+    // Vector lanes used by the softmax micro-op model.
+    "lanes": 8,
+
+    // Simulator mode. RTL uses a small LUT approximation documented under
+    // hw/rtl/README.md.
+    "exp_mode": "math_exp",
+    "div_mode": "math_div"
+  },
+
+  "memory": {
+    // Logical memory sizes for simulator/compiler legality. The Phase 0 RTL
+    // demo implements a tiny 8x8/8-element memory map, not the full DRAM size.
+    "dram_bytes": 1048576,
+    "scratchpad_bytes": 65536,
+    "accumulator_bytes": 16384,
+
+    // DMA and runtime allocations must be aligned to this boundary.
+    "alignment_bytes": 16
+  },
+
+  "dma": {
+    // One DMA channel keeps Phase 0 scheduling serial and easy to debug.
+    "channels": 1,
+
+    // Maximum single transfer burst. Compiler/runtime must split larger moves
+    // once real DMA lowering is added.
+    "max_burst_bytes": 128,
+
+    // Rank-1 contiguous copy only. 2D stride support is intentionally deferred.
+    "ranks": [1]
+  },
+
+  "bus": {
+    // Shared bus is enough until counters show DMA/compute contention.
+    "type": "shared",
+    "data_width_bits": 128
+  },
+
+  "runtime": {
+    // Host-visible launch protocol. Later RTL MMIO must expose equivalent
+    // control/status behavior.
+    "launch_registers": ["program_base", "start", "done", "error"]
+  },
+
+  "rtl": {
+    // Current RTL implementation target. This is deliberately smaller than the
+    // future generated RTL system: one module, simple host write/read bus,
+    // 8x8 matmul, and 8-element softmax approximation.
+    "top_module": "npu_v0_top",
+    "matmul_tile": [8, 8, 8],
+    "softmax_vector_len": 8,
+    "host_data_width_bits": 32,
+    "host_addr_width_bits": 12
+  },
+
+  "verification": {
+    // Matmul must match exactly.
+    "matmul_exact": true,
+
+    // Simulator softmax tolerance. RTL softmax uses separate integer-tolerance
+    // checks because it returns Q0.8 approximate probabilities.
+    "softmax_abs_tolerance": 0.000001,
+    "rtl_softmax_q0_8_abs_tolerance": 3
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "tensors": {
+    "A": {"shape": [8, 8], "dtype": "int8"},
+    "B": {"shape": [8, 8], "dtype": "int8"}
+  },
+  "ops": [
+    {"type": "matmul", "a": "A", "b": "B", "out": "C"},
+    {"type": "softmax", "x": "C", "out": "Y"}
+  ]
+}
+

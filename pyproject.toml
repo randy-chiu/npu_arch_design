@@ -1,0 +1,15 @@
+[project]
+name = "npu-arch-design-phase0"
+version = "0.0.1"
+description = "Phase 0 NPU architecture design and validation loop"
+requires-python = ">=3.8"
+dependencies = []
+
+[project.scripts]
+npu-phase0 = "npu_phase0.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
