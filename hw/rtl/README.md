@@ -97,3 +97,15 @@ The Phase 0 RTL softmax sequence computes:
 This is intentionally small and FPGA-friendly. The software simulator still
 uses fp32 softmax; Phase 1 should add a shared fixed-point softmax model so RTL
 and simulator use identical numeric semantics.
+
+## FPGA Status
+
+This RTL passes simulation, but it is not yet a complete FPGA bitstream-ready
+project. See:
+
+```text
+docs/fpga_bringup.md
+```
+
+for the missing wrapper, constraints, assembler, host-loader, and synthesis
+steps.

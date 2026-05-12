@@ -168,6 +168,42 @@ Validation result:
 This reinforced a core project rule: implementation convenience must not
 override the architecture spec.
 
+## Session 5: Persistent Collaboration Records And FPGA Reality Check
+
+The user asked that every future collaboration step be recorded so the project
+can demonstrate not only the technical result but also the human/AI teamwork
+process.
+
+The rule was promoted into `AGENT_RULES.md`: meaningful collaboration turns
+must update `docs/collaboration_journal.md` with goals, decisions, reasoning,
+validation outcomes, and open risks. Secrets and patch-level noise must not be
+recorded.
+
+The user also asked whether the current RTL can already be compiled and burned
+onto an FPGA board. The clarification was:
+
+- The current RTL is a real micro-op-level hardware model and passes
+  `make rtl-sim`.
+- `iverilog` is a simulation compiler, not an FPGA synthesis/bitstream tool.
+- Running on a physical FPGA still requires a board wrapper, constraints,
+  vendor synthesis/place/route/bitstream generation, and a host/runtime path to
+  load tensors and instruction memory.
+
+The intended future board flow was captured:
+
+```text
+compiler emits instruction stream
+host/runtime writes tensors and instructions into FPGA-visible memory
+host/runtime asserts start
+NPU executes micro-ops
+host/runtime polls done and reads outputs
+```
+
+Open next step:
+
+- Define a `phase0_fpga_min` milestone with an RTL assembler, program memory
+  files, board wrapper, and vendor-specific project target.
+
 ## Current Collaboration Workflow
 
 The project uses a chief-architect style AI collaboration model:

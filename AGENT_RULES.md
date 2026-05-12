@@ -80,9 +80,20 @@ references/
 New ideas become implementation only through a reviewed spec change and passing
 verification.
 
+## 6. Record Collaboration Decisions
+
+Every meaningful human/AI collaboration turn must update:
+
+```text
+docs/collaboration_journal.md
+```
+
+Record goals, decisions, architectural reasoning, validation outcomes, and
+open risks. Do not record secrets, passwords, tokens, or noisy patch-level edit
+history.
+
 See the detailed rulebook at:
 
 ```text
 docs/work_rules.md
 ```
-

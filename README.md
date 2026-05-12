@@ -25,6 +25,8 @@ For demonstrations, start here:
   follow.
 - [Current architecture spec](arch/configs/npu_v0.jsonc): human-readable and
   tool-readable hardware/ISA contract.
+- [FPGA bring-up notes](docs/fpga_bringup.md): explains what exists today and
+  what is still required before running on a real FPGA board.
 
 ## Documents
 
@@ -35,6 +37,7 @@ For demonstrations, start here:
 - [Iteration roadmap](docs/roadmap.md)
 - [Agent ownership plan](docs/agent_plan.md)
 - [Work rules for module agents](docs/work_rules.md)
+- [FPGA bring-up notes](docs/fpga_bringup.md)
 
 ## Phase 0 Quick Start
 
