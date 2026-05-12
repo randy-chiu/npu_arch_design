@@ -15,6 +15,17 @@ The goal is to build a closed-loop hardware/software co-design platform:
 Start with a minimal self-checking system that supports only `matmul` and
 `softmax`, then expand in controlled increments.
 
+## Project Process
+
+For demonstrations, start here:
+
+- [Collaboration journal](docs/collaboration_journal.md): records the human/AI
+  teamwork process, major decisions, reasoning, and validation milestones.
+- [Mandatory agent rules](AGENT_RULES.md): rules every future module agent must
+  follow.
+- [Current architecture spec](arch/configs/npu_v0.jsonc): human-readable and
+  tool-readable hardware/ISA contract.
+
 ## Documents
 
 - [Mandatory agent rules](AGENT_RULES.md)

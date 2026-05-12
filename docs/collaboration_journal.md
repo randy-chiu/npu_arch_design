@@ -127,6 +127,47 @@ Validation result after the spec and RTL updates:
 - `make test`: PASS.
 - `make rtl-sim`: blocked by missing `iverilog`.
 
+## Session 4: Correcting RTL Abstraction Level
+
+The user reviewed the RTL and found an important architecture violation: the
+hardware had implemented a high-level softmax operation, while the spec defines
+micro-ops such as `LOAD`, `STORE`, `VREDMAX`, `VSUB`, `VEXP`, `VREDSUM`, and
+`VDIV`.
+
+The team decision was that the user was correct. RTL must follow the spec's
+micro-op contract, not bypass it with high-level behavior.
+
+The RTL was changed to include a minimal instruction memory and micro-op
+sequencer. The testbench now writes explicit programs:
+
+```text
+LOAD A -> spad_a
+LOAD B -> spad_b
+MATMUL
+STORE acc -> C
+HALT
+```
+
+and:
+
+```text
+LOAD X -> vec
+VREDMAX
+VSUB
+VEXP
+VREDSUM
+VDIV
+STORE vec -> Y
+HALT
+```
+
+Validation result:
+
+- `make rtl-sim`: PASS with `PASS npu_v0 RTL micro-op smoke tests`.
+
+This reinforced a core project rule: implementation convenience must not
+override the architecture spec.
+
 ## Current Collaboration Workflow
 
 The project uses a chief-architect style AI collaboration model:
@@ -147,4 +188,3 @@ The project uses a chief-architect style AI collaboration model:
 - Keep human review and AI automation pointed at the same source of truth.
 - Treat compiler, simulator, RTL, runtime, and tests as one system.
 - Use PPA counters to justify complexity.
-
