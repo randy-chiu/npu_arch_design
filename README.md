@@ -17,9 +17,8 @@ Start with a minimal self-checking system that supports only `matmul` and
 
 For developers reviewing the codebase, start with the
 [code structure review](docs/code_structure_review.md). It maps the current
-repository layout, graph-to-micro-op compiler path, Python functional
-simulation loop, RTL simulation fixture path, and the main testing entry
-points.
+repository layout, graph-to-micro-op compiler path, Python micro-op functional
+model, RTL simulation fixture path, and the main testing entry points.
 
 ## Project Process
 

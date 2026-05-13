@@ -4,7 +4,7 @@
 
 ## 1. 当前定位
 
-当前项目是一个 Phase 0 NPU 架构设计与验证闭环。核心目标是从一个架构 spec 出发，编译一个小型 graph，生成 micro-op 指令流，用 Python 功能级仿真执行该指令流，并与 CPU golden 结果对比。RTL simulation 目前也已经接入，但 RTL 是手写的最小硬件目标，用于后续 cycle 级验证的早期锚点，还不是从 spec 自动生成的完整 RTL 系统。
+当前项目是一个 Phase 0 NPU 架构设计与验证闭环。核心目标是从一个架构 spec 出发，编译一个小型 graph，生成 micro-op 指令流，用 Python micro-op 功能模型执行该指令流，并与 CPU golden 结果对比。这个 Python 路径更准确地说是 compiler/micro-op 语义验证，不是真实硬件验证。RTL simulation 目前也已经接入，但 RTL 是手写的最小硬件目标，用于验证真实 RTL 逻辑的早期锚点，还不是从 spec 自动生成的完整 RTL 系统。
 
 当前支持范围：
 
@@ -13,8 +13,8 @@
 | 架构 spec | `arch/configs/npu_v0.jsonc` 是 Phase 0 的 source of truth |
 | Graph 输入 | JSON graph，当前支持 `matmul` 和 `softmax` |
 | 编译器 | 将 graph lowered 成 JSON micro-op list |
-| 功能级仿真 | Python simulator 执行 micro-op，与 golden 对比 |
-| RTL 仿真 | Python 生成 deterministic hex fixtures，SystemVerilog testbench 加载后运行 |
+| Compiler/micro-op 验证 | Python `MicroOpFunctionalSimulator` 执行 compiler 输出，与 golden 对比 |
+| RTL 功能验证 | Python 生成 deterministic hex fixtures，SystemVerilog testbench 加载后运行真实 RTL |
 | RTL 生成 | 尚未实现自动生成；当前 `hw/rtl/npu_v0_top.sv` 是手写 RTL |
 | Cycle 级验证 | RTL simulation 已经可作为后续 cycle 级验证入口，cycle model 尚未独立实现 |
 
@@ -57,7 +57,7 @@ npu_arch_design/
 
 ## 3. 端到端功能级闭环
 
-当前功能级闭环从 spec 和 graph 开始，到 Python simulator 与 CPU golden 对比结束。
+当前 compiler/micro-op 验证闭环从 spec 和 graph 开始，到 Python micro-op 功能模型与 CPU golden 对比结束。
 
 ```mermaid
 flowchart TD
@@ -66,7 +66,7 @@ flowchart TD
     B --> C
     C --> D[JSON micro-op artifact]
     D --> E[src/npu_phase0/isa.py<br/>validate_program]
-    D --> F[src/npu_phase0/simulator.py<br/>FunctionalSimulator]
+    D --> F[src/npu_phase0/simulator.py<br/>MicroOpFunctionalSimulator]
     I[tests/inputs*.json<br/>or demo inputs] --> F
     I --> H[src/npu_phase0/golden.py<br/>matmul / softmax]
     F --> J[simulator DRAM output]
@@ -80,7 +80,7 @@ flowchart TD
 - `arch.py` 负责把 JSONC spec 变成 Python dict，并检查必需字段、ISA 指令集合、tile 约束、memory/bus/DMA 参数和 RTL tile 是否一致。
 - `compiler.py` 目前是直接 lowering，不做复杂 tiling、memory planning 或调度优化。
 - `isa.py` 校验 micro-op 是否属于 spec 中声明的 ISA，并检查 `MATMUL` shape 是否符合 tile multiple 约束。
-- `simulator.py` 按 micro-op 顺序解释执行，内部有 `dram`、`buffers`、`scalars` 和 counters。
+- `simulator.py` 的 `MicroOpFunctionalSimulator` 按 micro-op 顺序解释执行，内部有 `dram`、`buffers`、`scalars` 和 counters。
 - `golden.py` 提供 CPU reference。`matmul` 精确比较；`softmax` 当前 Python simulator 使用 `math.exp`/`math.div` 的 fp32 风格计算。
 
 ## 4. Spec 如何约束代码
@@ -153,9 +153,9 @@ HALT
 - 不做 tensor address assignment；Python simulator 使用 tensor 名称访问 `dram` dict。
 - 不生成 RTL binary；RTL fixture 路径会在 `rtl_fixture.py` 中临时编码成 32-bit uop。
 
-## 6. Python Simulator 执行模型
+## 6. Python Micro-Op 功能模型
 
-`FunctionalSimulator` 的状态很小：
+`MicroOpFunctionalSimulator` 的状态很小：
 
 | 状态 | 作用 |
 | --- | --- |
@@ -172,11 +172,11 @@ HALT
 - `VREDMAX`/`VSUB`/`VEXP`/`VREDSUM`/`VDIV`: 对二维 row-wise tensor 执行 softmax 分解操作。
 - `HALT`: 停止执行。
 
-这个 simulator 是功能级，不是 cycle accurate。它适合证明 compiler lowering 的指令语义正确，但不会证明 DMA/compute overlap、bank conflict、pipeline latency 或 valid/ready 时序。
+这个 simulator 是 micro-op 功能模型，不是 cycle accurate，也不执行 RTL。它适合证明 compiler lowering 后的指令流在抽象语义上能得到 golden 结果，但不能证明真实 RTL 数据通路、DMA/compute overlap、bank conflict、pipeline latency 或 valid/ready 时序正确。
 
 ## 7. RTL Simulation 闭环
 
-RTL simulation 使用 Python 生成 fixture，然后 SystemVerilog testbench 加载 fixture 并检查结果。
+RTL simulation 使用 Python 生成 fixture，然后 SystemVerilog testbench 加载 fixture 并检查结果。这条路径会运行 `hw/rtl/npu_v0_top.sv`，因此是在验证真实 RTL 逻辑的功能正确性。
 
 ```mermaid
 flowchart TD
@@ -235,18 +235,28 @@ RTL 与 Python simulator 的数值差异：
 | --- | --- | --- |
 | `make validate-arch` | `npu_phase0.cli validate-arch` | 校验 `arch/configs/npu_v0.jsonc` |
 | `make demo` | `npu_phase0.cli demo` | 内置 matmul -> softmax graph，编译、仿真、golden 对比 |
-| `make test` | `python -m unittest discover` | 跑 Python 单元测试 |
+| `make test` | `python -m unittest discover` | 跑 Python 单元测试；如果本机安装了 `iverilog`/`vvp`，也会跑 RTL simulation 测试 |
 | `make rtl-fixtures` | `npu_phase0.cli emit-rtl-fixtures` | 生成 RTL hex fixtures |
 | `make rtl-sim` | Makefile + iverilog/vvp | 生成 fixture 并跑 RTL simulation |
 | `make refresh-references` | `scripts/refresh_references.py` | 刷新参考资料文档 |
 
 ## 9. 测试入口和测试数据
 
-当前 Python 测试入口是 `tests/test_phase0.py`，`make test` 会通过下面的命令发现并执行它：
+当前 Phase 0 的统一上层测试入口是 `tests/test_phase0.py`。开发者想从测试看主流程时，应先读这个文件；它应该覆盖当前项目的高层验证路径：架构契约、compiler/micro-op 功能验证、RTL 功能验证，以及未来 cycle 级验证。`make test` 会通过下面的命令发现并执行它：
 
 ```text
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
+
+`tests/test_phase0.py` 内部按验证层次组织 unittest class。后续增加 cycle model 时，也应继续按这种分层方式新增独立测试类，例如 `CycleModelTests`，并通过 `make test` 一起执行。底层模块可以有更细的局部单测，但 Phase 0 的上层 API 和主验证流程应能从这个入口看清楚。
+
+当前测试分层：
+
+| 测试类 | 验证层次 | 说明 |
+| --- | --- | --- |
+| `ArchitectureAndGoldenTests` | 基础契约 | spec 能加载；CPU golden operator 自身有基础 sanity check |
+| `CompilerMicroOpFunctionalTests` | compiler/micro-op 功能验证 | 从 JSON graph/input 读取测试向量，执行 compiler -> micro-op functional model -> graph-driven golden 对比 |
+| `RTLFunctionalTests` | RTL 功能验证 | 生成 RTL fixtures；可选运行 `make rtl-sim` 验证真实 RTL 输出 |
 
 `tests/test_phase0.py` 当前覆盖的主流程：
 
@@ -254,18 +264,19 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 | --- | --- |
 | `test_arch_validates` | `arch/configs/npu_v0.jsonc` 能被加载并通过 spec 校验 |
 | `test_matmul_golden` | CPU golden `matmul()` 的基础正确性 |
-| `test_compile_and_simulate_matmul_softmax` | 内联 graph/input -> compiler -> simulator -> golden softmax 对比 |
-| `test_rtl_fixture_generation` | RTL uop encoding、Q0.8 softmax expected、fixture 文件集合 |
+| `test_compiler_micro_ops_match_graph_golden` | 从 JSON graph/input 读取测试向量，按 graph ops 生成 golden tensors，再与 micro-op functional model 输出对比 |
+| `test_rtl_fixture_generator_emits_expected_files` | 在临时目录主动调用 fixture generator，确认它能从 JSON graph/input 生成 RTL 所需 hex 文件，并校验 RTL uop encoding 与 Q0.8 softmax expected |
+| `test_rtl_simulation_matches_generated_fixtures` | 可选测试；本机有 `iverilog`/`vvp` 时运行 `make rtl-sim`，验证真实 RTL 输出匹配 generated fixtures |
 
 测试数据文件状态：
 
 | 文件 | 当前状态 |
 | --- | --- |
-| `tests/graphs/matmul_softmax.json` | 示例 graph 文件；当前 `test_phase0.py` 没有读取它，而是内联构造了等价 graph |
-| `tests/inputs_matmul_softmax.json` | 示例输入数据文件；当前 `test_phase0.py` 没有读取它，而是内联构造输入矩阵 |
+| `tests/graphs/matmul_softmax.json` | Python compiler/micro-op 测试读取的 graph；RTL fixture 生成也从中提取 matmul 子图 |
+| `tests/inputs_matmul_softmax.json` | Python compiler/micro-op 测试读取的输入矩阵；RTL fixture 生成复用其中的 `A`/`B` |
 | `build/rtl_fixture/*.hex` | 由 `make rtl-fixtures` 或 `make rtl-sim` 生成，供 SystemVerilog testbench `$readmemh` 使用 |
 
-也就是说，你的理解是对的：目前 Python 单元测试里的 matmul-softmax graph 和输入数据是写在 `test_phase0.py` 代码里的，`tests/inputs_matmul_softmax.json` 还没有接入测试入口。这个文件更像是预留的外部测试向量。后续可以把测试改成读取 `tests/graphs/matmul_softmax.json` 和 `tests/inputs_matmul_softmax.json`，这样 CLI demo、unit test、fixture 生成可以共享同一组 case。
+当前测试已经避免在 `test_phase0.py` 中重复写死 matmul-softmax graph、输入矩阵和 golden 公式。compiler/micro-op 测试通过 helper 按 graph op 顺序执行 CPU golden，因此测试向量中的 tensor 名称或 op 顺序变化时，expected output 会随 graph 推导。`rtl_fixture.py` 会复用同一组 `A`/`B` 生成 matmul RTL fixture，并使用 matmul 结果第一行作为 standalone softmax RTL fixture 的输入。这个 softmax fixture 仍是单独测试 vector SFU 近似路径，不代表 RTL 已经支持完整 `matmul -> softmax` graph 串接。
 
 RTL 测试入口是 `make rtl-sim`，路径如下：
 
@@ -287,7 +298,7 @@ make rtl-sim
 2. `src/npu_phase0/arch.py`：看 spec 被如何校验。
 3. `src/npu_phase0/compiler.py`：看 graph 如何变成 micro-op。
 4. `src/npu_phase0/isa.py`：看 micro-op 的合法性边界。
-5. `src/npu_phase0/simulator.py` 和 `src/npu_phase0/golden.py`：看功能级执行和 golden 对比。
+5. `src/npu_phase0/simulator.py` 和 `src/npu_phase0/golden.py`：看 micro-op 功能模型和 golden 对比。
 6. `tests/test_phase0.py`：看当前 Python 验证覆盖了哪些行为。
 7. `src/npu_phase0/rtl_fixture.py`：看 Python artifact 如何桥接到 RTL testbench。
 8. `hw/rtl/npu_v0_top.sv` 和 `hw/tb/npu_v0_tb.sv`：看当前 cycle/RTL 级验证锚点。
@@ -299,11 +310,12 @@ make rtl-sim
 
 - RTL 不是自动生成的；当前是手写最小实现。
 - compiler 没有真正做 tiling、memory planning、address assignment 或 latency-aware scheduling。
-- Python simulator 是 functional simulator，不是 cycle simulator。
+- Python `MicroOpFunctionalSimulator` 是 compiler-emitted micro-op 功能模型，不是 RTL simulator，也不是 cycle simulator。
 - Python softmax 和 RTL softmax 不是同一个数值模型；RTL fixture 单独实现了 Q0.8 近似 expected。
 - Runtime/MMIO host driver 还没有独立软件层；RTL testbench 直接操作内部 memory 或简单 host bus。
 - spec 中的 memory/DMA/bus 参数目前主要用于校验，还没有完整驱动 RTL generator 或 simulator 时序模型。
-- Python functional simulator 与 CPU golden 对比主要验证 compiler lowering 和 micro-op 语义模型的一致性；它不能替代真实 RTL 逻辑验证。
+- Python micro-op functional model 与 CPU golden 对比主要验证 compiler lowering 和 micro-op 语义模型的一致性；它不能替代真实 RTL 逻辑验证。
+- RTL 功能验证已有 `make rtl-sim` 和可选单元测试入口，但当前只覆盖 standalone 8x8 matmul 与 standalone 8-element softmax，还没有覆盖完整 `matmul -> softmax` graph 在 RTL 内部串接执行。
 
 ## 12. 后续演进方向
 

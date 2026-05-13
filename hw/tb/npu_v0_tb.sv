@@ -55,10 +55,10 @@ module npu_v0_tb;
         repeat (4) @(posedge clk);
         rst_n = 1'b1;
 
-        run_matmul_uop_test();
-        run_softmax_uop_test();
+        run_matmul_fixture_test();
+        run_softmax_fixture_test();
 
-        $display("PASS npu_v0 RTL micro-op smoke tests");
+        $display("PASS npu_v0 RTL generated-fixture tests");
         $finish;
     end
 
@@ -102,52 +102,42 @@ module npu_v0_tb;
         end
     endtask
 
-    task automatic run_matmul_uop_test;
+    task automatic run_matmul_fixture_test;
         integer i;
+        logic signed [31:0] expected_c [0:63];
         begin
-            for (i = 0; i < 64; i = i + 1) begin
-                host_write(12'h000 + i[11:0], 32'd1);
-                host_write(12'h100 + i[11:0], 32'd1);
-            end
-
-            host_write(12'h400, uop(UOP_LOAD, TENSOR_A, BUF_SPAD_A));
-            host_write(12'h401, uop(UOP_LOAD, TENSOR_B, BUF_SPAD_B));
-            host_write(12'h402, uop(UOP_MATMUL, 4'h0, 4'h0));
-            host_write(12'h403, uop(UOP_STORE, TENSOR_C, BUF_ACC));
-            host_write(12'h404, uop(UOP_HALT, 4'h0, 4'h0));
+            $readmemh("build/rtl_fixture/matmul_a.hex", dut.dram_a);
+            $readmemh("build/rtl_fixture/matmul_b.hex", dut.dram_b);
+            $readmemh("build/rtl_fixture/matmul_program.hex", dut.instr_mem);
+            $readmemh("build/rtl_fixture/matmul_expected_c.hex", expected_c);
 
             launch_and_wait();
 
-            host_read_check(12'h200, 32'd8);
-            host_read_check(12'h201, 32'd8);
-            host_read_check(12'h23f, 32'd8);
+            for (i = 0; i < 64; i = i + 1) begin
+                if (dut.dram_c[i] !== expected_c[i]) begin
+                    $display("FAIL matmul[%0d] actual=%0d expected=%0d", i, dut.dram_c[i], expected_c[i]);
+                    $fatal(1);
+                end
+            end
         end
     endtask
 
-    task automatic run_softmax_uop_test;
+    task automatic run_softmax_fixture_test;
+        integer i;
+        logic [7:0] expected_y [0:7];
         begin
-            host_write(12'h300, 32'd0);
-            host_write(12'h301, 32'd0);
-            host_write(12'h302, 32'd0);
-            host_write(12'h303, 32'd0);
-            host_write(12'h304, 32'd0);
-            host_write(12'h305, 32'd0);
-            host_write(12'h306, 32'd0);
-            host_write(12'h307, 32'd0);
-
-            host_write(12'h400, uop(UOP_LOAD, TENSOR_X, BUF_VEC));
-            host_write(12'h401, uop(UOP_VREDMAX, BUF_VEC, 4'h0));
-            host_write(12'h402, uop(UOP_VSUB, BUF_VEC, BUF_VEC));
-            host_write(12'h403, uop(UOP_VEXP, BUF_VEC, BUF_VEC));
-            host_write(12'h404, uop(UOP_VREDSUM, BUF_VEC, 4'h0));
-            host_write(12'h405, uop(UOP_VDIV, BUF_VEC, BUF_VEC));
-            host_write(12'h406, uop(UOP_STORE, TENSOR_Y, BUF_VEC));
-            host_write(12'h407, uop(UOP_HALT, 4'h0, 4'h0));
+            $readmemh("build/rtl_fixture/softmax_x.hex", dut.dram_x);
+            $readmemh("build/rtl_fixture/softmax_program.hex", dut.instr_mem);
+            $readmemh("build/rtl_fixture/softmax_expected_y.hex", expected_y);
 
             launch_and_wait();
 
-            host_read_check(12'h380, 32'd31);
-            host_read_check(12'h387, 32'd31);
+            for (i = 0; i < 8; i = i + 1) begin
+                if (dut.dram_y[i] !== expected_y[i]) begin
+                    $display("FAIL softmax[%0d] actual=%0d expected=%0d", i, dut.dram_y[i], expected_y[i]);
+                    $fatal(1);
+                end
+            end
         end
     endtask
 endmodule

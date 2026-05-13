@@ -10,7 +10,8 @@ from typing import Union
 from .arch import load_arch
 from .compiler import compile_graph
 from .golden import assert_close, matmul, softmax
-from .simulator import FunctionalSimulator
+from .rtl_fixture import generate_default_fixtures
+from .simulator import MicroOpFunctionalSimulator
 
 
 def main() -> int:
@@ -29,6 +30,10 @@ def main() -> int:
     demo = sub.add_parser("demo")
     demo.add_argument("--arch", required=True)
 
+    fixtures = sub.add_parser("emit-rtl-fixtures")
+    fixtures.add_argument("--arch", required=True)
+    fixtures.add_argument("--out-dir", required=True)
+
     args = parser.parse_args()
 
     if args.cmd == "validate-arch":
@@ -41,13 +46,19 @@ def main() -> int:
         graph = _read_json(args.graph)
         inputs = _read_json(args.inputs)
         artifact = compile_graph(graph, arch)
-        result = FunctionalSimulator(arch).run(artifact, inputs)
+        result = MicroOpFunctionalSimulator(arch).run(artifact, inputs)
         print(json.dumps(result["dram"][args.output], indent=2))
         print(json.dumps({"counters": result["counters"]}, indent=2))
         return 0
 
     if args.cmd == "demo":
         _run_demo(Path(args.arch))
+        return 0
+
+    if args.cmd == "emit-rtl-fixtures":
+        arch = load_arch(args.arch)
+        generate_default_fixtures(Path(args.out_dir), arch)
+        print(f"PASS rtl fixtures written to {args.out_dir}")
         return 0
 
     raise AssertionError("unreachable")
@@ -70,7 +81,7 @@ def _run_demo(arch_path: Path) -> None:
         "B": [[(i * 2 + j) % 7 - 3 for j in range(8)] for i in range(8)],
     }
     artifact = compile_graph(graph, arch)
-    result = FunctionalSimulator(arch).run(artifact, inputs)
+    result = MicroOpFunctionalSimulator(arch).run(artifact, inputs)
     expected = softmax(matmul(inputs["A"], inputs["B"]))
     assert_close(result["dram"]["Y"], expected, arch["verification"]["softmax_abs_tolerance"])
     print("PASS demo matmul -> softmax")

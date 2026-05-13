@@ -204,6 +204,95 @@ Open next step:
 - Define a `phase0_fpga_min` milestone with an RTL assembler, program memory
   files, board wrapper, and vendor-specific project target.
 
+## Session 6: Code Review Map, Test Entry, And Verification Naming
+
+The user reported that the repository had grown enough to make code review
+difficult. The requested response was not a patch to one module, but a review
+map: a document that explains the current code structure, how the architecture
+spec drives the graph-to-micro-op path, how the Python execution path compares
+against CPU golden results, and how RTL simulation fits into later cycle-level
+verification.
+
+The AI added:
+
+- `docs/code_structure_review.md`: a practical repository map with Mermaid
+  flows for compiler/micro-op verification and RTL simulation.
+- README links to the code structure review so developers can find it before
+  reading implementation files.
+- Documentation rules in `docs/work_rules.md` requiring future key subsystems,
+  commands, verification paths, and review-critical behavior to update the
+  README and code structure document.
+
+The user then identified several review issues and corrected the AI's framing:
+
+- `tests/inputs_matmul_softmax.json` existed but was not actually used by
+  `tests/test_phase0.py`; the test had duplicated input data in code.
+- The Python "functional simulator" name was too broad. It was really a
+  compiler-emitted micro-op functional model, not a real RTL simulator.
+- The Python micro-op model compared to CPU golden mainly verifies compiler
+  lowering and abstract instruction semantics. It does not prove real RTL
+  logic correctness.
+- The user asked whether RTL functional verification existed and whether a
+  simple version could be added immediately.
+
+The AI changed the implementation accordingly:
+
+- `tests/test_phase0.py` now reads `tests/graphs/matmul_softmax.json` and
+  `tests/inputs_matmul_softmax.json` instead of duplicating the same graph and
+  matrices in test code.
+- `FunctionalSimulator` was renamed to `MicroOpFunctionalSimulator`, with a
+  compatibility alias left behind for older callers.
+- `rtl_fixture.py` was added to generate deterministic RTL fixtures from the
+  shared graph/input files.
+- `make rtl-fixtures` was added, and `make rtl-sim` now regenerates fixtures
+  before running the SystemVerilog testbench.
+- `tests/test_phase0.py` gained an optional RTL test that runs `make rtl-sim`
+  when `iverilog` and `vvp` are installed.
+
+The user then found another important testing flaw: although the test now read
+the graph and inputs from JSON files, the expected golden result was still
+hard-coded as:
+
+```text
+softmax(matmul(inputs["A"], inputs["B"]))
+```
+
+The user also asked whether `tests/test_phase0.py` is intended to be the whole
+test entry point, because they prefer to start code review from a top-level
+test file and follow the high-level API behavior from there.
+
+The resolution was:
+
+- `tests/test_phase0.py` is the Phase 0 unified top-level test entry.
+- `make test` runs it through unittest discovery.
+- The file is organized by verification level:
+  - `ArchitectureAndGoldenTests`
+  - `CompilerMicroOpFunctionalTests`
+  - `RTLFunctionalTests`
+- Future cycle-level validation should be added as another top-level test class
+  in this same entry, for example `CycleModelTests`.
+- Lower-level module tests may be added later, but this file should remain the
+  readable top-level path for developers who want to understand the project by
+  following tests.
+
+The hard-coded golden formula was removed. The compiler/micro-op test, renamed
+to `test_compiler_micro_ops_match_graph_golden`, now uses a graph-driven golden
+helper that walks `graph["ops"]` and computes expected tensors according to
+each op's own input/output fields. This means changes to tensor names or graph
+order are reflected in the expected output instead of being hidden behind a
+stale test formula.
+
+Validation result:
+
+- `make test`: PASS, including the optional RTL simulation test in the local
+  environment where `iverilog` and `vvp` were available.
+
+Remaining limitation:
+
+- RTL functional verification currently covers standalone 8x8 matmul and
+  standalone 8-element softmax. It does not yet execute the full
+  `matmul -> softmax` graph inside RTL as a single chained program.
+
 ## Current Collaboration Workflow
 
 The project uses a chief-architect style AI collaboration model:

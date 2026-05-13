@@ -10,7 +10,7 @@ from .golden import matmul
 from .isa import validate_program
 
 
-class FunctionalSimulator:
+class MicroOpFunctionalSimulator:
     def __init__(self, arch: dict[str, Any]):
         self.arch = arch
         self.reset()
@@ -91,3 +91,8 @@ class FunctionalSimulator:
             return sum(self._num_elements(item) for item in value)
         return 1
 
+
+# Backward-compatible alias for older callers. New code should use the more
+# explicit name above: this simulator executes compiler-emitted micro-ops, not
+# RTL.
+FunctionalSimulator = MicroOpFunctionalSimulator
