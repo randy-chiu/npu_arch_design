@@ -15,6 +15,12 @@ The goal is to build a closed-loop hardware/software co-design platform:
 Start with a minimal self-checking system that supports only `matmul` and
 `softmax`, then expand in controlled increments.
 
+For developers reviewing the codebase, start with the
+[code structure review](docs/code_structure_review.md). It maps the current
+repository layout, graph-to-micro-op compiler path, Python functional
+simulation loop, RTL simulation fixture path, and the main testing entry
+points.
+
 ## Project Process
 
 For demonstrations, start here:
@@ -25,6 +31,8 @@ For demonstrations, start here:
   follow.
 - [Current architecture spec](arch/configs/npu_v0.jsonc): human-readable and
   tool-readable hardware/ISA contract.
+- [Code structure review](docs/code_structure_review.md): practical map of the
+  current code, data flow, tests, and verification entry points.
 - [FPGA bring-up notes](docs/fpga_bringup.md): explains what exists today and
   what is still required before running on a real FPGA board.
 
@@ -33,6 +41,7 @@ For demonstrations, start here:
 - [Mandatory agent rules](AGENT_RULES.md)
 - [Collaboration journal](docs/collaboration_journal.md)
 - [Overall architecture](docs/overall_architecture.md)
+- [Code structure review](docs/code_structure_review.md)
 - [Minimal closed-loop system](docs/minimal_closed_loop.md)
 - [Iteration roadmap](docs/roadmap.md)
 - [Agent ownership plan](docs/agent_plan.md)
@@ -62,7 +71,9 @@ Refresh research references when planning a new architecture iteration:
 make refresh-references
 ```
 
-Run the Phase 0 RTL smoke test on a machine with `iverilog` installed:
+Run the Phase 0 RTL test on a machine with `iverilog` installed. The make
+target first emits deterministic program/input/expected-output fixtures from
+the Python tooling, then the SystemVerilog testbench loads those files:
 
 ```text
 make rtl-sim

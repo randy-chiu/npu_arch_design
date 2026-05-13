@@ -125,3 +125,14 @@ Shared contracts:
 - Runtime metadata.
 - Trace format.
 - Counter schema.
+
+## 7. Documentation Entry Points
+
+The root `README.md` is the project entry point for new developers. Any change
+that adds a key subsystem, command, verification flow, document, architecture
+contract, or review-critical behavior must update the README with a short link
+and description.
+
+The code map in `docs/code_structure_review.md` must stay aligned with the
+actual repository structure. Update it whenever entry points, test flow,
+compiler/simulator/RTL fixture paths, or major file responsibilities change.
