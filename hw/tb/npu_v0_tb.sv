@@ -1,24 +1,6 @@
 module npu_v0_tb;
-    localparam [3:0] UOP_LOAD    = 4'h1;
-    localparam [3:0] UOP_STORE   = 4'h2;
-    localparam [3:0] UOP_MATMUL  = 4'h3;
-    localparam [3:0] UOP_VREDMAX = 4'h4;
-    localparam [3:0] UOP_VSUB    = 4'h5;
-    localparam [3:0] UOP_VEXP    = 4'h6;
-    localparam [3:0] UOP_VREDSUM = 4'h7;
-    localparam [3:0] UOP_VDIV    = 4'h8;
-    localparam [3:0] UOP_HALT    = 4'hf;
-
-    localparam [3:0] TENSOR_A = 4'h0;
-    localparam [3:0] TENSOR_B = 4'h1;
-    localparam [3:0] TENSOR_C = 4'h2;
-    localparam [3:0] TENSOR_X = 4'h3;
-    localparam [3:0] TENSOR_Y = 4'h4;
-
-    localparam [3:0] BUF_SPAD_A = 4'h0;
-    localparam [3:0] BUF_SPAD_B = 4'h1;
-    localparam [3:0] BUF_ACC    = 4'h2;
-    localparam [3:0] BUF_VEC    = 4'h3;
+    `include "npu_v0_spec.svh"
+    `include "npu_v0_tb_params.svh"
 
     logic clk;
     logic rst_n;
@@ -104,16 +86,16 @@ module npu_v0_tb;
 
     task automatic run_matmul_fixture_test;
         integer i;
-        logic signed [31:0] expected_c [0:63];
+        logic signed [31:0] expected_c [0:MATMUL_OUTPUT_COUNT-1];
         begin
-            $readmemh("build/rtl_fixture/matmul_a.hex", dut.dram_a);
-            $readmemh("build/rtl_fixture/matmul_b.hex", dut.dram_b);
-            $readmemh("build/rtl_fixture/matmul_program.hex", dut.instr_mem);
-            $readmemh("build/rtl_fixture/matmul_expected_c.hex", expected_c);
+            $readmemh(MATMUL_A_HEX, dut.dram_a);
+            $readmemh(MATMUL_B_HEX, dut.dram_b);
+            $readmemh(MATMUL_PROGRAM_HEX, dut.instr_mem);
+            $readmemh(MATMUL_EXPECTED_C_HEX, expected_c);
 
             launch_and_wait();
 
-            for (i = 0; i < 64; i = i + 1) begin
+            for (i = 0; i < MATMUL_OUTPUT_COUNT; i = i + 1) begin
                 if (dut.dram_c[i] !== expected_c[i]) begin
                     $display("FAIL matmul[%0d] actual=%0d expected=%0d", i, dut.dram_c[i], expected_c[i]);
                     $fatal(1);
@@ -124,15 +106,15 @@ module npu_v0_tb;
 
     task automatic run_softmax_fixture_test;
         integer i;
-        logic [7:0] expected_y [0:7];
+        logic [7:0] expected_y [0:SOFTMAX_OUTPUT_COUNT-1];
         begin
-            $readmemh("build/rtl_fixture/softmax_x.hex", dut.dram_x);
-            $readmemh("build/rtl_fixture/softmax_program.hex", dut.instr_mem);
-            $readmemh("build/rtl_fixture/softmax_expected_y.hex", expected_y);
+            $readmemh(SOFTMAX_X_HEX, dut.dram_x);
+            $readmemh(SOFTMAX_PROGRAM_HEX, dut.instr_mem);
+            $readmemh(SOFTMAX_EXPECTED_Y_HEX, expected_y);
 
             launch_and_wait();
 
-            for (i = 0; i < 8; i = i + 1) begin
+            for (i = 0; i < SOFTMAX_OUTPUT_COUNT; i = i + 1) begin
                 if (dut.dram_y[i] !== expected_y[i]) begin
                     $display("FAIL softmax[%0d] actual=%0d expected=%0d", i, dut.dram_y[i], expected_y[i]);
                     $fatal(1);

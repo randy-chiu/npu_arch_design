@@ -66,10 +66,11 @@ def main() -> int:
 
 def _run_demo(arch_path: Path) -> None:
     arch = load_arch(arch_path)
+    tile_m, tile_n, tile_k = arch["rtl"]["matmul_tile"]
     graph = {
         "tensors": {
-            "A": {"shape": [8, 8], "dtype": "int8"},
-            "B": {"shape": [8, 8], "dtype": "int8"},
+            "A": {"shape": [tile_m, tile_k], "dtype": "int8"},
+            "B": {"shape": [tile_k, tile_n], "dtype": "int8"},
         },
         "ops": [
             {"type": "matmul", "a": "A", "b": "B", "out": "C"},
@@ -77,8 +78,8 @@ def _run_demo(arch_path: Path) -> None:
         ],
     }
     inputs = {
-        "A": [[(i + j) % 5 - 2 for j in range(8)] for i in range(8)],
-        "B": [[(i * 2 + j) % 7 - 3 for j in range(8)] for i in range(8)],
+        "A": [[(i + j) % 5 - 2 for j in range(tile_k)] for i in range(tile_m)],
+        "B": [[(i * 2 + j) % 7 - 3 for j in range(tile_n)] for i in range(tile_k)],
     }
     artifact = compile_graph(graph, arch)
     result = MicroOpFunctionalSimulator(arch).run(artifact, inputs)

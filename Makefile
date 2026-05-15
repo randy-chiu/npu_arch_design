@@ -20,5 +20,5 @@ refresh-references:
 
 rtl-sim: rtl-fixtures
 	mkdir -p build
-	iverilog -g2012 -o build/npu_v0_tb hw/rtl/npu_v0_top.sv hw/tb/npu_v0_tb.sv
+	iverilog -g2012 -I build/rtl_fixture -o build/npu_v0_tb hw/rtl/npu_v0_top.sv hw/tb/npu_v0_tb.sv
 	vvp build/npu_v0_tb

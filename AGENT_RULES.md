@@ -13,6 +13,12 @@ arch/configs/npu_v0.jsonc
 Do not hard-code architecture facts in compiler, simulator, RTL, runtime, or
 tests if they belong in the spec.
 
+Each architecture fact must have exactly one canonical representation. Do not
+duplicate opcode maps, instruction field layouts, tensor IDs, buffer IDs,
+memory-map constants, fixture paths, verification lengths, or numerical
+tolerances in multiple source files. Generate downstream constants or metadata
+from the canonical source instead.
+
 ## 2. ISA Changes Require Full-System Updates
 
 If ISA opcodes, fields, semantics, encoding, or legality rules change, the same

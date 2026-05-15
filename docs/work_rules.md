@@ -29,6 +29,11 @@ No module agent may silently hard-code architecture facts that belong in this
 file. If a value affects compiler legality, simulator behavior, RTL generation,
 runtime layout, or verification, it must be represented in the spec.
 
+Represent each fact once. Opcode tables, instruction bit fields, tensor IDs,
+buffer IDs, memory-map constants, fixture paths, expected-output lengths, and
+tolerances must be consumed from their canonical source or generated metadata,
+not retyped independently in compiler, RTL, testbench, and tests.
+
 ## 2. Spec Change Protocol
 
 Every architecture spec change must be treated as a system change.

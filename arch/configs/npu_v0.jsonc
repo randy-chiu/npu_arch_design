@@ -41,8 +41,45 @@
 
   "isa": {
     // Program format emitted by the Phase 0 compiler and consumed by the
-    // functional simulator. Binary encoding comes later.
+    // functional simulator. RTL fixture generation uses the encoding below as
+    // the single source of truth for binary micro-op words and SV decode
+    // constants.
     "program_format": "json_uop_v0",
+    "encoding": {
+      "word_bits": 32,
+      "opcode": {"msb": 31, "lsb": 28},
+      "arg0": {"msb": 27, "lsb": 24},
+      "arg1": {"msb": 23, "lsb": 20},
+      "opcodes": {
+        "LOAD": 1,
+        "STORE": 2,
+        "MATMUL": 3,
+        "VREDMAX": 4,
+        "VSUB": 5,
+        "VEXP": 6,
+        "VREDSUM": 7,
+        "VDIV": 8,
+        "HALT": 15
+      },
+      "tensors": {
+        "A": 0,
+        "B": 1,
+        "C": 2,
+        "X": 3,
+        "Y": 4
+      },
+      "buffers": {
+        "spad_a": 0,
+        "spad_b": 1,
+        "acc": 2,
+        "vec": 3
+      },
+      "buffer_aliases": {
+        "spad_softmax": "vec",
+        "scalar_max": "vec",
+        "scalar_sum": "vec"
+      }
+    },
 
     // Minimal micro-op set required for matmul and softmax.
     // Agents must update compiler, simulator, RTL decoder/control, and tests

@@ -10,26 +10,7 @@ module npu_v0_top (
     input  logic [31:0] host_wdata,
     output logic [31:0] host_rdata
 );
-    localparam [3:0] UOP_LOAD    = 4'h1;
-    localparam [3:0] UOP_STORE   = 4'h2;
-    localparam [3:0] UOP_MATMUL  = 4'h3;
-    localparam [3:0] UOP_VREDMAX = 4'h4;
-    localparam [3:0] UOP_VSUB    = 4'h5;
-    localparam [3:0] UOP_VEXP    = 4'h6;
-    localparam [3:0] UOP_VREDSUM = 4'h7;
-    localparam [3:0] UOP_VDIV    = 4'h8;
-    localparam [3:0] UOP_HALT    = 4'hf;
-
-    localparam [3:0] TENSOR_A = 4'h0;
-    localparam [3:0] TENSOR_B = 4'h1;
-    localparam [3:0] TENSOR_C = 4'h2;
-    localparam [3:0] TENSOR_X = 4'h3;
-    localparam [3:0] TENSOR_Y = 4'h4;
-
-    localparam [3:0] BUF_SPAD_A = 4'h0;
-    localparam [3:0] BUF_SPAD_B = 4'h1;
-    localparam [3:0] BUF_ACC    = 4'h2;
-    localparam [3:0] BUF_VEC    = 4'h3;
+    `include "npu_v0_spec.svh"
 
     typedef enum logic [1:0] {
         ST_IDLE,
@@ -38,16 +19,16 @@ module npu_v0_top (
         ST_DONE
     } state_t;
 
-    logic signed [7:0]  dram_a [0:63];
-    logic signed [7:0]  dram_b [0:63];
-    logic signed [31:0] dram_c [0:63];
-    logic signed [7:0]  dram_x [0:7];
-    logic [7:0]         dram_y [0:7];
+    logic signed [7:0]  dram_a [0:RTL_MATMUL_ELEMS-1];
+    logic signed [7:0]  dram_b [0:RTL_MATMUL_ELEMS-1];
+    logic signed [31:0] dram_c [0:RTL_MATMUL_ELEMS-1];
+    logic signed [7:0]  dram_x [0:RTL_SOFTMAX_LEN-1];
+    logic [7:0]         dram_y [0:RTL_SOFTMAX_LEN-1];
 
-    logic signed [7:0]  spad_a [0:63];
-    logic signed [7:0]  spad_b [0:63];
-    logic signed [31:0] acc_buf [0:63];
-    logic signed [15:0] vec_buf [0:7];
+    logic signed [7:0]  spad_a [0:RTL_MATMUL_ELEMS-1];
+    logic signed [7:0]  spad_b [0:RTL_MATMUL_ELEMS-1];
+    logic signed [31:0] acc_buf [0:RTL_MATMUL_ELEMS-1];
+    logic signed [15:0] vec_buf [0:RTL_SOFTMAX_LEN-1];
     logic signed [15:0] scalar_max;
     logic [15:0]        scalar_sum;
     logic [31:0]        instr_mem [0:15];
@@ -65,13 +46,13 @@ module npu_v0_top (
 
     integer idx;
 
-    assign opcode = instr[31:28];
-    assign arg0 = instr[27:24];
-    assign arg1 = instr[23:20];
+    assign opcode = instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB];
+    assign arg0 = instr[UOP_ARG0_MSB:UOP_ARG0_LSB];
+    assign arg1 = instr[UOP_ARG1_MSB:UOP_ARG1_LSB];
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            for (idx = 0; idx < 64; idx = idx + 1) begin
+            for (idx = 0; idx < RTL_MATMUL_ELEMS; idx = idx + 1) begin
                 dram_a[idx] <= '0;
                 dram_b[idx] <= '0;
                 dram_c[idx] <= '0;
@@ -79,7 +60,7 @@ module npu_v0_top (
                 spad_b[idx] <= '0;
                 acc_buf[idx] <= '0;
             end
-            for (idx = 0; idx < 8; idx = idx + 1) begin
+            for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
                 dram_x[idx] <= '0;
                 dram_y[idx] <= '0;
                 vec_buf[idx] <= '0;
@@ -134,12 +115,18 @@ module npu_v0_top (
                 ST_FETCH: begin
                     instr <= instr_mem[pc];
                     pc <= pc + 1'b1;
-                    case (instr_mem[pc][31:28])
+                    case (instr_mem[pc][UOP_OPCODE_MSB:UOP_OPCODE_LSB])
                         UOP_LOAD: begin
-                            run_load(instr_mem[pc][27:24], instr_mem[pc][23:20]);
+                            run_load(
+                                instr_mem[pc][UOP_ARG0_MSB:UOP_ARG0_LSB],
+                                instr_mem[pc][UOP_ARG1_MSB:UOP_ARG1_LSB]
+                            );
                         end
                         UOP_STORE: begin
-                            run_store(instr_mem[pc][27:24], instr_mem[pc][23:20]);
+                            run_store(
+                                instr_mem[pc][UOP_ARG0_MSB:UOP_ARG0_LSB],
+                                instr_mem[pc][UOP_ARG1_MSB:UOP_ARG1_LSB]
+                            );
                         end
                         UOP_MATMUL: begin
                             i_idx <= '0;
@@ -173,14 +160,14 @@ module npu_v0_top (
                 end
 
                 ST_MATMUL: begin
-                    acc <= acc + spad_a[(i_idx * 8) + k_idx] * spad_b[(k_idx * 8) + j_idx];
-                    if (k_idx == 7) begin
-                        acc_buf[(i_idx * 8) + j_idx] <= acc + spad_a[(i_idx * 8) + k_idx] * spad_b[(k_idx * 8) + j_idx];
+                    acc <= acc + spad_a[(i_idx * RTL_MATMUL_K) + k_idx] * spad_b[(k_idx * RTL_MATMUL_N) + j_idx];
+                    if (k_idx == RTL_MATMUL_K - 1) begin
+                        acc_buf[(i_idx * RTL_MATMUL_N) + j_idx] <= acc + spad_a[(i_idx * RTL_MATMUL_K) + k_idx] * spad_b[(k_idx * RTL_MATMUL_N) + j_idx];
                         acc <= '0;
                         k_idx <= '0;
-                        if (j_idx == 7) begin
+                        if (j_idx == RTL_MATMUL_N - 1) begin
                             j_idx <= '0;
-                            if (i_idx == 7) begin
+                            if (i_idx == RTL_MATMUL_M - 1) begin
                                 i_idx <= '0;
                                 state <= ST_FETCH;
                             end else begin
@@ -208,11 +195,11 @@ module npu_v0_top (
         integer l;
         begin
             if (tensor == TENSOR_A && buffer == BUF_SPAD_A) begin
-                for (l = 0; l < 64; l = l + 1) spad_a[l] = dram_a[l];
+                for (l = 0; l < RTL_MATMUL_ELEMS; l = l + 1) spad_a[l] = dram_a[l];
             end else if (tensor == TENSOR_B && buffer == BUF_SPAD_B) begin
-                for (l = 0; l < 64; l = l + 1) spad_b[l] = dram_b[l];
+                for (l = 0; l < RTL_MATMUL_ELEMS; l = l + 1) spad_b[l] = dram_b[l];
             end else if (tensor == TENSOR_X && buffer == BUF_VEC) begin
-                for (l = 0; l < 8; l = l + 1) vec_buf[l] = {{8{dram_x[l][7]}}, dram_x[l]};
+                for (l = 0; l < RTL_SOFTMAX_LEN; l = l + 1) vec_buf[l] = {{8{dram_x[l][7]}}, dram_x[l]};
             end
         end
     endtask
@@ -221,9 +208,9 @@ module npu_v0_top (
         integer s;
         begin
             if (tensor == TENSOR_C && buffer == BUF_ACC) begin
-                for (s = 0; s < 64; s = s + 1) dram_c[s] = acc_buf[s];
+                for (s = 0; s < RTL_MATMUL_ELEMS; s = s + 1) dram_c[s] = acc_buf[s];
             end else if (tensor == TENSOR_Y && buffer == BUF_VEC) begin
-                for (s = 0; s < 8; s = s + 1) dram_y[s] = vec_buf[s][7:0];
+                for (s = 0; s < RTL_SOFTMAX_LEN; s = s + 1) dram_y[s] = vec_buf[s][7:0];
             end
         end
     endtask
@@ -232,7 +219,7 @@ module npu_v0_top (
         integer v;
         begin
             scalar_max = vec_buf[0];
-            for (v = 1; v < 8; v = v + 1) begin
+            for (v = 1; v < RTL_SOFTMAX_LEN; v = v + 1) begin
                 if (vec_buf[v] > scalar_max) scalar_max = vec_buf[v];
             end
         end
@@ -241,7 +228,7 @@ module npu_v0_top (
     task automatic run_vsub;
         integer v;
         begin
-            for (v = 0; v < 8; v = v + 1) begin
+            for (v = 0; v < RTL_SOFTMAX_LEN; v = v + 1) begin
                 vec_buf[v] = vec_buf[v] - scalar_max;
             end
         end
@@ -250,7 +237,7 @@ module npu_v0_top (
     task automatic run_vexp;
         integer v;
         begin
-            for (v = 0; v < 8; v = v + 1) begin
+            for (v = 0; v < RTL_SOFTMAX_LEN; v = v + 1) begin
                 vec_buf[v] = {8'h0, exp_lut_q8(vec_buf[v][8:0])};
             end
         end
@@ -260,7 +247,7 @@ module npu_v0_top (
         integer v;
         begin
             scalar_sum = 16'h0;
-            for (v = 0; v < 8; v = v + 1) begin
+            for (v = 0; v < RTL_SOFTMAX_LEN; v = v + 1) begin
                 scalar_sum = scalar_sum + vec_buf[v][7:0];
             end
         end
@@ -271,7 +258,7 @@ module npu_v0_top (
         logic [23:0] norm_prod;
         logic [23:0] quotient;
         begin
-            for (v = 0; v < 8; v = v + 1) begin
+            for (v = 0; v < RTL_SOFTMAX_LEN; v = v + 1) begin
                 norm_prod = {16'h0, vec_buf[v][7:0]} * 24'd255;
                 quotient = (scalar_sum == 0) ? 24'h0 : (norm_prod / {8'h0, scalar_sum});
                 vec_buf[v] = {8'h0, quotient[7:0]};

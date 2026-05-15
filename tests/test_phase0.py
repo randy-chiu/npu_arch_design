@@ -51,12 +51,15 @@ class CompilerMicroOpFunctionalTests(unittest.TestCase):
 class RTLFunctionalTests(unittest.TestCase):
     def test_rtl_fixture_generator_emits_expected_files(self):
         arch = load_arch(ARCH_PATH)
-        self.assertEqual(encode_uop("LOAD", 0, 1), 0x10100000)
-        self.assertEqual(softmax_q0_8([0] * 8), [31] * 8)
+        self.assertEqual(encode_uop(arch, "LOAD", 0, 1), 0x10100000)
+        self.assertEqual(
+            softmax_q0_8([0] * arch["rtl"]["softmax_vector_len"]),
+            [31] * arch["rtl"]["softmax_vector_len"],
+        )
         graph = _read_json(GRAPH_PATH)
         artifact = compile_graph(_single_matmul_graph(graph), arch)
         self.assertEqual(
-            encode_program(artifact["program"])[:5],
+            encode_program(artifact["program"], arch)[:5],
             [0x10000000, 0x11100000, 0x30000000, 0x22200000, 0xF0000000],
         )
         with TemporaryDirectory() as tmp:
@@ -69,6 +72,8 @@ class RTLFunctionalTests(unittest.TestCase):
                 "softmax_x.hex",
                 "softmax_expected_y.hex",
                 "softmax_program.hex",
+                "npu_v0_spec.svh",
+                "npu_v0_tb_params.svh",
             }
             self.assertEqual({p.name for p in Path(tmp).iterdir()}, expected)
 
