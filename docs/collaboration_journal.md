@@ -293,6 +293,46 @@ Remaining limitation:
   standalone 8-element softmax. It does not yet execute the full
   `matmul -> softmax` graph inside RTL as a single chained program.
 
+## Canonical Encoding And Fixture Metadata Tightening
+
+The user identified another source-of-truth violation:
+
+- `rtl_fixture.py` carried a separate hard-coded opcode table instead of reading
+  opcode and operand encodings from the architecture spec.
+- `hw/tb/npu_v0_tb.sv` hard-coded generated fixture paths and expected-output
+  lengths, including a fixed 64-element matmul comparison.
+- The same ISA facts appeared independently in the spec, Python encoder, and
+  RTL decode constants.
+
+The fix was to make `arch/configs/npu_v0.jsonc` carry the Phase 0 binary
+micro-op encoding, including opcode field bits, arg field bits, opcode values,
+tensor IDs, buffer IDs, and buffer aliases. `rtl_fixture.py` now consumes this
+encoding directly when producing binary uops.
+
+The RTL fixture generator now also emits generated SystemVerilog include files:
+
+- `npu_v0_spec.svh`: opcode, tensor, buffer, instruction field, and RTL tile
+  constants derived from the spec.
+- `npu_v0_tb_params.svh`: generated fixture file paths and output comparison
+  lengths derived from the produced fixture artifacts.
+
+`npu_v0_top.sv` and `npu_v0_tb.sv` include those generated files instead of
+duplicating opcode constants, tensor IDs, buffer IDs, fixture paths, and output
+lengths. `Makefile` passes the fixture directory as an include path during RTL
+simulation.
+
+Project rules were also tightened in `AGENT_RULES.md` and `docs/work_rules.md`:
+each architecture fact must have one canonical representation, and downstream
+compiler/RTL/testbench constants must be generated or consumed from that source
+instead of being retyped independently.
+
+Validation result:
+
+- `make validate-arch`: PASS.
+- `make demo`: PASS.
+- `make test`: PASS.
+- `make rtl-sim`: PASS.
+
 ## Current Collaboration Workflow
 
 The project uses a chief-architect style AI collaboration model:
@@ -313,3 +353,76 @@ The project uses a chief-architect style AI collaboration model:
 - Keep human review and AI automation pointed at the same source of truth.
 - Treat compiler, simulator, RTL, runtime, and tests as one system.
 - Use PPA counters to justify complexity.
+
+## Session 8: Minimal SoC Bring-Up Planning
+
+The user raised an important system-level gap in the current RTL validation
+path: `npu_v0_top` is launched by the testbench directly toggling `start`, not
+by software writing a control register through a CPU-visible bus. That is enough
+for early RTL smoke tests, but it does not prove the hardware/software control
+loop needed for FPGA bring-up or later real workloads.
+
+The agreed direction is to add a minimal SoC around the NPU:
+
+```text
+RISC-V CPU softcore
+  -> simple memory-mapped bus
+  -> ROM/SRAM/debug status
+  -> opsched
+  -> npu_v0_top
+```
+
+The CPU should be reused from an existing open-source core instead of designed
+locally. PicoRV32 is the first candidate because it is small, open-source, and
+offers simple native memory, AXI4-Lite, and Wishbone-style integration options.
+The CPU compiler should also be reused, using a bare-metal RISC-V GNU toolchain
+such as `riscv32-unknown-elf-gcc` or an RV32-capable
+`riscv64-unknown-elf-gcc`.
+
+The CPU/NPU boundary module was renamed from a generic "NPU MMIO wrapper" to
+`opsched`, meaning operator scheduler. For the first implementation, `opsched`
+is intentionally thin:
+
+- expose CPU-visible control/status registers;
+- translate CPU MMIO tensor/program accesses into the current NPU host
+  interface;
+- generate a one-cycle NPU `start` pulse from a `CTRL.start` register write;
+- expose `done`, `busy`, and `idle` status to CPU firmware.
+
+The naming leaves room for later growth into a real operator/job scheduler with
+command queues, descriptors, interrupts, DMA launch, and performance counters.
+
+The project directory plan was updated to converge toward a clearer
+`sw/hw/docs/test/build` top-level structure:
+
+- `hw/soc`: CPU subsystem, bus, memories, debug peripherals, SoC top;
+- `hw/npu/rtl`: NPU core RTL;
+- `hw/npu/opsched`: CPU-visible NPU operator scheduler and register interface;
+- `sw/cpu`: boot code, linker scripts, bare-metal NPU driver, CPU firmware
+  tests;
+- `sw/npu`: graph compiler, operator lowering, uop assembler, NPU program
+  metadata;
+- `sw/tools`: toolchain scripts and third-party tool notes;
+- `test`: graph tests, golden models, RTL tests, SoC tests;
+- `build`: generated artifacts only.
+
+The SoC bring-up plan was documented in `docs/soc_bringup.md`, including:
+
+- a hardware architecture diagram;
+- a separate program/data-flow diagram;
+- hardware component specifications for CPU, bus, ROM, SRAM, `opsched`, NPU
+  core, optional UART, and test status register;
+- software components including boot stub, linker script, CPU-side NPU driver,
+  RISC-V toolchain, NPU graph compiler, uop assembler, and golden model;
+- open-source reuse plan for PicoRV32 and the RISC-V GNU toolchain;
+- a staged verification plan: `opsched` unit test, assembler artifact
+  unification, CPU-controlled matmul, CPU-controlled softmax, compiler-fed
+  firmware, then FPGA candidate cleanup.
+
+The immediate next implementation milestone is:
+
+1. create `opsched` RTL around the existing `npu_v0_top`;
+2. verify it can launch the NPU only through register writes;
+3. refactor the uop encoder into a reusable assembler artifact;
+4. add the minimal CPU SoC simulation path after the `opsched` boundary is
+   stable.

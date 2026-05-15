@@ -34,6 +34,10 @@ Exit condition:
 
 Deliverables:
 
+- Minimal CPU SoC simulation path.
+- NPU `opsched` and software-visible control/status registers.
+- Bare-metal NPU driver.
+- Reusable RTL uop assembler artifacts for firmware and testbenches.
 - Multi-tile matmul.
 - Edge tile handling.
 - Double buffering.
@@ -43,7 +47,8 @@ Deliverables:
 
 Exit condition:
 
-- Cycle model identifies utilization bottlenecks and matches RTL trends.
+- CPU firmware can launch the NPU through MMIO in simulation, and the cycle
+  model identifies utilization bottlenecks and matches RTL trends.
 
 ## Phase 3: Datatype And Quantization
 
@@ -127,4 +132,3 @@ Examples:
 | More scratchpad | Tile reuse improves enough to reduce DRAM traffic |
 | More DMA channels | Overlap improves wall-clock cycles despite arbitration cost |
 | Better SFU | Softmax/GELU dominates measured workload time or accuracy |
-

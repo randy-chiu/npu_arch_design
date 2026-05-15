@@ -10,6 +10,36 @@ artifacts, encodes those artifacts into the temporary RTL instruction format,
 then emits input and expected-output hex files. Run `make rtl-sim` from the
 repository root to regenerate those fixtures and execute the RTL checks.
 
+To generate the RTL fixture files without running the simulator:
+
+```text
+make rtl-fixtures
+```
+
+This writes files under:
+
+```text
+build/rtl_fixture/
+```
+
+The generated files include:
+
+| File | Purpose |
+| --- | --- |
+| `npu_v0_spec.svh` | SystemVerilog constants for opcode fields, opcode IDs, tensor IDs, buffer IDs, and RTL tile sizes |
+| `npu_v0_tb_params.svh` | Testbench parameters for generated hex file paths and expected output lengths |
+| `matmul_*.hex` | Matmul input, program, and expected output fixtures |
+| `softmax_*.hex` | Softmax input, program, and expected output fixtures |
+
+The direct command behind `make rtl-fixtures` is:
+
+```text
+PYTHONPATH=src python -m npu_phase0.cli emit-rtl-fixtures --arch arch/configs/npu_v0.jsonc --out-dir build/rtl_fixture
+```
+
+`make rtl-sim` depends on `rtl-fixtures`, then passes the generated include
+directory to Icarus Verilog with `-I build/rtl_fixture`.
+
 ## Implemented Hardware
 
 Top module:
@@ -25,6 +55,70 @@ Capabilities:
 - Micro-op sequencer for the Phase 0 ISA subset.
 - Simple host write/read interface.
 - Start/done control.
+
+## Current Microarchitecture
+
+The current `npu_v0_top.sv` is a deliberately small single-module design. It is
+closer to a sequential microcoded engine than to a realistic high-throughput
+NPU pipeline.
+
+Major blocks inside the module:
+
+| Block | Current implementation |
+| --- | --- |
+| Host interface | Simple write/read ports: `host_we`, `host_addr`, `host_wdata`, `host_rdata` |
+| Tensor memories | Small register arrays for `dram_a`, `dram_b`, `dram_c`, `dram_x`, and `dram_y` |
+| On-chip buffers | Register arrays for `spad_a`, `spad_b`, `acc_buf`, and `vec_buf` |
+| Instruction memory | 16-entry register array, one 32-bit encoded micro-op per entry |
+| Sequencer | FSM with `ST_IDLE`, `ST_FETCH`, `ST_MATMUL`, and `ST_DONE` |
+| Matmul datapath | One multiply-accumulate update per clock while in `ST_MATMUL` |
+| Vector datapath | Whole-vector task execution for each vector micro-op in `ST_FETCH` |
+
+### Execution Model
+
+The sequencer runs this flow:
+
+```text
+reset
+  -> ST_IDLE
+  -> start asserted
+  -> ST_FETCH
+  -> execute LOAD / STORE / vector op immediately, or enter ST_MATMUL
+  -> ST_MATMUL loops over i, j, k for one 8x8x8 tile
+  -> ST_FETCH continues with the next micro-op
+  -> HALT
+  -> ST_DONE
+```
+
+`LOAD`, `STORE`, `VREDMAX`, `VSUB`, `VEXP`, `VREDSUM`, and `VDIV` are currently
+implemented as SystemVerilog tasks called from `ST_FETCH`. For simulation, each
+task updates the relevant small arrays during that fetch cycle. This is useful
+for early functional validation, but it is not a realistic bandwidth-limited
+DMA or multi-lane vector unit yet.
+
+`MATMUL` is the only operation that is explicitly multi-cycle in the current
+RTL. It walks the 8x8x8 nested loop with indices `i_idx`, `j_idx`, and `k_idx`.
+That means one output element takes 8 MAC cycles, and the whole tile takes
+8 * 8 * 8 = 512 MAC cycles, plus fetch/control cycles.
+
+### Pipeline Depth
+
+There is no real multi-stage compute pipeline yet.
+
+The current control path has these visible phases:
+
+| Phase | Behavior |
+| --- | --- |
+| Fetch/decode | `ST_FETCH` reads `instr_mem[pc]`, increments `pc`, and dispatches the micro-op |
+| Execute | Simple non-matmul ops execute inside the fetch cycle; `MATMUL` enters the multi-cycle `ST_MATMUL` state |
+| Complete | `HALT` enters `ST_DONE`, asserts `done`, then returns to `ST_IDLE` when `start` is low |
+
+So the honest answer is: **pipeline depth is effectively 1 for the current
+non-matmul micro-op sequencer, with a multi-cycle iterative matmul engine**.
+There is no separated fetch/decode/issue/execute/writeback pipeline, no
+valid/ready handshaking between stages, no overlapping DMA and compute, and no
+hazard handling. Those should be added in later versions when the design is
+split into real sequencer, memory, compute, and vector units.
 
 ## Host Memory Map
 

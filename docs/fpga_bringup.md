@@ -128,6 +128,17 @@ A board execution flow needs a host-side tool that can:
 - read output tensor memory
 - compare against golden output
 
+The planned minimal SoC path is documented in:
+
+```text
+docs/soc_bringup.md
+```
+
+That path uses an existing small CPU softcore, a simple memory-mapped bus,
+ROM/SRAM, and an `opsched` NPU operator scheduler so bare-metal firmware can
+control the NPU through registers instead of a testbench directly toggling
+`start`.
+
 ### 5. Synthesis Cleanup
 
 The current RTL is simulation-proven, but it still needs synthesis review:
@@ -143,7 +154,7 @@ Create `phase0_fpga_min`:
 
 1. Add RTL assembler for the current micro-op encoding.
 2. Add generated `.mem` files for matmul and softmax programs.
-3. Add a synthesis-oriented FPGA wrapper with a simple memory-mapped interface.
-4. Add a board-specific target directory after the user chooses the FPGA board.
-5. Run vendor synthesis and record resource/timing reports.
-
+3. Add the minimal SoC `opsched` path described in `docs/soc_bringup.md`.
+4. Add a synthesis-oriented FPGA wrapper with a simple memory-mapped interface.
+5. Add a board-specific target directory after the user chooses the FPGA board.
+6. Run vendor synthesis and record resource/timing reports.
