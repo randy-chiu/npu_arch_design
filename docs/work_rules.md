@@ -1,5 +1,7 @@
 # Work Rules For Module Agents
 
+[TOC]
+
 ## 1. Architecture Spec Is The Contract
 
 The hardware description file is the source of truth for the whole project.
@@ -7,6 +9,19 @@ For Phase 0, the canonical file is:
 
 ```text
 arch/configs/npu_v0.jsonc
+```
+
+For SoC-level reset and address-map facts, the canonical file is:
+
+```text
+arch/configs/soc_v0.jsonc
+```
+
+For CPU-visible NPU-wrapper register and data-window offsets, the canonical
+file is:
+
+```text
+arch/configs/npu_wrapper_v0.jsonc
 ```
 
 The file uses JSONC instead of plain JSON so humans can review detailed
@@ -28,6 +43,12 @@ It must describe at least:
 No module agent may silently hard-code architecture facts that belong in this
 file. If a value affects compiler legality, simulator behavior, RTL generation,
 runtime layout, or verification, it must be represented in the spec.
+
+No module agent may silently hard-code SoC base addresses, memory-region sizes,
+or CPU reset-vector facts that belong in `arch/configs/soc_v0.jsonc`.
+
+No module agent may silently hard-code NPU-wrapper register or window offsets
+that belong in `arch/configs/npu_wrapper_v0.jsonc`.
 
 Represent each fact once. Opcode tables, instruction bit fields, tensor IDs,
 buffer IDs, memory-map constants, fixture paths, expected-output lengths, and
@@ -56,6 +77,9 @@ Required steps:
 
 The minimum acceptance rule is simple: a spec change is not accepted unless the
 closed-loop tests pass.
+
+For SoC-visible launch, register, bus, or NPU-wrapper behavior, `make soc-sim`
+is part of the relevant verification loop.
 
 ## 3. Minimal Current Scope
 

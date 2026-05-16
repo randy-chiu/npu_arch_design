@@ -30,6 +30,10 @@ For demonstrations, start here:
   follow.
 - [Current architecture spec](arch/configs/npu_v0.jsonc): human-readable and
   tool-readable hardware/ISA contract.
+- [Current SoC spec](arch/configs/soc_v0.jsonc): CPU reset vector and SoC memory
+  map contract.
+- [Project plan](docs/project_plan.md): active milestones, ownership, and
+  change process.
 - [Code structure review](docs/code_structure_review.md): practical map of the
   current code, data flow, tests, and verification entry points.
 - [FPGA bring-up notes](docs/fpga_bringup.md): explains what exists today and
@@ -42,14 +46,12 @@ For demonstrations, start here:
 
 - [Mandatory agent rules](AGENT_RULES.md)
 - [Collaboration journal](docs/collaboration_journal.md)
-- [Overall architecture](docs/overall_architecture.md)
+- [Project plan](docs/project_plan.md)
 - [Code structure review](docs/code_structure_review.md)
-- [Minimal closed-loop system](docs/minimal_closed_loop.md)
-- [Iteration roadmap](docs/roadmap.md)
-- [Agent ownership plan](docs/agent_plan.md)
 - [Work rules for module agents](docs/work_rules.md)
 - [FPGA bring-up notes](docs/fpga_bringup.md)
 - [Minimal SoC bring-up plan](docs/soc_bringup.md)
+- [Archived design notes](docs/archive/)
 
 ## Phase 0 Quick Start
 
@@ -68,16 +70,34 @@ The current hardware description file is:
 arch/configs/npu_v0.jsonc
 ```
 
+Current host-side tooling package:
+
+```text
+sw/tools/npu_phase0
+```
+
 Refresh research references when planning a new architecture iteration:
 
 ```text
 make refresh-references
 ```
 
-Run the Phase 0 RTL test on a machine with `iverilog` installed. The make
+Run the Phase 0 NPU core RTL test on a machine with `iverilog` installed. The make
 target first emits deterministic program/input/expected-output fixtures from
 the Python tooling, then the SystemVerilog testbench loads those files:
 
 ```text
-make rtl-sim
+make npu-core-sim
+```
+
+Run the current minimal SoC smoke test:
+
+```text
+make soc-sim
+```
+
+Run the firmware-controlled SoC smoke test with PicoRV32:
+
+```text
+make cpu-soc-sim
 ```

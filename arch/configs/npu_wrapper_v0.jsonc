@@ -1,0 +1,69 @@
+{
+  // CPU-visible NPU wrapper register and window map.
+  //
+  // This file is the source of truth for wrapper-internal offsets. Generated
+  // SystemVerilog and C headers should be consumed by RTL, testbenches, and
+  // firmware instead of duplicating these values.
+
+  "name": "npu_wrapper_v0",
+  "version": 0,
+
+  "addr_width_bits": 12,
+  "data_width_bits": 32,
+
+  "registers": {
+    "ctrl": {
+      "offset": 0,
+      "description": "bit 0 write-1-to-start"
+    },
+    "status": {
+      "offset": 4,
+      "description": "bit 0 done, bit 1 busy, bit 2 idle"
+    },
+    "version": {
+      "offset": 8,
+      "description": "wrapper version register"
+    },
+    "irq_enable": {
+      "offset": 12,
+      "description": "bit 0 interrupt enable"
+    },
+    "irq_status": {
+      "offset": 16,
+      "description": "bit 0 interrupt pending, write 1 to clear"
+    }
+  },
+
+  "windows": {
+    "a_base": {
+      "offset": 256,
+      "size_bytes": 256,
+      "description": "Matrix A input window"
+    },
+    "b_base": {
+      "offset": 512,
+      "size_bytes": 256,
+      "description": "Matrix B input window"
+    },
+    "c_base": {
+      "offset": 768,
+      "size_bytes": 256,
+      "description": "Matrix C output window"
+    },
+    "x_base": {
+      "offset": 1024,
+      "size_bytes": 128,
+      "description": "Softmax X input window"
+    },
+    "y_base": {
+      "offset": 1152,
+      "size_bytes": 128,
+      "description": "Softmax Y output window"
+    },
+    "program_base": {
+      "offset": 2048,
+      "size_bytes": 256,
+      "description": "NPU micro-op program window"
+    }
+  }
+}

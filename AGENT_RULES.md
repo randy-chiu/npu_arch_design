@@ -10,8 +10,21 @@ Canonical Phase 0 spec:
 arch/configs/npu_v0.jsonc
 ```
 
-Do not hard-code architecture facts in compiler, simulator, RTL, runtime, or
-tests if they belong in the spec.
+Canonical SoC spec:
+
+```text
+arch/configs/soc_v0.jsonc
+```
+
+Canonical NPU wrapper register spec:
+
+```text
+arch/configs/npu_wrapper_v0.jsonc
+```
+
+Do not hard-code architecture facts, SoC address-map facts, or NPU-wrapper
+register/window offsets in compiler, simulator, RTL, runtime, firmware, or
+tests if they belong in the relevant spec.
 
 Each architecture fact must have exactly one canonical representation. Do not
 duplicate opcode maps, instruction field layouts, tensor IDs, buffer IDs,
@@ -49,7 +62,14 @@ If RTL-visible behavior changes, also run the RTL simulation target on a machine
 with Icarus Verilog or an equivalent SystemVerilog simulator:
 
 ```text
-make rtl-sim
+make npu-core-sim
+```
+
+If SoC-visible launch, register, bus, or wrapper behavior changes, also run:
+
+```text
+make soc-sim
+make cpu-soc-sim
 ```
 
 ## 4. Keep Phase 0 Minimal

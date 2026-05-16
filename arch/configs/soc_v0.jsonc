@@ -1,0 +1,53 @@
+{
+  // Minimal SoC address map and CPU boot contract.
+  //
+  // This file is the source of truth for SoC-level addresses. NPU-wrapper
+  // internal register/window offsets are owned by
+  // arch/configs/npu_wrapper_v0.jsonc.
+
+  "name": "soc_v0",
+  "version": 0,
+
+  "cpu": {
+    "core": "picorv32",
+    "reset_vector": 0,
+    "stack_pointer": 262128
+  },
+
+  "bus": {
+    "addr_width_bits": 32,
+    "data_width_bits": 32
+  },
+
+  "memory_map": {
+    "boot_rom": {
+      "base": 0,
+      "size_bytes": 32768,
+      "description": "CPU reset and firmware memory"
+    },
+    "sram": {
+      "base": 131072,
+      "size_bytes": 131072,
+      "description": "CPU data, stack, and temporary memory"
+    },
+    "npu_wrapper": {
+      "base": 268435456,
+      "size_bytes": 4096,
+      "description": "CPU-visible NPU wrapper MMIO window"
+    },
+    "uart": {
+      "base": 536870912,
+      "size_bytes": 4096,
+      "description": "Reserved debug UART window"
+    },
+    "test_status": {
+      "base": 805306368,
+      "size_bytes": 16,
+      "description": "Simulation pass/fail status register"
+    }
+  },
+
+  "boot": {
+    "rom_init_hex": "build/firmware/soc_cpu_smoke.hex"
+  }
+}

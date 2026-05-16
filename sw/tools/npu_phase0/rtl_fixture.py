@@ -10,8 +10,8 @@ from .compiler import compile_graph
 from .golden import matmul
 
 
-DEFAULT_GRAPH_PATH = Path("tests/graphs/matmul_softmax.json")
-DEFAULT_INPUTS_PATH = Path("tests/inputs_matmul_softmax.json")
+DEFAULT_GRAPH_PATH = Path("test/graphs/matmul_softmax.json")
+DEFAULT_INPUTS_PATH = Path("test/inputs/matmul_softmax.json")
 TB_SPEC_INCLUDE = "npu_v0_spec.svh"
 TB_FIXTURE_INCLUDE = "npu_v0_tb_params.svh"
 

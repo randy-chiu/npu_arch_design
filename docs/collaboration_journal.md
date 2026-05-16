@@ -1,5 +1,7 @@
 # Collaboration Journal
 
+[TOC]
+
 This journal records the project process and AI collaboration flow. It avoids
 low-level patch history and focuses on goals, decisions, reasoning, and team
 workflow.
@@ -426,3 +428,578 @@ The immediate next implementation milestone is:
 3. refactor the uop encoder into a reusable assembler artifact;
 4. add the minimal CPU SoC simulation path after the `opsched` boundary is
    stable.
+
+## Session 9: Minimal SoC Skeleton And Directory Semantics Correction
+
+The user asked to move from standalone NPU-core validation toward a small SoC
+validation loop. The first implementation step built a minimal hardware
+skeleton around the existing NPU core:
+
+- `opsched`, a thin CPU-visible NPU wrapper that exposes control/status
+  registers and tensor/program windows;
+- a simple 32-bit local bus decoder;
+- ROM, SRAM, and simulation test-status peripheral wrappers;
+- a `soc_top` shell with a CPU-side local-bus master port;
+- a SoC smoke testbench that acts like firmware by writing tensor inputs and
+  program words through the `opsched` MMIO window, launching the NPU, polling
+  done, and checking output data.
+
+Validation result:
+
+- `make test`: PASS, including the existing NPU RTL simulation and the new
+  SoC `opsched` smoke test.
+
+The user then corrected an important repository semantics issue. The previous
+directory plan used `sw/npu` for compiler, assembler, and other host/tooling
+code. That was ambiguous and wrong for this project. The corrected split is:
+
+- `sw/soc_cpu`: software that executes on the SoC CPU, including NPU-wrapper
+  drivers, runtime, boot code, and firmware apps;
+- `sw/npu_core`: code or programs consumed by the NPU core itself, such as
+  operator programs and later NPU-side operator implementations;
+- `sw/tools`: software tools that run on the development host, including CPU
+  toolchain integration, NPU graph compiler, NPU assembler, fixture generation,
+  and simulators.
+
+Hardware should also be separated by module role under `hw`:
+
+- `hw/soc`: SoC top, bus, memory, debug peripherals, and later CPU integration;
+- `hw/npu_wrapper`: CPU-visible wrapper/scheduler around the NPU;
+- `hw/npu_core`: the NPU core RTL and core-level testbench.
+
+The user also clarified that CPU linker scripts are only needed once real
+bare-metal firmware is introduced. They should not be created prematurely.
+Temporary fixture generation remains useful for RTL/SoC simulation, but fixture
+artifacts are test infrastructure, not product software. Generated fixture hex
+files should stay under `build`, while `test/fixtures` can document this
+temporary verification bridge.
+
+Documentation cleanup decision:
+
+- keep `docs/work_rules.md` as the core co-work rules;
+- keep and continuously update `docs/collaboration_journal.md`;
+- keep `docs/soc_bringup.md` and `docs/fpga_bringup.md`;
+- merge `docs/roadmap.md` and `docs/agent_plan.md` into a single project plan;
+- archive early or superseded design notes instead of deleting them;
+- update the code structure review so it matches the real tree.
+
+## Session 10: Detailed SoC Test Flow Documentation
+
+The user asked for a clearer description of the complete current test flow:
+compile a graph into NPU micro-ops, encode the micro-op stream, launch work
+through the NPU wrapper, let the NPU core run, read outputs, and check results
+in the testbench.
+
+The clarification was added to `docs/code_structure_review.md` under
+"Complete SoC Smoke Test Flow". The document now explains:
+
+- `make soc-sim` first runs `rtl-fixtures`;
+- fixture generation reads the architecture config, graph JSON, and input JSON;
+- the matmul subgraph is compiled to JSON micro-ops and encoded into 32-bit
+  RTL uops;
+- generated hex and SystemVerilog include files are written under
+  `build/rtl_fixture`;
+- `hw/soc/tb/soc_tb.sv` acts as the temporary CPU model by driving the
+  `soc_top` CPU-side bus port;
+- the testbench writes Matrix A, Matrix B, and program words through the
+  `opsched` MMIO window;
+- `opsched` translates CPU-visible byte offsets into the NPU core's existing
+  word-addressed host interface;
+- writing `CTRL.start` creates a one-cycle `start_pulse` into `npu_v0_top`;
+- the testbench polls `STATUS.done`, reads Matrix C, and compares each value
+  against `matmul_expected_c.hex`.
+
+The document also calls out the current limitation: SoC smoke verification
+currently covers wrapper-controlled matmul only. The fixture generator and
+standalone NPU core testbench already cover softmax, but the SoC testbench has
+not yet launched softmax through `opsched`. The next useful SoC verification
+step is to add the softmax path to `hw/soc/tb/soc_tb.sv`.
+
+## Session 11: Add SoC Softmax Wrapper Verification
+
+The user asked to fill the missing SoC-level softmax verification and asked
+whether the older verification targets are still needed now that `soc-sim`
+exists.
+
+Implementation change:
+
+- `hw/soc/tb/soc_tb.sv` now runs two wrapper-controlled launches:
+  1. matmul through the `opsched` A/B/program/C windows;
+  2. softmax through the `opsched` X/program/Y windows.
+- The softmax path loads `softmax_x.hex`, `softmax_program.hex`, and
+  `softmax_expected_y.hex`, writes X and program words through the SoC bus,
+  writes `CTRL.start`, polls `STATUS.done`, reads Y, and compares each low byte
+  against the expected output.
+
+Validation result:
+
+- `make soc-sim`: PASS.
+
+Verification target decision:
+
+- Keep `make validate-arch`, `make demo`, `make rtl-sim`, `make soc-sim`, and
+  `make test` for now because they cover different failure scopes.
+- `validate-arch` catches contract/schema issues quickly.
+- `demo` gives a readable compiler/simulator smoke path.
+- `rtl-sim` isolates NPU core behavior without SoC bus or wrapper variables.
+- `soc-sim` verifies the bus, NPU wrapper launch protocol, and NPU core
+  together.
+- `make test` remains the aggregate developer check.
+
+The code structure review was updated with this rationale and with the new
+SoC softmax sequence. The remaining SoC gap is no longer "softmax through
+wrapper"; it is a firmware-like chained graph flow where matmul output becomes
+softmax input through runtime-managed tensor metadata.
+
+## Session 12: Rename Standalone Core Simulation Target
+
+The user pointed out that `rtl-sim` was too generic now that the project has
+both standalone NPU-core simulation and SoC-level simulation. The agreed naming
+is:
+
+- `make npu-core-sim`: standalone NPU core RTL simulation;
+- `make soc-sim`: SoC bus + NPU wrapper + NPU core simulation.
+
+`Makefile` now exposes `npu-core-sim` as the primary target. `rtl-sim` remains
+as a compatibility alias for existing habits or older notes. Active docs and
+tests were updated to use `npu-core-sim`.
+
+## Session 13: Share Wrapper Register Map With SoC Testbench
+
+The user reviewed `hw/soc/tb/soc_tb.sv` and pointed out that the testbench was
+hard-coding offsets for the NPU wrapper address space, even though those
+offsets are owned by the wrapper register map.
+
+The fix was to include `hw/npu_wrapper/rtl/npu_v0_regs.svh` from `soc_tb`.
+The testbench now defines only the SoC-level `OPSCHED_BASE` and derives full
+addresses from wrapper-owned constants such as `NPU_OPSCHED_CTRL`,
+`NPU_OPSCHED_A_BASE`, `NPU_OPSCHED_X_BASE`, and
+`NPU_OPSCHED_PROGRAM_BASE`.
+
+The code structure review was also extended with Mermaid diagrams showing:
+
+- the SoC connection graph from the temporary CPU bus master through
+  `soc_top`, `simple_bus`, `npu_v0_opsched`, and `npu_v0_top`;
+- how a CPU-visible program-window address is decoded by the SoC bus and then
+  translated by `opsched` into the NPU core's word-addressed host interface.
+
+## Session 14: Add PicoRV32 CPU-Controlled SoC Simulation
+
+The user agreed that it was time to add a CPU to the minimal SoC. The project
+kept the earlier architectural decision not to design a local CPU from scratch.
+Instead, PicoRV32 was vendored under:
+
+```text
+hw/soc/cpu/third_party/picorv32/picorv32.v
+```
+
+New hardware integration:
+
+- `hw/soc/cpu/rtl/picorv32_native_cpu.sv` adapts PicoRV32's native memory
+  interface to the project local bus.
+- `hw/soc/rtl/soc_cpu_top.sv` integrates PicoRV32, boot ROM, SRAM, test status,
+  `opsched`, and `npu_v0_top`.
+- `hw/soc/tb/soc_cpu_tb.sv` runs the CPU-controlled SoC simulation and watches
+  the simulation test-status register.
+
+The local environment did not have `riscv32-unknown-elf-gcc` or an RV32-capable
+`riscv64-unknown-elf-gcc`, so the first firmware path uses a temporary host
+tool instead of C firmware:
+
+```text
+sw/tools/firmware/emit_soc_cpu_smoke.py
+```
+
+This tool emits `build/firmware/soc_cpu_smoke.hex`, a small RV32I boot ROM
+program. The firmware performs the same MMIO flow as the previous direct-bus
+SoC test:
+
+1. write matmul A/B and matmul program through the `opsched` windows;
+2. write `CTRL.start`;
+3. poll `STATUS.done`;
+4. read and check Matrix C;
+5. write softmax X and softmax program;
+6. launch and poll again;
+7. read and check softmax Y;
+8. write `0x0000_0001` to the simulation test-status register on success, or
+   `0xffff_ffff` on failure.
+
+New make target:
+
+```text
+make cpu-soc-sim
+```
+
+Validation result:
+
+- `make cpu-soc-sim`: PASS with
+  `PASS PicoRV32 firmware-controlled SoC smoke test`.
+
+Remaining work:
+
+- Replace the temporary Python RV32I firmware emitter with normal C firmware,
+  startup code, a linker script, and a RISC-V GCC build once the toolchain is
+  available.
+
+## Session 15: Clarify CPU Testbench Startup And Timeout
+
+The user asked how `soc_cpu_tb` starts the CPU, whether the `repeat (20000)`
+loop is the normal way to run CPU tests, and where the CPU fetches instructions
+before writing the NPU wrapper `CTRL` register.
+
+Clarification and updates:
+
+- `soc_cpu_tb` now uses a named `CPU_SOC_TIMEOUT_CYCLES` constant instead of a
+  raw `repeat (20000)`.
+- The repeat loop is only a simulation watchdog; it does not start the CPU.
+- The CPU starts when `soc_cpu_tb` releases reset by driving `rst_n` high.
+- PicoRV32 starts at `PROGADDR_RESET = 0x0000_0000`.
+- `soc_cpu_top` maps `0x0000_0000` to `boot_rom`.
+- `boot_rom` is initialized from `build/firmware/soc_cpu_smoke.hex`.
+- The firmware instructions then perform ordinary RV32I stores and loads to
+  the memory-mapped `opsched` address range, including the write to
+  `CTRL.start`.
+
+`docs/code_structure_review.md` was updated with a CPU-controlled test sequence
+section explaining reset, boot ROM instruction fetch, MMIO routing, NPU launch,
+status polling, output checking, and the role of the timeout watchdog.
+
+## Session 16: Align NPU Wrapper Naming And Add Boot Flow Diagram
+
+The user noticed that active RTL still used many `opsched` names even though
+the higher-level module boundary is now called `npu_wrapper`. The naming
+decision is:
+
+- keep `npu_v0_opsched` as the wrapper-internal scheduler module name for now,
+  because it describes the block's function;
+- use `npu_wrapper_*` for SoC bus signals and top-level instance names, because
+  those describe the SoC boundary.
+
+RTL updates:
+
+- `simple_bus` now exposes `npu_wrapper_req/we/addr/wdata/rdata/ready`.
+- `soc_top` and `soc_cpu_top` use `npu_wrapper_*` interconnect signals.
+- the wrapper instance name changed from `u_opsched` to `u_npu_wrapper`.
+
+Documentation updates:
+
+- active docs now include `[TOC]` markers for easier navigation;
+- `docs/code_structure_review.md` now includes a Mermaid flow from
+  `soc_cpu_tb` clock/reset through PicoRV32 reset release, boot ROM instruction
+  fetch at `0x0000_0000`, firmware execution, the first store to
+  `0x1000_0000`, and the resulting `start_pulse` into `npu_v0_top`.
+
+## Session 17: Generate Readable RV32I Firmware Assembly
+
+The user asked for a readable RISC-V assembly view of the generated CPU boot
+firmware, because the existing `emit_soc_cpu_smoke.py` path only emitted raw
+machine-code hex.
+
+The firmware emitter now generates both:
+
+```text
+build/firmware/soc_cpu_smoke.hex
+build/firmware/soc_cpu_smoke.S
+```
+
+Both files come from the same `Program` builder in
+`sw/tools/firmware/emit_soc_cpu_smoke.py`, so the readable `.S` listing mirrors
+the boot ROM image used by `cpu-soc-sim`.
+
+The generated assembly makes the important CPU/MMIO behavior visible:
+
+- stores tensor/program words into NPU wrapper windows;
+- stores `1` to `0x1000_0000` to write `CTRL.start`;
+- loops on `0x1000_0004` until `STATUS.done` is set;
+- reads output windows and compares expected values;
+- writes `0x0000_0001` or `0xffff_ffff` to `0x3000_0000` for pass/fail.
+
+`docs/code_structure_review.md` now points to the generated `.S` file and
+includes key assembly snippets for matmul launch, softmax launch, and final
+pass/fail reporting. `sw/soc_cpu/firmware_smoke/README.md` documents the
+generated firmware artifacts for source-tree readers.
+
+Validation result:
+
+- `make cpu-soc-sim`: PASS.
+- `make test`: PASS.
+
+## Session 18: Add SoC Memory Map Spec
+
+The user pointed out that SoC-level addresses were still hard-coded in several
+places, especially `OPSCHED_BASE = 0x1000_0000` in the temporary firmware
+emitter. The project now has a dedicated SoC spec:
+
+```text
+arch/configs/soc_v0.jsonc
+```
+
+It defines:
+
+- CPU reset vector;
+- CPU stack pointer;
+- boot ROM base and size;
+- SRAM base and size;
+- NPU wrapper base and size;
+- reserved UART window;
+- simulation test-status base and size.
+
+`make soc-spec` generates:
+
+```text
+build/soc/soc_v0_addr.svh
+```
+
+`simple_bus.sv` and `soc_tb.sv` consume the generated include instead of
+hard-coding SoC base addresses. `emit_soc_cpu_smoke.py` now reads
+`arch/configs/soc_v0.jsonc` for SoC base addresses before generating boot ROM
+hex and assembly.
+
+The NPU wrapper internal offsets are still owned by:
+
+```text
+hw/npu_wrapper/rtl/npu_v0_regs.svh
+```
+
+The review document was updated to describe the full SoC memory map and the
+pass/fail path. CPU firmware writes `CTRL.start` and polls `STATUS.done` in the
+NPU wrapper, but final smoke-test pass/fail is reported by writing the separate
+`test_status` peripheral at `0x3000_0000`, which `soc_cpu_tb` observes through
+the top-level `sim_status` signal.
+
+## Session 19: Start Real CPU Firmware Flow
+
+The user started downloading a RISC-V GCC toolchain and asked to begin the
+formal firmware-code path in parallel.
+
+The project now has a real bare-metal PicoRV32 firmware layout:
+
+```text
+sw/soc_cpu/boot/start.S
+sw/soc_cpu/runtime/npu_driver.c
+sw/soc_cpu/runtime/npu_driver.h
+sw/soc_cpu/apps/soc_cpu_smoke/main.c
+sw/soc_cpu/linker/soc_v0.ld
+```
+
+The firmware startup sets the stack pointer from generated SoC metadata and
+calls `main()`. The C smoke app uses an NPU-wrapper driver to:
+
+- write matmul inputs and micro-op program words;
+- write `CTRL.start`;
+- poll `STATUS.done`;
+- compare Matrix C;
+- write softmax input and program words;
+- launch and poll the NPU again;
+- compare Softmax Y low bytes;
+- report pass/fail through the separate `test_status` peripheral.
+
+The NPU wrapper register map is no longer duplicated between RTL, firmware,
+and host tooling. A new canonical spec was added:
+
+```text
+arch/configs/npu_wrapper_v0.jsonc
+```
+
+`make npu-wrapper-spec` generates:
+
+```text
+build/npu_wrapper/npu_v0_regs.svh
+build/npu_wrapper/npu_v0_regs.h
+```
+
+`make soc-spec` now also generates:
+
+```text
+build/soc/soc_v0_addr.h
+```
+
+The Makefile now prefers real C/ASM firmware when one of these toolchains is
+available:
+
+```text
+riscv-none-elf-gcc
+riscv32-unknown-elf-gcc
+riscv64-unknown-elf-gcc
+```
+
+The firmware is compiled as RV32I/ILP32:
+
+```text
+-march=rv32i -mabi=ilp32
+```
+
+If no toolchain is present, `make firmware-smoke` keeps using the temporary
+Python RV32I emitter so `make cpu-soc-sim` remains runnable while the local
+toolchain is being installed.
+
+Validation result in the no-GCC environment:
+
+- `make soc-sim`: PASS.
+- `make cpu-soc-sim`: PASS through the fallback emitter.
+
+## Session 20: Verify Real GCC-Built Firmware
+
+The user installed the xPack RISC-V GCC toolchain under:
+
+```text
+thirdparty/xpack-riscv-none-elf-gcc-15.2.0-1/bin
+```
+
+The first `make firmware-smoke-c` build succeeded and produced:
+
+```text
+build/firmware/soc_cpu_smoke.elf
+build/firmware/soc_cpu_smoke.bin
+build/firmware/soc_cpu_smoke.hex
+build/firmware/soc_cpu_smoke.dump
+build/firmware/soc_cpu_smoke.map
+```
+
+The first `make cpu-soc-sim` run with real C/ASM firmware failed with a firmware
+mismatch. Debug showed:
+
+- C firmware successfully wrote NPU input/program windows;
+- NPU core computed the correct first matmul result internally;
+- CPU readback through the wrapper returned the correct value;
+- the value was lost when C code stored the readback into a stack local.
+
+The root cause was the SoC SRAM address map. `simple_bus` currently decodes
+regions with a power-of-two mask, so a 128 KiB SRAM region must be aligned to
+128 KiB. The old map used:
+
+```text
+base = 0x0001_0000
+size = 0x0002_0000
+stack = 0x0002_fff0
+```
+
+That is not aligned for the mask decoder. Stack accesses near `0x0002_fff0`
+therefore missed SRAM and returned default zero.
+
+The SoC spec was corrected to:
+
+```text
+SRAM base = 0x0002_0000
+SRAM size = 0x0002_0000
+stack     = 0x0003_fff0
+```
+
+`sw/soc_cpu/linker/soc_v0.ld` was updated to match. `simple_sram.sv` was also
+changed to provide same-cycle combinational reads with synchronous writes,
+matching the current simple local bus ready protocol.
+
+The firmware smoke app now reports high-bit failure codes through
+`test_status_fail_code()`, and `soc_cpu_tb` treats any status with bit 31 set
+as a firmware failure while printing the code.
+
+Validation result with real GCC-built firmware:
+
+- `make firmware-smoke-c`: PASS.
+- `make cpu-soc-sim`: PASS.
+- `make soc-sim`: PASS.
+- `make test`: PASS, 7 tests.
+
+## Session 21: Add Bugfix List
+
+The user asked for a dedicated docs file to record representative bugs and
+their solutions.
+
+Added:
+
+```text
+docs/bugfix_list.md
+```
+
+The first entry documents the GCC-built firmware mismatch caused by the
+misaligned SRAM base address. It records the symptom, debug path, root cause,
+fix, verification result, and follow-up rule that SoC mask-decoded regions must
+be aligned to their size.
+
+The user then asked for the bugfix list to use Chinese descriptions. The file
+was rewritten in Chinese while preserving the same technical structure and
+details.
+
+## Session 22: Generate Linker Script From SoC Spec And Add RTL Walkthrough
+
+The user noticed that `sw/soc_cpu/linker/soc_v0.ld` still hard-coded ROM/SRAM
+addresses, which violated the SoC source-of-truth rule.
+
+The linker script is now generated by `make soc-spec` from:
+
+```text
+arch/configs/soc_v0.jsonc
+```
+
+Generated outputs are now:
+
+```text
+build/soc/soc_v0_addr.svh
+build/soc/soc_v0_addr.h
+build/soc/soc_v0.ld
+```
+
+`make firmware-smoke-c` links with:
+
+```text
+-T build/soc/soc_v0.ld
+```
+
+The old handwritten `sw/soc_cpu/linker/soc_v0.ld` was removed. SoC spec
+generation now validates memory-map regions before emitting generated files:
+
+- `size_bytes` must be a positive power of two;
+- `base` must be aligned to `size_bytes`.
+
+`docs/code_structure_review.md` was also expanded with a Chinese RTL walkthrough
+for readers who are not familiar with RTL. The walkthrough follows the actual
+path:
+
+```text
+soc_cpu_tb
+  -> soc_cpu_top
+  -> picorv32_native_cpu
+  -> simple_bus
+  -> boot_rom / simple_sram / npu_v0_opsched / test_status
+  -> npu_v0_top
+```
+
+It explains reset, CPU instruction fetch from address `0x0000_0000`, firmware
+MMIO stores to `CTRL.start`, wrapper-to-core `start_pulse`, NPU program
+execution, `STATUS.done` polling, result readback, and final pass/fail reporting
+through `test_status`.
+
+Validation result:
+
+- `make firmware-smoke-c`: PASS.
+- `make cpu-soc-sim`: PASS.
+- `make soc-sim`: PASS.
+
+## Session 23: Clarify CPU SoC RTL Mental Model
+
+The user restated their understanding of `soc_cpu_tb` and the CPU-controlled
+SoC flow and asked for corrections plus documentation updates.
+
+Clarifications added to `docs/code_structure_review.md`:
+
+- `soc_cpu_tb` instantiates `soc_cpu_top`, creates `clk`, drives reset, and
+  observes `sim_status`/`cpu_trap`; it does not directly operate the NPU
+  wrapper.
+- CPU execution starts when clock exists and reset is released. Clock alone is
+  not enough.
+- `soc_cpu_top` instantiates CPU, bus, boot ROM, SRAM, NPU wrapper, and
+  `test_status`. These RTL modules already exist after elaboration; they
+  respond when CPU bus signals select them.
+- CPU reset vector is `0x0000_0000`, which the bus decodes to boot ROM.
+- Current `soc_cpu_smoke.hex` is a full simulation firmware image, including
+  startup code, NPU driver, `main()`, and generated test data. It is not only a
+  tiny boot ROM stub.
+- This is a bring-up simplification. A more production-like SoC may have a
+  small boot ROM that loads user firmware from flash or another non-volatile
+  image into SRAM/DRAM before jumping to it. That flow is not modeled yet.
+- `soc_cpu_top.sv` does not directly instantiate `npu_v0_top` because the NPU
+  core is instantiated inside `npu_v0_opsched` as `u_npu`. The SoC top connects
+  only to the CPU-visible NPU wrapper.
+
+`sw/soc_cpu/firmware_smoke/README.md` was also updated to clarify the current
+boot ROM image scope.

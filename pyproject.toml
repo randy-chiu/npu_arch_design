@@ -9,7 +9,7 @@ dependencies = []
 npu-phase0 = "npu_phase0.cli:main"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = {"" = "sw/tools"}
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["sw/tools"]

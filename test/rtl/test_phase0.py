@@ -13,8 +13,8 @@ from npu_phase0.simulator import MicroOpFunctionalSimulator
 
 
 ARCH_PATH = "arch/configs/npu_v0.jsonc"
-GRAPH_PATH = Path("tests/graphs/matmul_softmax.json")
-INPUTS_PATH = Path("tests/inputs_matmul_softmax.json")
+GRAPH_PATH = Path("test/graphs/matmul_softmax.json")
+INPUTS_PATH = Path("test/inputs/matmul_softmax.json")
 
 
 class ArchitectureAndGoldenTests(unittest.TestCase):
@@ -81,14 +81,40 @@ class RTLFunctionalTests(unittest.TestCase):
         shutil.which("iverilog") and shutil.which("vvp"),
         "iverilog/vvp not installed",
     )
-    def test_rtl_simulation_matches_generated_fixtures(self):
+    def test_npu_core_simulation_matches_generated_fixtures(self):
         result = subprocess.run(
-            ["make", "rtl-sim"],
+            ["make", "npu-core-sim"],
             check=True,
             capture_output=True,
             text=True,
         )
         self.assertIn("PASS npu_v0 RTL generated-fixture tests", result.stdout)
+
+    @unittest.skipUnless(
+        shutil.which("iverilog") and shutil.which("vvp"),
+        "iverilog/vvp not installed",
+    )
+    def test_soc_simulation_controls_npu_through_opsched(self):
+        result = subprocess.run(
+            ["make", "soc-sim"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("PASS minimal SoC opsched smoke test", result.stdout)
+
+    @unittest.skipUnless(
+        shutil.which("iverilog") and shutil.which("vvp"),
+        "iverilog/vvp not installed",
+    )
+    def test_cpu_soc_simulation_runs_firmware(self):
+        result = subprocess.run(
+            ["make", "cpu-soc-sim"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("PASS PicoRV32 firmware-controlled SoC smoke test", result.stdout)
 
 
 def _read_json(path: Path):

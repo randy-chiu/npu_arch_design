@@ -1,5 +1,7 @@
 # Minimal SoC Bring-Up Plan
 
+[TOC]
+
 ## Table Of Contents
 
 - [Goal](#goal)
@@ -134,7 +136,7 @@ do not need cache, MMU, an OS, interrupts, or a complex interconnect.
 | ROM | 8 KiB to 32 KiB firmware/reset memory |
 | SRAM | 32 KiB to 128 KiB data/stack/test memory |
 | opsched | MMIO slave exposing NPU control/status registers and data windows |
-| NPU core | Current `hw/npu/rtl/npu_v0_top.sv` target location |
+| NPU core | Current `hw/npu_core/rtl/npu_v0_top.sv` target location |
 | UART | Optional debug output |
 | Test status | Simple simulation-visible pass/fail register |
 
@@ -152,6 +154,15 @@ The CPU only runs bare-metal firmware and the NPU driver. The first candidate is
 PicoRV32 because it is a small open-source RISC-V core and provides a simple
 native memory interface, an AXI4-Lite master variant, and a Wishbone master
 variant. We should not implement our own CPU.
+
+Current implementation note:
+
+- PicoRV32 is vendored under `hw/soc/cpu/third_party/picorv32`.
+- `hw/soc/cpu/rtl/picorv32_native_cpu.sv` adapts the PicoRV32 native memory
+  interface to the project local bus.
+- `hw/soc/rtl/soc_cpu_top.sv` integrates PicoRV32, boot ROM, SRAM, test status,
+  `opsched`, and the NPU core.
+- `make cpu-soc-sim` runs the firmware-controlled SoC simulation.
 
 Initial CPU requirements:
 
@@ -241,10 +252,22 @@ The first address map only needs to be stable, simple, and easy to share between
 firmware and testbenches. `opsched` appears as a normal MMIO peripheral at
 `0x1000_0000`, and the NPU core is indirectly exposed through it.
 
+Current source of truth:
+
+```text
+arch/configs/soc_v0.jsonc
+```
+
+Generated RTL include:
+
+```text
+build/soc/soc_v0_addr.svh
+```
+
 | Address range | Target |
 | --- | --- |
 | `0x0000_0000` - `0x0000_7fff` | Boot ROM / firmware memory |
-| `0x0001_0000` - `0x0002_ffff` | SRAM |
+| `0x0002_0000` - `0x0003_ffff` | SRAM |
 | `0x1000_0000` - `0x1000_0fff` | opsched MMIO |
 | `0x2000_0000` - `0x2000_0fff` | Optional UART |
 | `0x3000_0000` - `0x3000_000f` | Simulation test status |
@@ -253,28 +276,32 @@ firmware and testbenches. `opsched` appears as a normal MMIO peripheral at
 
 中文：
 
-软件栈按运行位置和职责分层：`sw/cpu` 放运行在 CPU 上的软件，如 boot code、
-driver、firmware tests；`sw/npu` 放面向 NPU 的程序生成、算子描述、NPU 指令
-assembler 和图编译器；`sw/tools` 放工具链集成脚本和第三方工具说明。
+软件栈按运行位置和职责分层：`sw/soc_cpu` 放运行在 SoC CPU 上的软件，如
+boot code、NPU wrapper driver、runtime 和 firmware tests；`sw/npu_core`
+放 NPU core 消费或执行的程序/算子代码；`sw/tools` 放开发主机上运行的工具，
+例如 CPU toolchain 集成、NPU graph compiler、NPU assembler、simulator 和
+fixture generator。
 
 English:
 
 The software stack is organized by where code runs and what it controls:
-`sw/cpu` contains software that runs on the CPU, such as boot code, drivers, and
-firmware tests. `sw/npu` contains NPU-facing program generation, operator
-descriptions, the NPU instruction assembler, and the graph compiler. `sw/tools`
-contains toolchain integration scripts and third-party tool notes.
+`sw/soc_cpu` contains software that runs on the SoC CPU, such as boot code,
+NPU-wrapper drivers, runtime code, and firmware tests. `sw/npu_core` contains
+programs or operator code consumed by the NPU core. `sw/tools` contains
+development-host tools such as CPU toolchain integration, the NPU graph
+compiler, NPU assembler, simulators, and fixture generation.
 
 | Component | Status | Goal |
 | --- | --- | --- |
 | CPU compiler | Use external RISC-V GNU toolchain | Build bare-metal RV32 firmware |
-| CPU boot code | New under `sw/cpu/boot` | Set stack, initialize data if needed, call `main()` |
-| CPU linker script | New under `sw/cpu/linker` | Match ROM/SRAM address map |
-| NPU CPU-side driver | New under `sw/cpu/drivers/npu` | Hide opsched MMIO offsets and launch protocol |
-| Firmware tests | New under `sw/cpu/apps` | CPU-controlled matmul/softmax pass/fail tests |
-| NPU graph compiler | Existing Python code, target `sw/npu/compiler` | Lower graph JSON to NPU JSON micro-ops |
-| NPU uop assembler | Refactor from existing fixture path | Encode JSON micro-ops into 32-bit instruction words |
-| Golden model | Existing Python code, target `test/golden` or `sw/npu/golden` | Produce expected outputs for firmware and tests |
+| CPU boot code | New under `sw/soc_cpu/boot` when firmware starts | Set stack, initialize data if needed, call `main()` |
+| CPU linker script | Generated as `build/soc/soc_v0.ld` by `make soc-spec` | Match ROM/SRAM address map |
+| NPU CPU-side driver | New under `sw/soc_cpu/drivers/npu_wrapper` | Hide opsched MMIO offsets and launch protocol |
+| CPU runtime and firmware tests | New under `sw/soc_cpu/runtime` and `sw/soc_cpu/apps` | CPU-controlled matmul/softmax pass/fail tests |
+| NPU core programs/operators | New under `sw/npu_core` | Code or program descriptions consumed by the NPU core |
+| NPU graph compiler | Host tool under `sw/tools` | Lower graph JSON to NPU operator/uop streams |
+| NPU uop assembler | Host tool under `sw/tools` | Encode JSON micro-ops into 32-bit instruction words |
+| Golden model and simulator | Host verification tools under `sw/tools` or `test` | Produce expected outputs for firmware and tests |
 
 ### CPU Toolchain
 
@@ -292,6 +319,18 @@ target is bare-metal `rv32`, such as `rv32i/ilp32` or `rv32im/ilp32`. The exact
 command depends on the installed toolchain prefix, commonly
 `riscv32-unknown-elf-gcc` or an RV32-capable multilib
 `riscv64-unknown-elf-gcc`.
+
+Current implementation note:
+
+`make firmware-smoke` now prefers the real bare-metal firmware under
+`sw/soc_cpu` when `riscv-none-elf-gcc`, `riscv32-unknown-elf-gcc`, or
+`riscv64-unknown-elf-gcc` is installed. It compiles with `-march=rv32i
+-mabi=ilp32`, links with generated `build/soc/soc_v0.ld`, and converts the ELF
+to `build/firmware/soc_cpu_smoke.hex` for `boot_rom`.
+
+If no toolchain is present, the Makefile falls back to
+`sw/tools/firmware/emit_soc_cpu_smoke.py`, a temporary RV32I firmware emitter,
+so `cpu-soc-sim` remains usable while the toolchain is being installed.
 
 ### CPU Boot Code And Firmware
 
@@ -333,25 +372,28 @@ int npu_wait_done(uint32_t timeout_cycles);
 void npu_read_matmul_output(int32_t *c, uint32_t elems);
 ```
 
-### NPU Compiler, Operators, And Assembler
+### NPU Programs, Operators, Compiler, And Assembler
 
 中文：
 
-严格来说，NPU 上不运行传统软件；它执行的是由 compiler/assembler 生成的
-NPU program。`sw/npu` 中的“软件”指 NPU 软件栈：算子描述、graph lowering、
-micro-op assembler、program metadata 和后续 runtime artifact。当前
-`src/npu_phase0/compiler.py` 和 `src/npu_phase0/rtl_fixture.py` 里的
-`encode_program()` 应逐步迁移或重组到这个分层下。
+严格来说，当前 NPU core 执行的是由 host-side compiler/assembler 生成的
+NPU program。目录语义上，`sw/npu_core` 只放 NPU core 消费或执行的程序、
+算子描述或后续 NPU-side operator code；graph compiler、micro-op assembler、
+simulator 和 fixture generator 都属于开发主机工具，应放在 `sw/tools`。
+当前 `sw/tools/npu_phase0/compiler.py` 和 `sw/tools/npu_phase0/rtl_fixture.py`
+中的逻辑后续应拆分为更明确的 compiler、assembler、simulator 和 fixture
+模块。
 
 English:
 
-Strictly speaking, the NPU does not run traditional software. It executes NPU
-programs generated by a compiler/assembler. In `sw/npu`, "software" means the
-NPU software stack: operator descriptions, graph lowering, micro-op assembler,
-program metadata, and later runtime artifacts. The current
-`src/npu_phase0/compiler.py` and `encode_program()` in
-`src/npu_phase0/rtl_fixture.py` should gradually move or be reorganized under
-this layering.
+Strictly speaking, the current NPU core executes NPU programs generated by
+host-side compiler and assembler tools. In this repository, `sw/npu_core`
+should only contain programs, operator descriptions, or later NPU-side operator
+code consumed by the NPU core. The graph compiler, micro-op assembler,
+simulator, and fixture generator are development-host tools and belong under
+`sw/tools`. The current `sw/tools/npu_phase0/compiler.py` and
+`encode_program()` in `sw/tools/npu_phase0/rtl_fixture.py` should gradually be
+split into clearer compiler, assembler, simulator, and fixture modules.
 
 ## Planned Directory Structure
 
@@ -376,12 +418,15 @@ npu_arch_design/
   docs/
     soc_bringup.md                  # SoC plan
     fpga_bringup.md                 # FPGA-specific bring-up notes
-    overall_architecture.md         # architecture-level design notes
+    project_plan.md                 # active milestones and ownership
+    collaboration_journal.md        # collaboration decisions and context
+    work_rules.md                   # co-work rules
+    archive/                        # historical notes
 
   hw/
     soc/
       rtl/
-        soc_top.sv                  # CPU + bus + memories + opsched top
+        soc_top.sv                  # CPU-side bus + memories + wrapper top
         bus/
           simple_bus.sv             # local bus/address decoder
         mem/
@@ -392,53 +437,52 @@ npu_arch_design/
           uart_lite.sv              # optional UART
       tb/
         soc_tb.sv                   # full SoC simulation testbench
-      third_party/
-        picorv32/                   # CPU IP if vendored/submoduled
+      cpu/
+        third_party/                # CPU IP if vendored/submoduled
 
-    npu/
+    npu_wrapper/
       rtl/
-        npu_v0_top.sv               # NPU core RTL
-      opsched/
         npu_v0_opsched.sv           # CPU-visible NPU operator scheduler
         npu_v0_regs.svh             # register offsets/fields
       tb/
-        npu_v0_tb.sv                # NPU core tests
         npu_v0_opsched_tb.sv        # opsched wrapper tests
 
+    npu_core/
+      rtl/
+        npu_v0_top.sv               # NPU core RTL
+      tb/
+        npu_v0_tb.sv                # NPU core tests
+
   sw/
-    cpu/
+    soc_cpu/
       boot/
         start.S                     # reset/startup code
-      linker/
-        soc.ld                      # ROM/SRAM linker script
       drivers/
-        npu/
+        npu_wrapper/
           npu_v0.h                  # opsched register definitions
           npu_v0.c                  # bare-metal NPU driver
+      runtime/
+        npu_runtime.c               # CPU-side launch/runtime helpers
       apps/
         matmul_smoke/
           main.c                    # CPU-controlled NPU matmul test
         softmax_smoke/
           main.c                    # CPU-controlled NPU softmax test
 
-    npu/
-      compiler/
-        graph_compiler.py           # graph -> JSON micro-ops
-      assembler/
-        uop_assembler.py            # JSON micro-ops -> 32-bit uops
+    npu_core/
       operators/
-        matmul.py                   # operator lowering/model helpers
-        softmax.py                  # operator lowering/model helpers
-      runtime/
-        metadata.py                 # tensor/program metadata for CPU firmware
+        matmul/                     # NPU-core consumed operator programs/code
+        softmax/
+      programs/
+        smoke/                      # NPU-core program descriptions
 
     tools/
-      toolchains/
+      cpu_toolchain/
         riscv_gcc.md                # how to install/select RISC-V GCC
-      scripts/
-        build_firmware.sh           # optional toolchain wrapper
-      third_party/
-        README.md                   # policy for external tools
+      npu_compiler/                 # graph -> operator/uop stream
+      npu_assembler/                # uop stream -> 32-bit uops
+      npu_phase0/                   # current compatibility package
+      sim/                          # host-side simulators/golden helpers
 
   test/
     graphs/
@@ -447,6 +491,8 @@ npu_arch_design/
       matmul_softmax.json           # input tensor tests
     golden/
       golden.py                     # CPU golden/reference model
+    fixtures/
+      README.md                     # temporary fixture policy
     rtl/
       test_phase0.py                # RTL/compiler integration tests
     soc/
@@ -463,11 +509,11 @@ Directory ownership:
 | Directory | Contents |
 | --- | --- |
 | `hw/soc` | CPU subsystem, bus, memories, debug peripherals, SoC top |
-| `hw/npu/rtl` | NPU core RTL |
-| `hw/npu/opsched` | CPU-visible NPU operator scheduler and register interface |
-| `sw/cpu` | Software that runs on the embedded CPU |
-| `sw/npu` | NPU compiler, assembler, operator lowering, program metadata |
-| `sw/tools` | Toolchain integration scripts and third-party tool notes |
+| `hw/npu_wrapper` | CPU-visible NPU operator scheduler and register interface |
+| `hw/npu_core` | NPU core RTL |
+| `sw/soc_cpu` | Software that runs on the embedded CPU |
+| `sw/npu_core` | Programs or operator code consumed by the NPU core |
+| `sw/tools` | Development-host tools: compilers, assemblers, simulators, fixture generators |
 | `test` | Graph tests, golden models, RTL tests, SoC tests |
 | `build` | Generated artifacts only |
 
@@ -475,10 +521,10 @@ Migration note:
 
 | Current path | Future target |
 | --- | --- |
-| `hw/rtl/npu_v0_top.sv` | `hw/npu/rtl/npu_v0_top.sv` |
-| `hw/tb/npu_v0_tb.sv` | `hw/npu/tb/npu_v0_tb.sv` |
-| `src/npu_phase0/compiler.py` | `sw/npu/compiler/graph_compiler.py` or compatibility package wrapper |
-| `src/npu_phase0/rtl_fixture.py` | split into `sw/npu/assembler` and `test/rtl` fixture helpers |
+| `hw/rtl/npu_v0_top.sv` | `hw/npu_core/rtl/npu_v0_top.sv` |
+| `hw/tb/npu_v0_tb.sv` | `hw/npu_core/tb/npu_v0_tb.sv` |
+| `hw/npu/opsched` | `hw/npu_wrapper/rtl` |
+| `src/npu_phase0` | `sw/tools/npu_phase0` compatibility package |
 | `tests/graphs` | `test/graphs` |
 | `tests/test_phase0.py` | `test/rtl/test_phase0.py` |
 

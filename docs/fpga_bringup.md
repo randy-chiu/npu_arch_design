@@ -1,12 +1,14 @@
 # FPGA Bring-Up Notes
 
+[TOC]
+
 ## Current Status
 
 The current RTL is a real SystemVerilog hardware model for the Phase 0 NPU
 micro-op subset. It passes the local Icarus Verilog smoke test:
 
 ```text
-make rtl-sim
+make npu-core-sim
 ```
 
 It is not yet directly ready to burn onto an FPGA board as a complete bitstream.

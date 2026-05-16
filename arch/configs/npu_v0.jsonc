@@ -121,7 +121,7 @@
     "lanes": 8,
 
     // Simulator mode. RTL uses a small LUT approximation documented under
-    // hw/rtl/README.md.
+    // hw/npu_core/rtl/README.md.
     "exp_mode": "math_exp",
     "div_mode": "math_div"
   },
