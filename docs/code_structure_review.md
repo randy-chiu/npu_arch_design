@@ -4,6 +4,10 @@ This document is the current repository map for code review. It should stay
 aligned with real paths whenever module boundaries or verification entry points
 move.
 
+For the higher-level NPU/SoC architecture, compute model, and CPU/NPU launch
+protocol, start with `docs/architecture.md`. This file focuses on code
+structure and review details.
+
 [TOC]
 
 ## Top-Level Layout
@@ -104,16 +108,27 @@ Current host-side Python tooling remains in a compatibility package:
 sw/tools/npu_phase0/
 ```
 
+The compiler/assembler split has started. New code should prefer these
+ownership boundaries:
+
+```text
+sw/npu_core/operators/phase0_intrinsics.json  operator ISA/uop intent
+sw/tools/npu_compiler/phase0.py               graph/operator -> uop stream
+sw/tools/npu_assembler/phase0.py              uop stream -> 32-bit words
+sw/tools/npu_phase0/compiler.py               compatibility import wrapper
+sw/tools/npu_phase0/rtl_fixture.py            fixture generation using assembler
+```
+
 Important modules:
 
 | File | Responsibility |
 | --- | --- |
 | `arch.py` | Load and validate `arch/configs/npu_v0.jsonc` |
-| `compiler.py` | Lower graph JSON into Phase 0 JSON micro-ops |
+| `compiler.py` | Compatibility wrapper for `npu_compiler.phase0.compile_graph` |
 | `isa.py` | Validate micro-op legality |
 | `simulator.py` | Execute compiler-emitted micro-ops in a Python model |
 | `golden.py` | CPU reference models for supported ops |
-| `rtl_fixture.py` | Emit deterministic RTL/SoC fixture hex and SV includes |
+| `rtl_fixture.py` | Emit deterministic RTL/SoC fixture hex and SV includes using `npu_assembler.phase0` |
 | `cli.py` | Developer CLI entry points used by the Makefile |
 
 The package is intentionally under `sw/tools` because it runs on the
@@ -298,6 +313,73 @@ project does not model that flash-loader flow yet. Until that is added,
 `soc_cpu_smoke.hex` should be read as a full simulation firmware image loaded
 into ROM, not as a production boot ROM contents model.
 
+Current SRAM scope:
+
+```text
+0x0002_0000 - 0x0003_ffff
+```
+
+In the current firmware smoke test, SRAM is writable CPU data memory used for
+stack, local variables, descriptors, NPU input/output buffers, and NPU program
+buffers. Static code, generated test inputs, expected outputs, and generated
+program words are still linked into the boot ROM image as constants, but
+firmware copies the runtime tensors and program streams into SRAM before
+launching the NPU.
+
+The descriptor-driven model now used by `cpu-soc-sim` is a SoC ABI. Its source
+of truth is `arch/configs/soc_v0.jsonc` under `abi.npu_job_desc`, and
+`make soc-spec` emits both the C firmware view and the RTL wrapper view:
+
+```text
+build/soc/soc_v0_addr.h    // soc_npu_job_desc_t, op ids, field word offsets
+build/soc/soc_v0_addr.svh  // RTL localparams for the same ABI
+```
+
+The current generated C layout is:
+
+```c
+typedef struct {
+    uint32_t op_type;        // 1 = matmul, 2 = softmax
+    uint32_t program_addr;   // SRAM address of encoded NPU program stream
+    uint32_t program_words;
+    uint32_t input0_addr;    // SRAM address of A or X
+    uint32_t input0_words;
+    uint32_t input1_addr;    // SRAM address of B for matmul, 0 for softmax
+    uint32_t input1_words;
+    uint32_t output_addr;    // SRAM address of C or Y
+    uint32_t output_words;
+} soc_npu_job_desc_t;
+```
+
+`cpu-soc-sim` now uses this direction:
+
+1. CPU firmware generates or receives test input data and places tensor buffers
+   in SRAM.
+2. NPU compiler/assembler generates operator program streams. The target split
+   is that `sw/npu_core/operators` describes operator implementations against
+   the NPU core ISA/intrinsics, `sw/tools/npu_compiler` lowers graph/operators
+   to ISA/uop streams, and `sw/tools/npu_assembler` encodes those streams into
+   program words.
+3. CPU firmware places the NPU program stream, descriptor, input addresses,
+   output addresses, and lengths in SRAM.
+4. CPU writes only launch metadata to the NPU wrapper, such as descriptor base
+   address, then writes `CTRL.start`.
+5. NPU wrapper/core fetches tensor data and program words from SRAM by address
+   instead of requiring the CPU to copy every word through MMIO windows.
+
+The old Phase 0 smoke app did not do that. It directly copied tensor data and
+encoded program words into NPU wrapper windows:
+
+```c
+npu_write_words(NPU_OPSCHED_A_BASE, matmul_a, MATMUL_A_LEN);
+npu_write_words(NPU_OPSCHED_B_BASE, matmul_b, MATMUL_B_LEN);
+npu_write_words(NPU_OPSCHED_PROGRAM_BASE, matmul_program, MATMUL_PROGRAM_LEN);
+npu_start();
+```
+
+That direct MMIO-window preload remains available through `soc-sim` as a legacy
+wrapper debug path. `cpu-soc-sim` now uses the descriptor/SRAM path.
+
 ### CPU-Controlled Test Sequence
 
 The CPU-controlled simulation target is:
@@ -427,9 +509,11 @@ fail:
 
 The important pass/fail path is separate from the NPU wrapper:
 
+- CPU writes `0x1000_0020` (`DESC_ADDR`) with the SRAM address of the current
+  job descriptor.
 - CPU writes `0x1000_0000` (`CTRL.start`) to start NPU work.
 - CPU reads `0x1000_0004` (`STATUS.done`) to wait for NPU completion.
-- CPU reads output windows and compares against expected values.
+- CPU reads output buffers from SRAM and compares against expected values.
 - CPU writes `0x3000_0000` (`test_status`) with `1` for pass or `0xffff_ffff`
   for fail.
 - `soc_cpu_tb` does not read the NPU wrapper to decide pass/fail. It watches
@@ -437,7 +521,7 @@ The important pass/fail path is separate from the NPU wrapper:
 
 ### CPU Reset To NPU Launch Flow
 
-The reset, boot, instruction fetch, and first NPU-wrapper write can be read as:
+The reset, boot, instruction fetch, and first NPU-wrapper launch can be read as:
 
 ```mermaid
 flowchart TD
@@ -451,9 +535,12 @@ flowchart TD
     BUSFETCH["simple_bus<br/>decode 0x0000_0000"]
     ROM["boot_rom<br/>INIT_HEX = build/firmware/soc_cpu_smoke.hex"]
     INSN["RV32I instruction word"]
-    FWSTORE["firmware executes store<br/>to 0x1000_0000 CTRL"]
-    BUSMMIO["simple_bus<br/>decode 0x1000_0000"]
+    FWDESC["firmware writes descriptor<br/>to SRAM"]
+    FWDESCADDR["firmware stores descriptor pointer<br/>to 0x1000_0020 DESC_ADDR"]
+    FWSTORE["firmware stores 1<br/>to 0x1000_0000 CTRL"]
+    BUSMMIO["simple_bus<br/>decode NPU wrapper MMIO"]
     WRAP["npu_v0_opsched<br/>NPU wrapper"]
+    FETCH["wrapper fetches descriptor,<br/>program, and inputs from SRAM"]
     START["start_pulse"]
     CORE["npu_v0_top<br/>leaves ST_IDLE"]
 
@@ -462,27 +549,33 @@ flowchart TD
     TOP --> CPUWRAP --> CPU
     CPU --> RESETPC
     RESETPC --> BUSFETCH --> ROM --> INSN --> CPU
-    CPU --> FWSTORE --> BUSMMIO --> WRAP --> START --> CORE
+    CPU --> FWDESC
+    FWDESC --> FWDESCADDR --> BUSMMIO --> WRAP
+    CPU --> FWSTORE --> BUSMMIO
+    WRAP --> FETCH --> START --> CORE
 ```
 
 There is no explicit "start CPU" command in the testbench. Releasing reset is
 the start event. PicoRV32 then fetches from `0x0000_0000`; because
 `simple_bus` maps that range to `boot_rom`, the CPU receives the first word
-from `soc_cpu_smoke.hex`. Later firmware stores to `0x1000_0000` are decoded by
-`simple_bus` as NPU-wrapper MMIO writes.
+from `soc_cpu_smoke.hex`. Later firmware stores to `0x1000_0020` and
+`0x1000_0000` are decoded by `simple_bus` as NPU-wrapper MMIO writes.
 
 The firmware-controlled NPU launch sequence is:
 
-1. CPU stores matmul A/B values into the `opsched` A/B windows.
-2. CPU stores encoded matmul program words into the `opsched` program window.
-3. CPU stores `1` to `CTRL` at `0x1000_0000`.
-4. CPU repeatedly loads `STATUS` at `0x1000_0004` until bit 0 is set.
-5. CPU loads Matrix C from the `opsched` C window and compares it with expected
+1. CPU copies matmul A/B values and matmul program words into SRAM buffers.
+2. CPU fills an SRAM `npu_job_desc` with op type, program address, input
+   addresses, output address, and word counts.
+3. CPU writes the descriptor SRAM address to `DESC_ADDR` at `0x1000_0020`.
+4. CPU stores `1` to `CTRL` at `0x1000_0000`.
+5. NPU wrapper fetches the descriptor, program, and input data from SRAM, loads
+   the current NPU core host interface, and pulses core `start`.
+6. CPU repeatedly loads `STATUS` at `0x1000_0004` until bit 0 is set.
+7. CPU loads Matrix C from the SRAM output buffer and compares it with expected
    values embedded in the firmware image.
-6. CPU stores softmax X and softmax program words into the wrapper windows.
-7. CPU starts the NPU again and polls `STATUS.done`.
-8. CPU reads Softmax Y and compares low bytes with expected values.
-9. CPU stores `0x0000_0001` to the test-status register at `0x3000_0000` on
+8. CPU repeats the same descriptor flow for softmax.
+9. CPU reads Softmax Y from SRAM and compares low bytes with expected values.
+10. CPU stores `0x0000_0001` to the test-status register at `0x3000_0000` on
    success, or `0xffff_ffff` on failure.
 
 The `repeat (CPU_SOC_TIMEOUT_CYCLES)` loop in `soc_cpu_tb` is only a simulation
@@ -514,10 +607,13 @@ the timeout only bounds how long the testbench waits for pass/fail.
    boot ROM、SRAM、NPU wrapper 或 `test_status`。
 8. boot ROM 主要响应 CPU 取指读；SRAM 响应 stack/local data 等读写；
    NPU wrapper 响应 NPU MMIO；`test_status` 响应最终 pass/fail 写入。
-9. CPU firmware 写 `SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_CTRL` 时，wrapper 把它
-   转换成 NPU core 的一个 cycle `start_pulse`。
-10. CPU firmware 轮询 `STATUS.done`，读输出窗口，自己比较 expected data，
-    最后写 `test_status`。`soc_cpu_tb` 只看 `sim_status` 判定仿真结果。
+9. CPU firmware 先把输入、program 和 descriptor 放到 SRAM，再写
+   `SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_DESC_ADDR` 告诉 wrapper descriptor 在哪。
+10. CPU firmware 写 `SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_CTRL` 时，wrapper 进入
+    descriptor fetch 状态机，读取 SRAM 后把数据/program 加载到 NPU core 的
+    host interface，并转换成 NPU core 的一个 cycle `start_pulse`。
+11. CPU firmware 轮询 `STATUS.done`，读 SRAM output buffer，自己比较 expected
+    data，最后写 `test_status`。`soc_cpu_tb` 只看 `sim_status` 判定仿真结果。
 
 有两个容易误解的点：
 
@@ -713,9 +809,25 @@ boot ROM，`boot_rom` 用 word address 返回 `mem[0]`。这就是 firmware 被
 “放到 0 地址”的方式：不是 CPU 自己搬运，而是仿真 ROM 初始化时把 hex 加载到
 base address 为 0 的 ROM 模块里。
 
-#### 6. C Firmware: 普通 load/store 变成 MMIO
+#### 6. C Firmware: 普通 load/store 变成 SRAM 和 MMIO
 
-C driver 中的启动代码是：
+当前 C firmware 先把 input、program 和 descriptor 放在 SRAM。descriptor 类型
+来自 `build/soc/soc_v0_addr.h` 中生成的 `soc_npu_job_desc_t`，字段顺序和
+`op_type` id 不在 firmware 里手写。descriptor 的地址通过 `DESC_ADDR` 告诉
+NPU wrapper：
+
+```c
+npu_set_desc_addr(ptr32(&job_desc));
+npu_start();
+```
+
+`npu_set_desc_addr()` 本质是 store 到：
+
+```text
+SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_DESC_ADDR = 0x1000_0020
+```
+
+`npu_start()` 本质是 store 到：
 
 ```c
 *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_CTRL) = 1u;
@@ -740,7 +852,7 @@ bus_addr  = 12'h000
 bus_wdata = 0x0000_0001
 ```
 
-#### 7. `npu_v0_opsched.sv`: CPU 写 CTRL 变成 NPU core 的 start pulse
+#### 7. `npu_v0_opsched.sv`: CPU 写 DESC_ADDR/CTRL 后 wrapper fetch SRAM
 
 `hw/npu_wrapper/rtl/npu_v0_opsched.sv` include wrapper register map：
 
@@ -748,22 +860,48 @@ bus_wdata = 0x0000_0001
 `include "npu_v0_regs.svh"
 ```
 
-当 CPU 写 `CTRL` 且 bit 0 为 1 时：
+当 CPU 写 `DESC_ADDR` 时，wrapper 保存 descriptor 的 SRAM 地址：
 
 ```systemverilog
 if (bus_req && bus_we) begin
     case (bus_addr)
-        NPU_OPSCHED_CTRL: begin
-            if (bus_wdata[0]) begin
-                start_pulse <= 1'b1;
-                busy <= 1'b1;
-                done_latched <= 1'b0;
-                irq_status <= 1'b0;
-            end
+        NPU_OPSCHED_DESC_ADDR: begin
+            desc_addr <= bus_wdata;
         end
     endcase
 end
 ```
+
+当 CPU 写 `CTRL.start` 且 `desc_addr != 0` 时，wrapper 不再直接启动 core，而是
+进入 descriptor 状态机：
+
+```text
+DESC_READ
+  -> DESC_FETCH_PROGRAM
+  -> DESC_FETCH_INPUT0
+  -> DESC_FETCH_INPUT1    // only for matmul
+  -> DESC_START_CORE
+  -> DESC_WAIT_CORE
+  -> DESC_WRITE_OUTPUT
+  -> DESC_DONE
+```
+
+wrapper 通过第二个 SRAM 端口访问 SRAM：
+
+```systemverilog
+sram_req
+sram_we
+sram_addr
+sram_wdata
+sram_rdata
+```
+
+这个 SRAM 端口不走 CPU bus arbitration。它是当前最小实现里的一个简单双端口
+SRAM 模型，方便先验证 descriptor/fetch 交互协议。
+
+`DESC_FETCH_PROGRAM` 和 `DESC_FETCH_INPUT*` 阶段会把 SRAM 读出的 word 转换成
+现有 NPU core host writes。`DESC_START_CORE` 阶段产生一个 cycle 的
+`start_pulse`。
 
 `start_pulse` 连接到 NPU core：
 
@@ -775,11 +913,12 @@ npu_v0_top u_npu (
 );
 ```
 
-所以 CPU 的一次 MMIO store 最终变成 NPU core 看到一个 cycle 的 `start=1`。
+所以 CPU 的一次 MMIO store 现在触发的是 wrapper 的 fetch/load/start 流程，而
+不是直接把 CPU 写数据变成 core `start=1`。
 
-#### 8. Wrapper 如何把 CPU 写入的数据送进 NPU core
+#### 8. Wrapper 如何把 SRAM 数据送进 NPU core
 
-CPU 不直接访问 NPU core 内部数组，而是写 NPU wrapper 的窗口：
+legacy 路径里，CPU 仍然可以直接访问 NPU wrapper 的窗口：
 
 | CPU 地址 | Wrapper offset | 含义 |
 | --- | --- | --- |
@@ -807,6 +946,23 @@ npu_host_we =
 ```
 
 `npu_host_we/addr/wdata` 再连接到 `npu_v0_top` 的 host interface。
+
+descriptor 路径里，CPU 不再逐 word 写这些窗口。wrapper 从 SRAM fetch 后，
+自己驱动同一组 `npu_host_we/addr/wdata`：
+
+| Descriptor field | SRAM data | NPU core host address |
+| --- | --- | --- |
+| `program_addr/program_words` | encoded uops | `12'h400 + index` |
+| `input0_addr/input0_words` for matmul | Matrix A | `12'h000 + index` |
+| `input1_addr/input1_words` for matmul | Matrix B | `12'h100 + index` |
+| `input0_addr/input0_words` for softmax | Vector X | `12'h300 + index` |
+
+core done 后，wrapper 读取 NPU core output host window，再写回 SRAM：
+
+| Op | NPU core output host address | Descriptor output |
+| --- | --- | --- |
+| matmul | `12'h200 + index` | `output_addr + index * 4` |
+| softmax | `12'h380 + index` | `output_addr + index * 4` |
 
 #### 9. `npu_v0_top.sv`: NPU core 如何执行 program
 
@@ -846,10 +1002,12 @@ end
 
 #### 10. NPU done 如何回到 CPU
 
-`npu_v0_top.done` 连接回 wrapper 的 `npu_done`。wrapper 看到 done 后：
+`npu_v0_top.done` 连接回 wrapper 的 `npu_done`。legacy path 中 wrapper 看到
+done 后直接 latch done。descriptor path 中 wrapper 先进入 `DESC_WRITE_OUTPUT`
+把 NPU core output 写回 SRAM，最后在 `DESC_DONE` latch done：
 
 ```systemverilog
-if (npu_done) begin
+if (npu_done && desc_state == DESC_IDLE) begin
     busy <= 1'b0;
     done_latched <= 1'b1;
 end
@@ -1003,6 +1161,42 @@ The generated files used by the SoC smoke test are:
 | `build/rtl_fixture/softmax_expected_y.hex` | Expected Q0.8 output vector |
 | `build/rtl_fixture/npu_v0_tb_params.svh` | Testbench paths and output counts |
 | `build/rtl_fixture/npu_v0_spec.svh` | NPU core opcode/tensor/buffer constants |
+
+There are now two data/program movement paths.
+
+Legacy `soc-sim` wrapper-window preload model:
+
+```text
+CPU firmware or soc_tb
+  -> writes tensor words to NPU wrapper A/B/X windows
+  -> writes encoded program words to NPU wrapper PROGRAM window
+  -> writes CTRL.start
+  -> NPU core executes from its internal memories
+```
+
+Current `cpu-soc-sim` descriptor/SRAM model:
+
+```text
+CPU firmware
+  -> writes input tensors to SRAM
+  -> writes/points to NPU compiler-generated program stream in SRAM
+  -> writes descriptor address to NPU wrapper
+  -> writes CTRL.start
+NPU wrapper/core
+  -> fetches program and tensor data from SRAM
+  -> writes output tensor data back to SRAM
+CPU firmware
+  -> checks output tensor data from SRAM
+```
+
+This distinction matters for software ownership:
+
+| Artifact | Current smoke location | Target ownership |
+| --- | --- | --- |
+| Matmul A/B input data | Legacy `soc-sim` copies fixture words to wrapper windows | `cpu-soc-sim` firmware copies/generated data into SRAM |
+| Matmul C output data | Legacy wrapper output window | NPU wrapper writes output buffer in SRAM |
+| Operator program words | Legacy wrapper program window | `sw/npu_core/operators` owns operator/ISA intent, `sw/tools/npu_compiler` lowers to uops, `sw/tools/npu_assembler` encodes program words staged in SRAM |
+| Launch command | Legacy `CTRL.start` only | `DESC_ADDR` plus `CTRL.start` |
 
 ### SoC Testbench Sequence
 

@@ -10,6 +10,11 @@ module boot_rom #(
     output logic [31:0] rdata,
     output logic        ready
 );
+    // Current bring-up simplification:
+    // INIT_HEX points at the full smoke firmware image, not just a tiny boot
+    // stub. That image includes start.S, the CPU-side NPU driver, main(), and
+    // generated test data. Watch ROM size as software grows; a later SoC model
+    // should add a flash/loader flow instead of forcing all code into ROM.
     logic [31:0] mem [0:WORDS-1];
     logic [$clog2(WORDS)-1:0] word_addr;
 

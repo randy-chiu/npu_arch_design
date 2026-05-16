@@ -2,6 +2,11 @@
 
 [TOC]
 
+Status note:
+
+This is a future FPGA deployment note, not the current SoC architecture entry
+point. For the current architecture, use `docs/architecture.md`.
+
 ## Current Status
 
 The current RTL is a real SystemVerilog hardware model for the Phase 0 NPU

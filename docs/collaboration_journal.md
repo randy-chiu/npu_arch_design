@@ -6,6 +6,106 @@ This journal records the project process and AI collaboration flow. It avoids
 low-level patch history and focuses on goals, decisions, reasoning, and team
 workflow.
 
+## Current Project Snapshot
+
+本章节是重启 Codex 或重新打开项目时的恢复入口。开始继续工作前，优先阅读：
+
+1. 本章节；
+2. `README.md`；
+3. `docs/architecture.md`；
+4. `docs/code_structure_review.md`；
+5. `docs/bugfix_list.md`。
+
+### 当前目标
+
+当前项目目标是构建一个小型 NPU-centered SoC，用来做 NPU 架构验证闭环，而不是
+只验证单独 NPU core。最小闭环应该覆盖：
+
+- CPU 从 reset vector 取指启动；
+- CPU firmware 通过 NPU wrapper MMIO 控制 NPU；
+- tensor input/output、NPU program stream、job descriptor 放在 SRAM；
+- NPU wrapper 根据 descriptor 从 SRAM fetch program/input，驱动 NPU core；
+- NPU core 执行 `matmul`、`softmax`；
+- wrapper 写 output 回 SRAM；
+- CPU firmware 校验结果并写 `test_status`；
+- Python/unit test、NPU core RTL sim、SoC sim、CPU-controlled SoC sim 都能跑通。
+
+### 当前已完成
+
+- 顶层目录已按 SoC/NPU wrapper/NPU core/CPU/software/tools/test/docs 方向整理。
+- `docs/architecture.md` 是当前架构入口。
+- `docs/code_structure_review.md` 记录 RTL 和软件路径走读。
+- `arch/configs/soc_v0.jsonc` 是 SoC memory map、CPU reset/stack、boot image、
+  CPU/NPU descriptor ABI 的 source of truth。
+- `arch/configs/npu_wrapper_v0.jsonc` 是 NPU wrapper register map 的 source of
+  truth。
+- `arch/configs/npu_v0.jsonc` 是当前 NPU core ISA/uop/tensor/tile 配置的 source
+  of truth。
+- `make soc-spec` 生成 `soc_v0_addr.h`、`soc_v0_addr.svh`、`soc_v0.ld`。
+- `make npu-wrapper-spec` 生成 wrapper C/SV register headers。
+- PicoRV32 已接入 `soc_cpu_top`。
+- `cpu-soc-sim` 已经使用真实 C/ASM firmware 路径，firmware 会把 matmul/softmax
+  input、program、descriptor 放入 SRAM，然后通过 `DESC_ADDR` + `CTRL.start`
+  启动 wrapper。
+- NPU wrapper 已有 descriptor/SRAM fetch/writeback 状态机，同时保留 legacy
+  wrapper-window path 供 `soc-sim` 覆盖。
+- descriptor ABI 已经从 `arch/configs/soc_v0.jsonc` 单源生成，C 和 RTL 不再各自
+  手写字段顺序/op id。
+- operator/compiler/assembler 初步分层已落地：
+  `sw/npu_core/operators/phase0_intrinsics.json` 描述 matmul/softmax 的 Phase 0
+  ISA/uop intent，`sw/tools/npu_compiler/phase0.py` 负责 graph/operator lowering，
+  `sw/tools/npu_assembler/phase0.py` 负责 uop encoding，`sw/tools/npu_phase0`
+  保留为兼容入口。
+
+### 当前验证状态
+
+最近一次完整验证结果：
+
+```text
+make cpu-soc-sim: PASS
+make soc-sim: PASS
+make test: PASS, 8 tests
+```
+
+本地 RISC-V GCC 曾使用：
+
+```text
+thirdparty/xpack-riscv-none-elf-gcc-15.2.0-1/bin/riscv-none-elf-gcc
+```
+
+如果 shell 没有继承 `.bashrc`，运行 CPU firmware 相关目标前需要确保该工具链在
+`PATH` 中。
+
+### 当前设计约束
+
+- 当前 boot ROM 是仿真简化模型，里面放完整 firmware image，不是最终真实 SoC
+  的小 bootloader 模型。
+- SRAM 当前承担 stack、locals、descriptor、runtime tensor/program buffers。
+- NPU wrapper 的 SRAM 访问是简单第二端口模型，不是完整 DMA/crossbar。
+- NPU core 内部仍使用 host-loadable memories，不是真正 streaming datapath。
+- 当前 matmul/softmax 固定在 Phase 0 小规模 ISA/uop 模型。
+- `soc-sim` 是 legacy wrapper-window path；`cpu-soc-sim` 是当前更重要的
+  firmware descriptor/SRAM path。
+
+### 下一步计划
+
+短期下一步：
+
+1. 继续完善 operator template schema，增加字段校验，避免 template 写错后到
+   RTL/firmware 阶段才暴露。
+2. 把 `npu_phase0` compatibility package 中剩余的 Phase 0 专用职责逐步迁到
+   `npu_compiler`、`npu_assembler`、simulator/golden 等更清晰目录。
+3. 让固定 operator program artifact 在合适时进入 `sw/npu_core/programs`，区分
+   “operator intent/source”和“已编码 program artifact”。
+4. descriptor 增加错误码、状态码、更清晰的 job validation。
+
+中期计划：
+
+- wrapper SRAM fetch 从固定 op 特判逐步演进为更通用的 program/data movement。
+- 引入更真实的 NPU core memory/streaming 接口，减少 wrapper 对 core 内部 host
+  window 的依赖。
+- 加 command queue、IRQ、performance counter、timeout。
+
 ## Session 1: Project Framing
 
 The project started with a broad goal: build an NPU architecture design and
@@ -1003,3 +1103,241 @@ Clarifications added to `docs/code_structure_review.md`:
 
 `sw/soc_cpu/firmware_smoke/README.md` was also updated to clarify the current
 boot ROM image scope.
+
+## Session 24: Clarify ROM/SRAM Roles And Future NPU Fetch Model
+
+The user asked to add comments around boot ROM and SRAM usage and pointed out
+that the current smoke firmware writes matmul input tensors and NPU program
+words directly into NPU wrapper windows. The user expects the future model to
+place operator inputs/outputs and NPU program streams in SRAM, then let the NPU
+wrapper/core fetch them by address.
+
+Clarifications added:
+
+- `arch/configs/soc_v0.jsonc` now describes current boot ROM as a full
+  simulation firmware image location, not only a tiny boot stub.
+- `hw/soc/rtl/mem/boot_rom.sv` comments explain that current `INIT_HEX`
+  includes startup code, NPU driver, `main()`, and generated test data. ROM
+  size growth must be watched.
+- `hw/soc/rtl/mem/simple_sram.sv` comments explain that current SRAM is writable
+  CPU data memory for stack and locals, and future tensor/program
+  buffers/descriptors should live there.
+- `sw/soc_cpu/apps/soc_cpu_smoke/main.c` comments mark the direct wrapper-window
+  preload as a Phase 0 bring-up shortcut.
+- `docs/code_structure_review.md`, `docs/soc_bringup.md`, and
+  `sw/soc_cpu/firmware_smoke/README.md` now document the target address-based
+  flow:
+
+```text
+CPU firmware writes tensor buffers/program descriptors to SRAM
+  -> CPU writes descriptor/program address to NPU wrapper
+  -> CPU writes CTRL.start
+  -> NPU wrapper/core fetches data and program words from SRAM
+  -> NPU writes outputs back to SRAM
+  -> CPU checks SRAM outputs
+```
+
+Ownership split recorded:
+
+- CPU firmware/tests own runtime input generation and SRAM buffer allocation.
+- NPU compiler/assembler owns operator instruction stream generation.
+- `sw/npu_core/programs` and `sw/npu_core/operators` hold NPU-consumed program
+  descriptions or operator code when checked in as design source.
+- `sw/tools` holds host-side compiler, assembler, simulator, and fixture
+  generators.
+
+## Session 25: Implement Descriptor/SRAM CPU-NPU Launch Path
+
+The user approved starting the descriptor/SRAM interaction cleanup before
+expanding the NPU hardware architecture.
+
+Implemented a minimal descriptor-driven launch path while retaining the legacy
+wrapper-window path:
+
+- Added `DESC_ADDR` at NPU wrapper offset `0x020` in
+  `arch/configs/npu_wrapper_v0.jsonc`.
+- Updated generated/fallback wrapper register headers to expose
+  `NPU_OPSCHED_DESC_ADDR`.
+- Extended `simple_sram.sv` with a second NPU port. The CPU port remains used
+  through `simple_bus`; the wrapper uses the second port to fetch descriptors,
+  programs, and input data and to write output data.
+- Wired the NPU SRAM port through `soc_cpu_top.sv`.
+- Updated `npu_v0_opsched.sv` with a descriptor FSM:
+
+```text
+DESC_READ
+  -> DESC_FETCH_PROGRAM
+  -> DESC_FETCH_INPUT0
+  -> DESC_FETCH_INPUT1
+  -> DESC_START_CORE
+  -> DESC_WAIT_CORE
+  -> DESC_WRITE_OUTPUT
+  -> DESC_DONE
+```
+
+The descriptor layout used by firmware is:
+
+```c
+struct npu_job_desc {
+    uint32_t op_type;        // 1 = matmul, 2 = softmax
+    uint32_t program_addr;
+    uint32_t program_words;
+    uint32_t input0_addr;
+    uint32_t input0_words;
+    uint32_t input1_addr;
+    uint32_t input1_words;
+    uint32_t output_addr;
+    uint32_t output_words;
+};
+```
+
+Updated `sw/soc_cpu/apps/soc_cpu_smoke/main.c` so the GCC-built firmware now:
+
+1. copies matmul inputs and program stream to SRAM buffers;
+2. fills a descriptor in SRAM;
+3. writes `DESC_ADDR`;
+4. writes `CTRL.start`;
+5. waits for `STATUS.done`;
+6. checks output buffers in SRAM;
+7. repeats the flow for softmax.
+
+The direct-bus `soc-sim` still uses the legacy wrapper-window preload path, so
+that path remains covered.
+
+Validation result:
+
+- `make cpu-soc-sim`: PASS through the new descriptor/SRAM path.
+- `make soc-sim`: PASS through the legacy wrapper-window path.
+
+## Session 26: Add Current Architecture Document And Docs Map
+
+The user asked for a clearer architecture document that describes the NPU basic
+framework, compute logic, and CPU software interaction logic. The user also
+noted that some docs are not updated often and asked whether they are still
+useful.
+
+Added:
+
+```text
+docs/architecture.md
+docs/README.md
+```
+
+`docs/architecture.md` is now the current architecture entry point. It covers:
+
+- current SoC framework;
+- memory map and generated metadata;
+- NPU wrapper register model;
+- descriptor/SRAM CPU-NPU launch protocol;
+- NPU core internal compute/storage model;
+- matmul and softmax execution logic;
+- compiler/program ownership boundaries;
+- verification loops;
+- current limitations.
+
+`docs/README.md` classifies docs into:
+
+- current entry points;
+- planning and bring-up notes;
+- process notes;
+- archived notes.
+
+README and existing docs were updated so the main reading order is:
+
+```text
+docs/architecture.md
+docs/code_structure_review.md
+docs/work_rules.md
+docs/collaboration_journal.md
+docs/bugfix_list.md
+```
+
+`docs/project_plan.md`, `docs/soc_bringup.md`, and `docs/fpga_bringup.md` are
+still useful, but they are now clearly marked as planning/bring-up/future notes
+rather than the current architecture source.
+
+## Session 27: Move NPU Job Descriptor ABI To SoC Spec
+
+The user pointed out that `npu_job_desc` is produced by CPU firmware and
+consumed by the NPU wrapper, so defining the format separately in C and RTL is
+unsafe. The user also clarified the desired operator/compiler layering:
+
+- `sw/npu_core/operators` should describe matmul, softmax, and later operators
+  against the NPU core ISA/intrinsics.
+- `sw/tools/npu_compiler` should lower graph/operators to NPU ISA/uop streams.
+- `sw/tools/npu_assembler` should encode those streams into program words.
+- CPU firmware should only stage data/program/descriptor into SRAM and launch
+  the wrapper.
+
+Implemented the descriptor ABI source-of-truth cleanup:
+
+- Added `abi.npu_job_desc` to `arch/configs/soc_v0.jsonc`.
+- Extended `sw/tools/soc/emit_soc_spec.py` to generate descriptor field word
+  offsets, op ids, and C typedef `soc_npu_job_desc_t`.
+- Generated C header content is guarded with `__ASSEMBLER__` so `start.S` can
+  still include address constants without seeing C typedefs.
+- Updated `sw/soc_cpu/apps/soc_cpu_smoke/main.c` to use
+  `soc_npu_job_desc_t` and `SOC_NPU_JOB_OP_*` from the generated SoC header.
+- Updated `hw/npu_wrapper/rtl/npu_v0_opsched.sv` to use descriptor field
+  offsets and op ids from the generated SoC SVH.
+- Updated architecture/review docs to describe descriptor ABI ownership and the
+  target operator/compiler layering.
+
+Validation:
+
+- `make cpu-soc-sim`: PASS after fixing the C header assembly guard.
+
+## Session 28: Rework Top-Level README As Project Entry
+
+The user asked for the repository root README to expose the important entry
+points immediately, so new readers can find architecture, specs, implementation
+review, and verification flow from the top level.
+
+Updated `README.md` to make it a project entry page:
+
+- Added a "Start Here" table linking to current architecture, code structure
+  review, docs map, work rules, collaboration journal, and bugfix list.
+- Added a "Source-Of-Truth Specs" section for:
+  - `arch/configs/npu_v0.jsonc`
+  - `arch/configs/npu_wrapper_v0.jsonc`
+  - `arch/configs/soc_v0.jsonc`
+- Added the generated metadata outputs users should expect under `build/`.
+- Added the main implementation path map for `hw/`, `sw/`, `test/`, and `docs/`.
+- Reworked verification quick start around `make validate-arch`, `make demo`,
+  `make npu-core-sim`, `make soc-sim`, `make cpu-soc-sim`, and `make test`.
+- Added a short current end-to-end flow showing graph/input fixture through
+  firmware descriptor launch, wrapper SRAM fetch, NPU core execution, SRAM
+  output writeback, and firmware `test_status`.
+
+## Session 29: Add Restart Snapshot And Begin Compiler/Assembler Split
+
+The user asked for project goal, current state, and next plan to be kept in one
+place so future Codex sessions can recover context after closing and reopening
+the project.
+
+Added `Current Project Snapshot` near the top of this journal. It now records:
+
+- current project goal;
+- current implemented state;
+- latest validation status;
+- active design constraints;
+- short-term and mid-term next plans.
+
+Also started the second software layering cleanup:
+
+- Added `sw/npu_core/operators/phase0_intrinsics.json` as the Phase 0 operator
+  intent/template source for matmul and softmax.
+- Added `sw/tools/npu_compiler/phase0.py` for graph/operator-to-uop lowering.
+- Added `sw/tools/npu_assembler/phase0.py` for uop-to-32-bit-word encoding.
+- Kept `sw/tools/npu_phase0/compiler.py` as a compatibility wrapper.
+- Updated `sw/tools/npu_phase0/rtl_fixture.py` to use `npu_assembler.phase0`
+  for program encoding.
+- Added a unit test that checks the new compiler/assembler path matches the old
+  compatibility path.
+- Updated architecture/review/operator/compiler/assembler docs to reflect the
+  new ownership split.
+
+Validation:
+
+- `make demo`: PASS through the compatibility CLI with the new compiler path.
+- `make test`: PASS, 8 tests.

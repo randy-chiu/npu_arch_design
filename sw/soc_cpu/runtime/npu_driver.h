@@ -6,6 +6,7 @@
 
 void npu_write_words(uint32_t offset, const uint32_t *values, size_t len);
 void npu_read_words(uint32_t offset, uint32_t *values, size_t len);
+void npu_set_desc_addr(uint32_t addr);
 void npu_start(void);
 void npu_wait_done(void);
 uint32_t npu_status(void);

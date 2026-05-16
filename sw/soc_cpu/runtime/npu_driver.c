@@ -24,6 +24,11 @@ void npu_read_words(uint32_t offset, uint32_t *values, size_t len)
     }
 }
 
+void npu_set_desc_addr(uint32_t addr)
+{
+    *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_DESC_ADDR) = addr;
+}
+
 void npu_start(void)
 {
     *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_CTRL) = 1u;

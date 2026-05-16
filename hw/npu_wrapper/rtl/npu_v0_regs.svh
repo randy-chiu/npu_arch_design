@@ -3,6 +3,7 @@ localparam int NPU_OPSCHED_STATUS      = 12'h004;
 localparam int NPU_OPSCHED_VERSION     = 12'h008;
 localparam int NPU_OPSCHED_IRQ_ENABLE  = 12'h00c;
 localparam int NPU_OPSCHED_IRQ_STATUS  = 12'h010;
+localparam int NPU_OPSCHED_DESC_ADDR   = 12'h020;
 
 localparam int NPU_OPSCHED_A_BASE      = 12'h100;
 localparam int NPU_OPSCHED_B_BASE      = 12'h200;

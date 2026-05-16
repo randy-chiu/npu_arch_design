@@ -158,3 +158,89 @@ size_bytes is a power of two
 
 这样非法 memory map 会在 `make soc-spec` 生成阶段失败，而不是等到 firmware
 simulation 时才暴露。
+
+## Bug 2: 生成的 SoC C Header 被汇编文件 Include 后编译失败
+
+### 背景
+
+在把 `npu_job_desc` descriptor ABI 收敛到 `arch/configs/soc_v0.jsonc` 后，
+`make soc-spec` 会生成：
+
+```text
+build/soc/soc_v0_addr.h
+build/soc/soc_v0_addr.svh
+```
+
+C firmware 需要从 `soc_v0_addr.h` 获取 `soc_npu_job_desc_t`、descriptor 字段
+offset 和 `SOC_NPU_JOB_OP_*`。同时 `sw/soc_cpu/boot/start.S` 也 include 这个
+header，用里面的 reset/stack 地址常量。
+
+### 现象
+
+第一次运行：
+
+```text
+make cpu-soc-sim
+```
+
+GCC 在编译 `start.S` 时失败，报错类似：
+
+```text
+Error: unrecognized opcode `typedef signed char int8_t'
+Error: unrecognized opcode `typedef struct{'
+```
+
+### 根因
+
+`.S` 文件会经过 C preprocessor，所以它可以 include `#define` 常量。但
+preprocess 后的结果仍然要交给 assembler。生成的 `soc_v0_addr.h` 新增了：
+
+```c
+#include <stdint.h>
+typedef struct {
+    uint32_t op_type;
+    ...
+} soc_npu_job_desc_t;
+```
+
+这些 C typedef 对 assembler 来说不是合法汇编语法，因此被当成非法 opcode。
+
+### 修复
+
+生成 header 时把 C-only 内容包在 `__ASSEMBLER__` guard 里：
+
+```c
+#ifndef __ASSEMBLER__
+#include <stdint.h>
+#endif
+
+...
+
+#ifndef __ASSEMBLER__
+typedef struct {
+    ...
+} soc_npu_job_desc_t;
+#endif
+```
+
+这样：
+
+- `start.S` 仍然能看到 SoC 地址和 stack/reset 常量；
+- C firmware 能看到 `soc_npu_job_desc_t`；
+- descriptor ABI 仍然只从 SoC spec 生成一份。
+
+### 验证
+
+修复后验证结果：
+
+```text
+make cpu-soc-sim: PASS
+make soc-sim: PASS
+make test: PASS, 7 tests
+```
+
+### 后续规则
+
+任何可能被 `.S` 文件 include 的 generated header，只能无条件暴露 assembler
+可接受的 `#define`。C typedef、inline function、`stdint.h` include 等内容都
+必须放在 `#ifndef __ASSEMBLER__` 保护下。

@@ -90,7 +90,13 @@ module soc_top (
         .addr(sram_addr),
         .wdata(sram_wdata),
         .rdata(sram_rdata),
-        .ready(sram_ready)
+        .ready(sram_ready),
+        .npu_req(1'b0),
+        .npu_we(1'b0),
+        .npu_addr(32'h0000_0000),
+        .npu_wdata(32'h0000_0000),
+        .npu_rdata(),
+        .npu_ready()
     );
 
     npu_v0_opsched u_npu_wrapper (
@@ -101,7 +107,13 @@ module soc_top (
         .bus_addr(npu_wrapper_addr),
         .bus_wdata(npu_wrapper_wdata),
         .bus_rdata(npu_wrapper_rdata),
-        .bus_ready(npu_wrapper_ready)
+        .bus_ready(npu_wrapper_ready),
+        .sram_req(),
+        .sram_we(),
+        .sram_addr(),
+        .sram_wdata(),
+        .sram_rdata(32'h0000_0000),
+        .sram_ready(1'b0)
     );
 
     test_status u_test_status (

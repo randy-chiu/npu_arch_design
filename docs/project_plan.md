@@ -2,6 +2,11 @@
 
 [TOC]
 
+Status note:
+
+This document is for milestones and ownership. For the current NPU SoC
+architecture, use `docs/architecture.md`.
+
 This document is the current planning entry point. It combines milestone
 planning, ownership boundaries, and change rules that were previously split
 between the roadmap and agent plan.

@@ -1,0 +1,29 @@
+{
+  "name": "phase0_intrinsics",
+  "description": "Phase 0 operator lowering templates expressed in the current NPU core ISA/uop vocabulary.",
+  "operators": {
+    "matmul": {
+      "inputs": ["a", "b"],
+      "outputs": ["out"],
+      "instructions": [
+        {"op": "LOAD", "tensor": "$a", "buffer": "spad_a"},
+        {"op": "LOAD", "tensor": "$b", "buffer": "spad_b"},
+        {"op": "MATMUL", "a": "spad_a", "b": "spad_b", "out": "acc_$out", "shape": "$shape"},
+        {"op": "STORE", "tensor": "$out", "buffer": "acc_$out"}
+      ]
+    },
+    "softmax": {
+      "inputs": ["x"],
+      "outputs": ["out"],
+      "instructions": [
+        {"op": "LOAD", "tensor": "$x", "buffer": "spad_softmax"},
+        {"op": "VREDMAX", "src": "spad_softmax", "dst": "scalar_max"},
+        {"op": "VSUB", "src": "spad_softmax", "dst": "spad_softmax", "scalar": "scalar_max"},
+        {"op": "VEXP", "src": "spad_softmax", "dst": "spad_softmax"},
+        {"op": "VREDSUM", "src": "spad_softmax", "dst": "scalar_sum"},
+        {"op": "VDIV", "src": "spad_softmax", "dst": "spad_softmax", "scalar": "scalar_sum"},
+        {"op": "STORE", "tensor": "$out", "buffer": "spad_softmax"}
+      ]
+    }
+  }
+}

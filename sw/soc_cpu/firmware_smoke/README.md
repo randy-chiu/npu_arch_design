@@ -46,6 +46,17 @@ If no RISC-V GCC is installed, `make firmware-smoke` falls back to
 `sw/tools/firmware/emit_soc_cpu_smoke.py`. In that mode it also emits
 `build/firmware/soc_cpu_smoke.S`, a generated RV32I assembly listing.
 
-Both paths write NPU wrapper MMIO windows, start the NPU by writing
-`CTRL.start`, poll `STATUS.done`, check outputs, and write the simulation
-test-status register.
+The GCC-built firmware uses the descriptor/SRAM launch path:
+
+```text
+copy input tensors and NPU programs to SRAM
+fill npu_job_desc in SRAM
+write DESC_ADDR
+write CTRL.start
+poll STATUS.done
+check output buffers in SRAM
+write test_status
+```
+
+The old direct MMIO-window preload path is kept for the direct-bus `soc-sim`
+legacy wrapper smoke test.

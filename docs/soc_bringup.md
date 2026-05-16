@@ -2,6 +2,12 @@
 
 [TOC]
 
+Status note:
+
+This is a bring-up planning and historical design note. The current architecture
+entry point is `docs/architecture.md`; detailed code paths live in
+`docs/code_structure_review.md`.
+
 ## Table Of Contents
 
 - [Goal](#goal)
@@ -227,6 +233,7 @@ Initial register map:
 | `0x008` | `VERSION` | RO | fixed hardware version |
 | `0x00c` | `IRQ_ENABLE` | RW | reserved for later interrupt support |
 | `0x010` | `IRQ_STATUS` | RW1C | reserved for later interrupt status |
+| `0x020` | `DESC_ADDR` | RW | SRAM address of descriptor for descriptor-driven launch |
 
 Initial NPU windows:
 
@@ -394,6 +401,27 @@ simulator, and fixture generator are development-host tools and belong under
 `sw/tools`. The current `sw/tools/npu_phase0/compiler.py` and
 `encode_program()` in `sw/tools/npu_phase0/rtl_fixture.py` should gradually be
 split into clearer compiler, assembler, simulator, and fixture modules.
+
+Current smoke status:
+
+The CPU firmware smoke test now uses the descriptor/SRAM launch path. Firmware
+places runtime tensor buffers, output buffers, descriptors, and NPU program
+streams in SRAM. It launches the NPU by writing `DESC_ADDR` and then
+`CTRL.start`; the wrapper/core fetches data and program words from SRAM and
+writes outputs back to SRAM.
+
+The old direct wrapper-window preload path is retained for the direct-bus
+`soc-sim` legacy wrapper smoke test.
+
+The ownership split should be:
+
+- CPU firmware/tests generate or load runtime input data and allocate SRAM
+  buffers.
+- NPU compiler/assembler generates stable operator instruction streams.
+- `sw/npu_core/programs` and `sw/npu_core/operators` hold NPU-consumed program
+  descriptions or operator code when those artifacts become design source.
+- `sw/tools` keeps host-side compiler, assembler, simulator, and fixture
+  generation logic.
 
 ## Planned Directory Structure
 

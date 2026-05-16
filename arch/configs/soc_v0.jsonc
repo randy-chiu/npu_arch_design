@@ -23,12 +23,12 @@
     "boot_rom": {
       "base": 0,
       "size_bytes": 32768,
-      "description": "CPU reset and firmware memory"
+      "description": "Simulation boot ROM. Current bring-up stores the full firmware image here, including start code, driver, main, and generated test data. Watch size growth; a later flash/loader flow should avoid requiring all software to fit in ROM."
     },
     "sram": {
       "base": 131072,
       "size_bytes": 131072,
-      "description": "CPU data, stack, and temporary memory"
+      "description": "CPU writable data memory for stack, locals, and future runtime buffers/descriptors. Current smoke keeps static firmware/test data in boot ROM; future NPU data/program buffers should be staged here for NPU fetch."
     },
     "npu_wrapper": {
       "base": 268435456,
@@ -49,5 +49,26 @@
 
   "boot": {
     "rom_init_hex": "build/firmware/soc_cpu_smoke.hex"
+  },
+
+  "abi": {
+    "npu_job_desc": {
+      "description": "CPU firmware produces this descriptor in SRAM. The NPU wrapper consumes it through DESC_ADDR, fetches program/input buffers, runs the NPU core, and writes output buffers back to SRAM.",
+      "fields": [
+        {"name": "op_type", "word": 0},
+        {"name": "program_addr", "word": 1},
+        {"name": "program_words", "word": 2},
+        {"name": "input0_addr", "word": 3},
+        {"name": "input0_words", "word": 4},
+        {"name": "input1_addr", "word": 5},
+        {"name": "input1_words", "word": 6},
+        {"name": "output_addr", "word": 7},
+        {"name": "output_words", "word": 8}
+      ],
+      "op_types": {
+        "matmul": 1,
+        "softmax": 2
+      }
+    }
   }
 }

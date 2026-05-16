@@ -4,6 +4,7 @@ module soc_cpu_top (
     output logic [31:0] sim_status,
     output logic        cpu_trap
 );
+    `include "soc_v0_addr.svh"
     logic        cpu_req;
     logic        cpu_we;
     logic [31:0] cpu_addr;
@@ -31,6 +32,13 @@ module soc_cpu_top (
     logic [31:0] npu_wrapper_wdata;
     logic [31:0] npu_wrapper_rdata;
     logic        npu_wrapper_ready;
+
+    logic        npu_sram_req;
+    logic        npu_sram_we;
+    logic [31:0] npu_sram_addr;
+    logic [31:0] npu_sram_wdata;
+    logic [31:0] npu_sram_rdata;
+    logic        npu_sram_ready;
 
     logic        test_req;
     logic        test_we;
@@ -104,7 +112,13 @@ module soc_cpu_top (
         .addr(sram_addr),
         .wdata(sram_wdata),
         .rdata(sram_rdata),
-        .ready(sram_ready)
+        .ready(sram_ready),
+        .npu_req(npu_sram_req),
+        .npu_we(npu_sram_we),
+        .npu_addr(npu_sram_addr - SOC_SRAM_BASE),
+        .npu_wdata(npu_sram_wdata),
+        .npu_rdata(npu_sram_rdata),
+        .npu_ready(npu_sram_ready)
     );
 
     npu_v0_opsched u_npu_wrapper (
@@ -115,7 +129,13 @@ module soc_cpu_top (
         .bus_addr(npu_wrapper_addr),
         .bus_wdata(npu_wrapper_wdata),
         .bus_rdata(npu_wrapper_rdata),
-        .bus_ready(npu_wrapper_ready)
+        .bus_ready(npu_wrapper_ready),
+        .sram_req(npu_sram_req),
+        .sram_we(npu_sram_we),
+        .sram_addr(npu_sram_addr),
+        .sram_wdata(npu_sram_wdata),
+        .sram_rdata(npu_sram_rdata),
+        .sram_ready(npu_sram_ready)
     );
 
     test_status u_test_status (

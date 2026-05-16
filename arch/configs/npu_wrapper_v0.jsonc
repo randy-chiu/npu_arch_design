@@ -31,6 +31,10 @@
     "irq_status": {
       "offset": 16,
       "description": "bit 0 interrupt pending, write 1 to clear"
+    },
+    "desc_addr": {
+      "offset": 32,
+      "description": "SRAM address of npu_job_desc for descriptor-driven launch"
     }
   },
 
