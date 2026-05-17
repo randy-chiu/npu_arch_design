@@ -63,6 +63,21 @@ module npu_v0_opsched (
     logic        desc_host_we;
     logic [11:0] desc_host_addr;
     logic [31:0] desc_host_wdata;
+    logic        mover_start;
+    logic        mover_store;
+    logic [31:0] mover_sram_base;
+    logic [11:0] mover_host_base;
+    logic [7:0]  mover_words;
+    logic        mover_busy;
+    logic        mover_complete;
+    logic [7:0]  mover_index;
+    logic        mover_sram_req;
+    logic        mover_sram_we;
+    logic [31:0] mover_sram_addr;
+    logic [31:0] mover_sram_wdata;
+    logic        mover_host_we;
+    logic [11:0] mover_host_addr;
+    logic [31:0] mover_host_wdata;
 
     assign bus_ready = bus_req;
     assign npu_host_addr = (desc_state == DESC_IDLE) ? legacy_host_addr : desc_host_addr;
@@ -78,6 +93,28 @@ module npu_v0_opsched (
         .host_we(npu_host_we),
         .host_addr(npu_host_addr),
         .host_wdata(npu_host_wdata),
+        .host_rdata(npu_host_rdata)
+    );
+
+    npu_v0_data_mover u_data_mover (
+        .clk(clk),
+        .rst_n(rst_n),
+        .start(mover_start),
+        .direction_store(mover_store),
+        .sram_base_addr(mover_sram_base),
+        .host_base_addr(mover_host_base),
+        .words(mover_words),
+        .busy(mover_busy),
+        .complete(mover_complete),
+        .index(mover_index),
+        .sram_req(mover_sram_req),
+        .sram_we(mover_sram_we),
+        .sram_addr(mover_sram_addr),
+        .sram_wdata(mover_sram_wdata),
+        .sram_rdata(sram_rdata),
+        .host_we(mover_host_we),
+        .host_addr(mover_host_addr),
+        .host_wdata(mover_host_wdata),
         .host_rdata(npu_host_rdata)
     );
 
@@ -117,6 +154,11 @@ module npu_v0_opsched (
         desc_host_we = 1'b0;
         desc_host_addr = 12'h000;
         desc_host_wdata = 32'h0000_0000;
+        mover_start = 1'b0;
+        mover_store = 1'b0;
+        mover_sram_base = 32'h0000_0000;
+        mover_host_base = 12'h000;
+        mover_words = 8'h00;
 
         case (desc_state)
             DESC_READ: begin
@@ -124,41 +166,65 @@ module npu_v0_opsched (
                 sram_addr = desc_addr + {26'h0, desc_idx, 2'b00};
             end
             DESC_FETCH_PROGRAM: begin
-                sram_req = 1'b1;
-                sram_addr = job_program_addr + {22'h0, transfer_idx, 2'b00};
-                desc_host_we = 1'b1;
-                desc_host_addr = 12'h400 + transfer_idx[3:0];
-                desc_host_wdata = sram_rdata;
+                mover_start = !mover_busy;
+                mover_sram_base = job_program_addr;
+                mover_host_base = 12'h400;
+                mover_words = job_program_words[7:0];
+                sram_req = mover_sram_req;
+                sram_we = mover_sram_we;
+                sram_addr = mover_sram_addr;
+                sram_wdata = mover_sram_wdata;
+                desc_host_we = mover_host_we;
+                desc_host_addr = mover_host_addr;
+                desc_host_wdata = mover_host_wdata;
             end
             DESC_FETCH_INPUT0: begin
-                sram_req = 1'b1;
-                sram_addr = job_input0_addr + {22'h0, transfer_idx, 2'b00};
-                desc_host_we = 1'b1;
+                mover_start = !mover_busy;
+                mover_sram_base = job_input0_addr;
+                mover_words = job_input0_words[7:0];
                 if (job_op_type == SOC_NPU_JOB_OP_SOFTMAX) begin
-                    desc_host_addr = 12'h300 + transfer_idx[2:0];
+                    mover_host_base = 12'h300;
                 end else begin
-                    desc_host_addr = 12'h000 + transfer_idx[5:0];
+                    mover_host_base = 12'h000;
                 end
-                desc_host_wdata = sram_rdata;
+                sram_req = mover_sram_req;
+                sram_we = mover_sram_we;
+                sram_addr = mover_sram_addr;
+                sram_wdata = mover_sram_wdata;
+                desc_host_we = mover_host_we;
+                desc_host_addr = mover_host_addr;
+                desc_host_wdata = mover_host_wdata;
             end
             DESC_FETCH_INPUT1: begin
-                sram_req = 1'b1;
-                sram_addr = job_input1_addr + {22'h0, transfer_idx, 2'b00};
-                desc_host_we = 1'b1;
-                desc_host_addr = 12'h100 + transfer_idx[5:0];
-                desc_host_wdata = sram_rdata;
+                mover_start = !mover_busy;
+                mover_sram_base = job_input1_addr;
+                mover_host_base = 12'h100;
+                mover_words = job_input1_words[7:0];
+                sram_req = mover_sram_req;
+                sram_we = mover_sram_we;
+                sram_addr = mover_sram_addr;
+                sram_wdata = mover_sram_wdata;
+                desc_host_we = mover_host_we;
+                desc_host_addr = mover_host_addr;
+                desc_host_wdata = mover_host_wdata;
             end
             DESC_WRITE_OUTPUT: begin
-                sram_req = 1'b1;
-                sram_we = 1'b1;
-                sram_addr = job_output_addr + {22'h0, transfer_idx, 2'b00};
+                mover_start = !mover_busy;
+                mover_store = 1'b1;
+                mover_sram_base = job_output_addr;
+                mover_words = job_output_words[7:0];
                 if (job_op_type == SOC_NPU_JOB_OP_SOFTMAX) begin
-                    desc_host_addr = 12'h380 + transfer_idx[2:0];
-                    sram_wdata = npu_host_rdata;
+                    mover_host_base = 12'h380;
                 end else begin
-                    desc_host_addr = 12'h200 + transfer_idx[5:0];
-                    sram_wdata = npu_host_rdata;
+                    mover_host_base = 12'h200;
                 end
+                sram_req = mover_sram_req;
+                sram_we = mover_sram_we;
+                sram_addr = mover_sram_addr;
+                sram_wdata = mover_sram_wdata;
+                desc_host_we = mover_host_we;
+                desc_host_addr = mover_host_addr;
+                desc_host_wdata = mover_host_wdata;
             end
             default: begin
             end
@@ -250,31 +316,25 @@ module npu_v0_opsched (
                     end
                 end
                 DESC_FETCH_PROGRAM: begin
-                    if (transfer_idx + 1'b1 >= job_program_words[7:0]) begin
+                    if (mover_complete) begin
                         transfer_idx <= 8'h0;
                         desc_state <= DESC_FETCH_INPUT0;
-                    end else begin
-                        transfer_idx <= transfer_idx + 1'b1;
                     end
                 end
                 DESC_FETCH_INPUT0: begin
-                    if (transfer_idx + 1'b1 >= job_input0_words[7:0]) begin
+                    if (mover_complete) begin
                         transfer_idx <= 8'h0;
                         if (job_op_type == SOC_NPU_JOB_OP_MATMUL) begin
                             desc_state <= DESC_FETCH_INPUT1;
                         end else begin
                             desc_state <= DESC_START_CORE;
                         end
-                    end else begin
-                        transfer_idx <= transfer_idx + 1'b1;
                     end
                 end
                 DESC_FETCH_INPUT1: begin
-                    if (transfer_idx + 1'b1 >= job_input1_words[7:0]) begin
+                    if (mover_complete) begin
                         transfer_idx <= 8'h0;
                         desc_state <= DESC_START_CORE;
-                    end else begin
-                        transfer_idx <= transfer_idx + 1'b1;
                     end
                 end
                 DESC_START_CORE: begin
@@ -288,11 +348,9 @@ module npu_v0_opsched (
                     end
                 end
                 DESC_WRITE_OUTPUT: begin
-                    if (transfer_idx + 1'b1 >= job_output_words[7:0]) begin
+                    if (mover_complete) begin
                         transfer_idx <= 8'h0;
                         desc_state <= DESC_DONE;
-                    end else begin
-                        transfer_idx <= transfer_idx + 1'b1;
                     end
                 end
                 DESC_DONE: begin

@@ -183,6 +183,25 @@ NPU wrapper 负责：
 8. 写回 SRAM output buffer。
 9. 设置 `STATUS.done`。
 
+这里的 wrapper `fetch` 是 SoC 层数据搬运：wrapper 从 SRAM 读取 descriptor、
+program 或 tensor words，并通过 NPU core host window 写入 core 内部 memory。
+它不同于 NPU core 内部的 uop fetch。core 启动后会从已经加载好的 `instr_mem`
+读取 micro-op，并执行 `LOAD`、`MATMUL`、`STORE`、vector/SFU 等内部操作。
+
+当前 host-window preload/readback 是 A0/A1 bring-up 机制，不是最终 NPU
+memory architecture。具体来说：
+
+- `instr_mem`、`spad_a`、`spad_b`、`spad_x`、`acc_buf`、`spad_y` 都是
+  NPU core 内部小 memory/register array；
+- wrapper 先从 SoC SRAM 读 descriptor、program 和 tensor，再通过 core
+  host window 逐 word 写入这些内部 memory；
+- core 计算完成后，wrapper 再从 core output host window 逐 word 读出结果，
+  写回 SoC SRAM；
+- 当前 program stream 是一次性 preload 到固定大小 `instr_mem`，这只能支撑
+  很短的 program，不适合后续不定长 graph/tile program；
+- A2/A3 以后应把这条路径替换为 data mover/burst 传输、banked scratchpad、
+  instruction buffer 或 streaming/prefetch 取指路径。
+
 当前 wrapper FSM：
 
 ```text
@@ -239,7 +258,7 @@ ST_IDLE
 | `VDIV` | softmax normalize |
 | `HALT` | 结束 program |
 
-Matmul 逻辑当前是固定 tile 的三层循环状态机，本质是：
+Matmul 逻辑的历史 Phase 0 baseline 是固定 tile 的三层循环状态机：
 
 ```text
 for i in M:
@@ -250,16 +269,23 @@ for i in M:
     C[i, j] = acc
 ```
 
-因此当前 8x8x8 matmul 的 compute 部分会消耗约：
+因此旧的 8x8x8 matmul compute 部分会消耗约：
 
 ```text
 8 * 8 * 8 = 512 MAC cycles
 ```
 
-这不是现代 tensor/cube/MXU 风格矩阵单元的实现。当前 RTL 虽然在
-`arch/configs/npu_v0.jsonc` 中记录了 Phase 0 逻辑 tile 和 `mac_lanes = 64`，
-但手写 core 仍然是单 lane iterative MAC baseline。后续目标是把该路径替换为
-parameterized systolic/tensor-array matmul engine。长期目标和分阶段计划见：
+A1 已经新增 `hw/npu_core/rtl/matmul_array.sv`，把 `UOP_MATMUL` 的内部执行路径
+替换为 8x8 output-parallel array-style engine。当前 measured matmul compute
+phase 已从 512 cycles 降到约 10 cycles；完整 job 仍包含 wrapper descriptor、
+program/input fetch、output writeback 和 CPU polling。新老 matmul 实现的详细
+对比、为什么 512 cycles 降到 10 cycles、以及 A1 验证标准见：
+
+```text
+docs/matmul_array_a1.md
+```
+
+长期目标和分阶段计划见：
 
 ```text
 docs/target_architecture.md
@@ -352,13 +378,28 @@ build/perf/perf_report.html
 
 `soc_cpu_tb` 会按 NPU job 输出 `PERF_JOB` JSON line。当前 HTML report 已包含
 cycle timeline：横轴是 cycle 时间，纵轴是 `CPU firmware`、`NPU wrapper`、
-`NPU core`，实色块表示 active work，斜纹块表示 wait/blocked。当前统计 wrapper
-的 descriptor/program/input/core/output 阶段，以及 core 的 fetch/matmul/done
-阶段。详细现状、限制和扩展点见：
+`Data mover`、`NPU core`，实色块表示 active work，斜纹块表示 wait/blocked。
+当前统计 wrapper 的 descriptor/program/input/core/output 阶段、data mover
+load/store 阶段，以及 core 的 fetch/matmul/done 阶段。详细现状、限制和扩展点见：
 
 ```text
 sw/tools/perf/README.md
 ```
+
+当前 cycle 统计是 testbench-side profiling，不是 CPU 可读的正式硬件 perf
+counter。`soc_cpu_tb` 每个 clock 观察已有 RTL 信号：
+
+- CPU 写 `NPU_OPSCHED_CTRL.start` 时开始一个 job；
+- 根据 `u_npu_wrapper.desc_state` 累加 wrapper phase cycles；
+- 根据 `u_npu_wrapper.u_npu.state` 累加 core phase cycles；
+- 根据 wrapper `sram_req/sram_we` 统计 SRAM NPU-port read/write cycles；
+- 根据 wrapper/core host-window 访问信号统计 preload/readback cycles；
+- wrapper 进入 `DESC_DONE` 时打印一条 `PERF_JOB` JSON。
+
+这样做的原因是当前 perf taxonomy 还在快速变化，把计数点放在 testbench 里
+可以避免过早污染 CPU-visible RTL。后续当 data mover、scratchpad bank、uop
+prefetch 等模块稳定后，应把同一套统计语义下沉为可选 RTL perf-counter block
+或 debug CSR window。
 
 ## 9. Current Limitations
 

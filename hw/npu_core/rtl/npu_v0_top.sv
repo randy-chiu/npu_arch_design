@@ -39,16 +39,40 @@ module npu_v0_top (
     logic [3:0] opcode;
     logic [3:0] arg0;
     logic [3:0] arg1;
-    logic [6:0] i_idx;
-    logic [6:0] j_idx;
-    logic [6:0] k_idx;
-    logic signed [31:0] acc;
+    logic matmul_start;
+    logic matmul_done;
+    logic [(RTL_MATMUL_ELEMS*8)-1:0]  matmul_a_flat;
+    logic [(RTL_MATMUL_ELEMS*8)-1:0]  matmul_b_flat;
+    logic [(RTL_MATMUL_ELEMS*32)-1:0] matmul_result_flat;
 
     integer idx;
+    integer commit_idx;
+
+    genvar matmul_flat_idx;
+    generate
+        for (matmul_flat_idx = 0; matmul_flat_idx < RTL_MATMUL_ELEMS; matmul_flat_idx = matmul_flat_idx + 1) begin : gen_matmul_flat
+            assign matmul_a_flat[(matmul_flat_idx * 8) +: 8] = spad_a[matmul_flat_idx];
+            assign matmul_b_flat[(matmul_flat_idx * 8) +: 8] = spad_b[matmul_flat_idx];
+        end
+    endgenerate
 
     assign opcode = instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB];
     assign arg0 = instr[UOP_ARG0_MSB:UOP_ARG0_LSB];
     assign arg1 = instr[UOP_ARG1_MSB:UOP_ARG1_LSB];
+
+    matmul_array #(
+        .M(RTL_MATMUL_M),
+        .N(RTL_MATMUL_N),
+        .K(RTL_MATMUL_K)
+    ) u_matmul_array (
+        .clk(clk),
+        .rst_n(rst_n),
+        .start(matmul_start),
+        .done(matmul_done),
+        .a_flat(matmul_a_flat),
+        .b_flat(matmul_b_flat),
+        .result_flat(matmul_result_flat)
+    );
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -96,14 +120,12 @@ module npu_v0_top (
             done <= 1'b0;
             pc <= '0;
             instr <= '0;
-            i_idx <= '0;
-            j_idx <= '0;
-            k_idx <= '0;
-            acc <= '0;
+            matmul_start <= 1'b0;
             scalar_max <= '0;
             scalar_sum <= '0;
         end else begin
             done <= 1'b0;
+            matmul_start <= 1'b0;
             case (state)
                 ST_IDLE: begin
                     if (start) begin
@@ -129,10 +151,7 @@ module npu_v0_top (
                             );
                         end
                         UOP_MATMUL: begin
-                            i_idx <= '0;
-                            j_idx <= '0;
-                            k_idx <= '0;
-                            acc <= '0;
+                            matmul_start <= 1'b1;
                             state <= ST_MATMUL;
                         end
                         UOP_VREDMAX: begin
@@ -160,24 +179,11 @@ module npu_v0_top (
                 end
 
                 ST_MATMUL: begin
-                    acc <= acc + spad_a[(i_idx * RTL_MATMUL_K) + k_idx] * spad_b[(k_idx * RTL_MATMUL_N) + j_idx];
-                    if (k_idx == RTL_MATMUL_K - 1) begin
-                        acc_buf[(i_idx * RTL_MATMUL_N) + j_idx] <= acc + spad_a[(i_idx * RTL_MATMUL_K) + k_idx] * spad_b[(k_idx * RTL_MATMUL_N) + j_idx];
-                        acc <= '0;
-                        k_idx <= '0;
-                        if (j_idx == RTL_MATMUL_N - 1) begin
-                            j_idx <= '0;
-                            if (i_idx == RTL_MATMUL_M - 1) begin
-                                i_idx <= '0;
-                                state <= ST_FETCH;
-                            end else begin
-                                i_idx <= i_idx + 1'b1;
-                            end
-                        end else begin
-                            j_idx <= j_idx + 1'b1;
+                    if (matmul_done) begin
+                        for (commit_idx = 0; commit_idx < RTL_MATMUL_ELEMS; commit_idx = commit_idx + 1) begin
+                            acc_buf[commit_idx] <= $signed(matmul_result_flat[(commit_idx * 32) +: 32]);
                         end
-                    end else begin
-                        k_idx <= k_idx + 1'b1;
+                        state <= ST_FETCH;
                     end
                 end
 

@@ -138,6 +138,8 @@ Exit criteria:
 
 ### A1: Parallel Matmul Engine
 
+Status: implemented first cut.
+
 Goal:
 
 - Replace the single-lane `ST_MATMUL` loop with a small parameterized matrix
@@ -159,12 +161,35 @@ Required updates:
 - Tests: exact matmul output, perf regression comparing old/new cycle trend.
 - Docs: update architecture and perf baseline.
 
+Measured A1 result:
+
+```text
+matmul total cycles: 738 -> 236
+core matmul cycles:  512 -> 10
+```
+
+The bottleneck has shifted from compute to wrapper data movement. A2 should
+therefore focus on real data movement and scratchpad/banking rather than making
+the small array more complex immediately.
+
 ### A2: Real Data Movement And Scratchpad Banking
+
+Status: profiling started.
 
 Goal:
 
 - Stop treating wrapper host-window writes as the long-term memory path.
 - Introduce explicit data mover semantics and banked scratchpad access.
+
+Current limitation to remove:
+
+- wrapper directly preloads core internal memories through the host window;
+- program words are copied into fixed-size `instr_mem` before launch;
+- tensor input/output movement is one word per cycle and serialized around core
+  execution;
+- there is no independent DMA/data-mover timeline, no burst model, no bank
+  conflict model, and no way for long programs to stream through an instruction
+  buffer.
 
 Key work:
 
@@ -172,6 +197,41 @@ Key work:
 - model SRAM read/write bandwidth and bank conflicts;
 - add timeline lanes for SRAM port, DMA, scratchpad, and core input stalls;
 - measure whether compute becomes memory-bound after A1.
+
+Target direction:
+
+- descriptor launches a data mover instead of manually copying every word
+  through the core host window;
+- tensor tiles land in banked scratchpad buffers that the compute engine can
+  consume without wrapper intervention;
+- program fetch moves toward an instruction buffer/prefetch path so future
+  variable-length programs do not need to fit entirely in `instr_mem`;
+- perf report separates SRAM bus, data mover, scratchpad banks, instruction
+  fetch, compute-active, and compute-stall cycles.
+
+A2.0 movement profiling now shows:
+
+```text
+matmul SRAM read cycles:       153
+matmul SRAM write cycles:       64
+matmul core host write cycles: 144
+matmul core host read cycles:   64
+```
+
+This confirms the post-A1 bottleneck: the current wrapper moves one word per
+cycle through the SRAM port and core host window. The next A2 step should define
+a real data mover/burst interface and scratchpad banking model before changing
+operator scheduling.
+
+Immediate next session:
+
+1. Continue from `docs/data_mover_a2.md` section 9.
+2. Add real data mover timing knobs: `WORDS_PER_CYCLE` and `SETUP_CYCLES`.
+3. Keep default `1 word/cycle` behavior passing first.
+4. Add/report explicit data mover counters.
+5. Then enable/profile the target `4 words/cycle + setup` burst mode.
+6. Delay scratchpad banking, double buffering, and instruction streaming until
+   the data mover counters and report lane are stable.
 
 ### A3: Multi-Cycle Vector/SFU Pipeline
 
@@ -224,6 +284,12 @@ Recommended next implementation sequence:
 
 This keeps the next step narrow: prove that the matrix engine changes the
 measured bottleneck before adding DMA, banking, or vector pipeline complexity.
+
+A1 implementation details are tracked in:
+
+```text
+docs/matmul_array_a1.md
+```
 
 ## 6. Source Links
 

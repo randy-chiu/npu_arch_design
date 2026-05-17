@@ -34,6 +34,15 @@ module soc_cpu_tb;
     integer perf_core_fetch_cycles;
     integer perf_core_matmul_cycles;
     integer perf_core_done_cycles;
+    integer perf_sram_read_cycles;
+    integer perf_sram_write_cycles;
+    integer perf_core_host_write_cycles;
+    integer perf_core_host_read_cycles;
+    integer perf_desc_words;
+    integer perf_program_words;
+    integer perf_input0_words;
+    integer perf_input1_words;
+    integer perf_output_words;
 
     soc_cpu_top dut (
         .clk(clk),
@@ -92,6 +101,33 @@ module soc_cpu_tb;
                     print_perf_job();
                     perf_active <= 0;
                 end
+
+                if (dut.u_npu_wrapper.sram_req && !dut.u_npu_wrapper.sram_we) begin
+                    perf_sram_read_cycles <= perf_sram_read_cycles + 1;
+                    case (dut.u_npu_wrapper.desc_state)
+                        DESC_READ_STATE: perf_desc_words <= perf_desc_words + 1;
+                        DESC_FETCH_PROGRAM_STATE: perf_program_words <= perf_program_words + 1;
+                        DESC_FETCH_INPUT0_STATE: perf_input0_words <= perf_input0_words + 1;
+                        DESC_FETCH_INPUT1_STATE: perf_input1_words <= perf_input1_words + 1;
+                        default: begin
+                        end
+                    endcase
+                end
+
+                if (dut.u_npu_wrapper.sram_req && dut.u_npu_wrapper.sram_we) begin
+                    perf_sram_write_cycles <= perf_sram_write_cycles + 1;
+                    if (dut.u_npu_wrapper.desc_state == DESC_WRITE_OUTPUT_STATE) begin
+                        perf_output_words <= perf_output_words + 1;
+                    end
+                end
+
+                if (dut.u_npu_wrapper.desc_host_we) begin
+                    perf_core_host_write_cycles <= perf_core_host_write_cycles + 1;
+                end
+
+                if (dut.u_npu_wrapper.desc_state == DESC_WRITE_OUTPUT_STATE) begin
+                    perf_core_host_read_cycles <= perf_core_host_read_cycles + 1;
+                end
             end
         end
     end
@@ -136,13 +172,22 @@ module soc_cpu_tb;
             perf_core_fetch_cycles <= 0;
             perf_core_matmul_cycles <= 0;
             perf_core_done_cycles <= 0;
+            perf_sram_read_cycles <= 0;
+            perf_sram_write_cycles <= 0;
+            perf_core_host_write_cycles <= 0;
+            perf_core_host_read_cycles <= 0;
+            perf_desc_words <= 0;
+            perf_program_words <= 0;
+            perf_input0_words <= 0;
+            perf_input1_words <= 0;
+            perf_output_words <= 0;
         end
     endtask
 
     task automatic print_perf_job;
         begin
             if (dut.u_npu_wrapper.job_op_type == SOC_NPU_JOB_OP_MATMUL) begin
-                $display("PERF_JOB {\"id\":%0d,\"name\":\"matmul\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d}}",
+                $display("PERF_JOB {\"id\":%0d,\"name\":\"matmul\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d},\"movement\":{\"sram_read_cycles\":%0d,\"sram_write_cycles\":%0d,\"core_host_write_cycles\":%0d,\"core_host_read_cycles\":%0d,\"desc_words\":%0d,\"program_words\":%0d,\"input0_words\":%0d,\"input1_words\":%0d,\"output_words\":%0d}}",
                     perf_job_id,
                     perf_total_cycles,
                     perf_desc_read_cycles,
@@ -156,9 +201,18 @@ module soc_cpu_tb;
                     perf_core_cycles,
                     perf_core_fetch_cycles,
                     perf_core_matmul_cycles,
-                    perf_core_done_cycles);
+                    perf_core_done_cycles,
+                    perf_sram_read_cycles,
+                    perf_sram_write_cycles,
+                    perf_core_host_write_cycles,
+                    perf_core_host_read_cycles,
+                    perf_desc_words,
+                    perf_program_words,
+                    perf_input0_words,
+                    perf_input1_words,
+                    perf_output_words);
             end else if (dut.u_npu_wrapper.job_op_type == SOC_NPU_JOB_OP_SOFTMAX) begin
-                $display("PERF_JOB {\"id\":%0d,\"name\":\"softmax\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d}}",
+                $display("PERF_JOB {\"id\":%0d,\"name\":\"softmax\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d},\"movement\":{\"sram_read_cycles\":%0d,\"sram_write_cycles\":%0d,\"core_host_write_cycles\":%0d,\"core_host_read_cycles\":%0d,\"desc_words\":%0d,\"program_words\":%0d,\"input0_words\":%0d,\"input1_words\":%0d,\"output_words\":%0d}}",
                     perf_job_id,
                     perf_total_cycles,
                     perf_desc_read_cycles,
@@ -172,9 +226,18 @@ module soc_cpu_tb;
                     perf_core_cycles,
                     perf_core_fetch_cycles,
                     perf_core_matmul_cycles,
-                    perf_core_done_cycles);
+                    perf_core_done_cycles,
+                    perf_sram_read_cycles,
+                    perf_sram_write_cycles,
+                    perf_core_host_write_cycles,
+                    perf_core_host_read_cycles,
+                    perf_desc_words,
+                    perf_program_words,
+                    perf_input0_words,
+                    perf_input1_words,
+                    perf_output_words);
             end else begin
-                $display("PERF_JOB {\"id\":%0d,\"name\":\"unknown\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d}}",
+                $display("PERF_JOB {\"id\":%0d,\"name\":\"unknown\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d},\"movement\":{\"sram_read_cycles\":%0d,\"sram_write_cycles\":%0d,\"core_host_write_cycles\":%0d,\"core_host_read_cycles\":%0d,\"desc_words\":%0d,\"program_words\":%0d,\"input0_words\":%0d,\"input1_words\":%0d,\"output_words\":%0d}}",
                     perf_job_id,
                     perf_total_cycles,
                     perf_desc_read_cycles,
@@ -188,7 +251,16 @@ module soc_cpu_tb;
                     perf_core_cycles,
                     perf_core_fetch_cycles,
                     perf_core_matmul_cycles,
-                    perf_core_done_cycles);
+                    perf_core_done_cycles,
+                    perf_sram_read_cycles,
+                    perf_sram_write_cycles,
+                    perf_core_host_write_cycles,
+                    perf_core_host_read_cycles,
+                    perf_desc_words,
+                    perf_program_words,
+                    perf_input0_words,
+                    perf_input1_words,
+                    perf_output_words);
             end
         end
     endtask

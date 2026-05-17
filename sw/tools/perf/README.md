@@ -22,18 +22,44 @@ The schema is intentionally small: each job has total cycles plus nested module
 phase counters. Later RTL modules can add more nested counters without changing
 the basic report flow.
 
+## Counter Placement
+
+The current perf counters are testbench-side instrumentation. They do not add
+architectural performance-counter registers to the CPU-visible RTL yet, and they
+do not insert counters into every module.
+
+`hw/soc/tb/soc_cpu_tb.sv` samples visible RTL state once per clock:
+
+- job start is detected when firmware writes `NPU_OPSCHED_CTRL.start`;
+- wrapper phase cycles are counted from `u_npu_wrapper.desc_state`;
+- core phase cycles are counted from `u_npu_wrapper.u_npu.state` while the
+  wrapper has launched or is waiting for the core;
+- SRAM movement cycles are counted from wrapper `sram_req/sram_we`;
+- core host-window write cycles are counted from wrapper `desc_host_we`;
+- core host-window read cycles are currently inferred during
+  `DESC_WRITE_OUTPUT`;
+- at `DESC_DONE`, the testbench prints one `PERF_JOB` JSON line.
+
+This keeps the bring-up RTL clean while the performance taxonomy is still
+changing. The tradeoff is that the counters are simulation/reporting counters,
+not software-readable hardware counters. When the phase definitions stabilize,
+the same taxonomy should be moved into an optional RTL perf-counter block or
+debug CSR window.
+
 ## Current Status
 
 The first report is tied to the CPU-controlled SoC smoke simulation. It measures
 the interval from CPU firmware writing `CTRL.start` to the NPU wrapper finishing
 the job. The HTML report currently shows:
 
-- a cycle timeline with `CPU firmware`, `NPU wrapper`, and `NPU core` lanes;
+- a cycle timeline with `CPU firmware`, `NPU wrapper`, `Data mover`, and
+  `NPU core` lanes;
 - active work spans as solid blocks;
 - wait/blocked spans as patterned blocks;
 - per-job total cycles;
 - wrapper phase counters;
 - core phase counters;
+- data-movement annotations inside the wrapper phase timeline;
 - raw JSON for debugging and future tooling.
 
 Current wrapper phases:
@@ -53,20 +79,77 @@ Current core phases:
 
 | Phase | Meaning |
 | --- | --- |
-| `fetch` | core fetch/decode cycles, including current single-cycle vector tasks |
-| `matmul` | iterative matmul engine cycles |
+| `fetch` | core-local uop fetch/decode/execute cycles, including current single-cycle LOAD/STORE/vector tasks |
+| `matmul` | matmul engine cycles |
 | `done` | core done assertion phase |
 
-The initial measured baseline is:
+Historical scalar baseline before A1:
 
 | Job | Total cycles | Core cycles | Dominant cost |
 | --- | ---: | ---: | --- |
 | `matmul` | 738 | 520 | 512-cycle iterative matmul |
 | `softmax` | 53 | 11 | wrapper movement and single-cycle vector tasks |
 
-The 512-cycle matmul compute cost is expected for the current RTL. It is one
-MAC update per clock over an 8x8x8 tile, not a tensor/cube matrix engine. The
-target architecture direction is described in `docs/target_architecture.md`.
+A1 measured baseline after adding `matmul_array`:
+
+| Job | Total cycles | Core cycles | Dominant cost |
+| --- | ---: | ---: | --- |
+| `matmul` | 236 | 18 | wrapper input/output movement |
+| `softmax` | 53 | 11 | wrapper movement and single-cycle vector tasks |
+
+The current report also includes a `Matmul model` panel for matmul jobs:
+
+| Model | Meaning |
+| --- | --- |
+| measured compute | RTL-measured `core.matmul` cycles |
+| scalar baseline | old 8x8x8 single-lane MAC estimate, 512 cycles |
+| ideal 8x8 array | one K slice per cycle, 8 cycles |
+| conservative array | ideal plus small control allowance, 12 cycles |
+| projected total | current non-matmul cycles plus conservative array estimate |
+
+The A1 result confirms the expected bottleneck shift: compute drops sharply and
+wrapper data movement now dominates. The target architecture direction is
+described in `docs/target_architecture.md`.
+
+A2.0 movement profile:
+
+| Job | SRAM read cycles | SRAM write cycles | Core host write cycles | Core host read cycles |
+| --- | ---: | ---: | ---: | ---: |
+| `matmul` | 153 | 64 | 144 | 64 |
+| `softmax` | 33 | 8 | 24 | 8 |
+
+For matmul, data movement now dominates the 236-cycle job. The core matmul
+phase is only 10 cycles, while input/program movement and output writeback are
+hundreds of single-word cycles. This is the main evidence for A2 work on data
+movers, scratchpad banking, and overlap.
+
+The UI intentionally does not render separate `SRAM NPU port` and
+`Core host window` timelines because those phases currently overlap almost
+one-to-one with wrapper phases. Instead, the `Wrapper phases` rows include the
+data path detail:
+
+| Wrapper phase | Data path detail |
+| --- | --- |
+| `Descriptor read` | wrapper reads job descriptor words from SRAM |
+| `Program fetch` | wrapper reads program words from SRAM and writes core `instr_mem` through the host window |
+| `Input0 fetch` | wrapper reads input0 tensor from SRAM and writes core A/X window |
+| `Input1 fetch` | wrapper reads input1 tensor from SRAM and writes core B window |
+| `Output writeback` | wrapper reads core C/Y output window and writes result words to SRAM |
+
+Here `core host write/read` means the wrapper is using the NPU core's host
+window interface. It does not mean the core is independently writing SRAM.
+
+The core `Uop fetch/execute` phase is different from wrapper `fetch_*` phases.
+Wrapper fetch phases move data/program words from SRAM into the core before
+launch. Core uop fetch/execute happens after launch, inside `npu_v0_top`, where
+the core reads its already-loaded `instr_mem` and executes micro-ops such as
+`LOAD`, `STORE`, vector operations, and `MATMUL`.
+
+The current host-window preload/readback path is temporary. It keeps functional
+bring-up simple, but it requires program words to fit in fixed-size `instr_mem`
+before launch and serializes tensor movement around compute. A2 should replace
+this with explicit data mover, burst, scratchpad banking, and later instruction
+buffer/prefetch behavior. The working plan is in `docs/data_mover_a2.md`.
 
 ## Timeline Semantics
 
@@ -77,12 +160,17 @@ overlap:
 ```text
 CPU firmware:  MMIO start -> poll/wait for done
 NPU wrapper:   desc/program/input -> start core -> wait core -> output
+Data mover:         program/input load                 output store
 NPU core:                              fetch/execute/done
 ```
 
 The key use is spotting pipeline structure and wasted time. For example,
 `wait_core` overlapping with core `matmul` is expected. A long CPU wait with no
 matching wrapper/core work would indicate missing accounting or a real stall.
+
+The `Data mover` lane is currently reconstructed from wrapper movement phases.
+After A2 RTL grows burst timing or overlap, this lane should come from data
+mover state directly and may no longer match wrapper phase boundaries.
 
 ## Current Limitations
 
@@ -106,7 +194,8 @@ Near-term extensions:
 - Add CPU-side spans before and after NPU launch: input staging, descriptor
   write, program copy, result check, and test-status write.
 - Split CPU polling into MMIO read transactions and idle cycles.
-- Add SRAM NPU-port read/write spans and bandwidth counters.
+- Convert SRAM NPU-port read/write spans from simple one-word-per-cycle movement
+  into burst/bandwidth-aware data mover counters.
 - Add bus-level spans for CPU accesses to SRAM, wrapper registers, and test
   status.
 - Emit per-job workload metadata such as tensor shape, program words, input

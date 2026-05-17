@@ -56,7 +56,7 @@ refresh-references:
 
 npu-core-sim: rtl-fixtures
 	mkdir -p build
-	iverilog -g2012 -I build/rtl_fixture -o build/npu_v0_tb hw/npu_core/rtl/npu_v0_top.sv hw/npu_core/tb/npu_v0_tb.sv
+	iverilog -g2012 -I build/rtl_fixture -o build/npu_v0_tb hw/npu_core/rtl/matmul_array.sv hw/npu_core/rtl/npu_v0_top.sv hw/npu_core/tb/npu_v0_tb.sv
 	vvp build/npu_v0_tb
 
 rtl-sim: npu-core-sim
@@ -64,7 +64,9 @@ rtl-sim: npu-core-sim
 soc-sim: rtl-fixtures soc-spec npu-wrapper-spec
 	mkdir -p build/soc
 	iverilog -g2012 -I build/rtl_fixture -I build/soc -I build/npu_wrapper -I hw/npu_wrapper/rtl -o build/soc/soc_tb \
+		hw/npu_core/rtl/matmul_array.sv \
 		hw/npu_core/rtl/npu_v0_top.sv \
+		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
 		hw/soc/rtl/bus/simple_bus.sv \
 		hw/soc/rtl/mem/boot_rom.sv \
@@ -79,7 +81,9 @@ cpu-soc-sim: firmware-smoke
 	iverilog -g2012 -I build/rtl_fixture -I build/soc -I build/npu_wrapper -I hw/npu_wrapper/rtl -o build/soc/soc_cpu_tb \
 		hw/soc/cpu/third_party/picorv32/picorv32.v \
 		hw/soc/cpu/rtl/picorv32_native_cpu.sv \
+		hw/npu_core/rtl/matmul_array.sv \
 		hw/npu_core/rtl/npu_v0_top.sv \
+		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
 		hw/soc/rtl/bus/simple_bus.sv \
 		hw/soc/rtl/mem/boot_rom.sv \
@@ -94,7 +98,9 @@ perf-report: firmware-smoke
 	iverilog -g2012 -I build/rtl_fixture -I build/soc -I build/npu_wrapper -I hw/npu_wrapper/rtl -o build/soc/soc_cpu_tb \
 		hw/soc/cpu/third_party/picorv32/picorv32.v \
 		hw/soc/cpu/rtl/picorv32_native_cpu.sv \
+		hw/npu_core/rtl/matmul_array.sv \
 		hw/npu_core/rtl/npu_v0_top.sv \
+		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
 		hw/soc/rtl/bus/simple_bus.sv \
 		hw/soc/rtl/mem/boot_rom.sv \

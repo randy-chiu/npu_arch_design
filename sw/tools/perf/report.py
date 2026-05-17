@@ -5,6 +5,77 @@ from pathlib import Path
 
 
 PERF_PREFIX = "PERF_JOB "
+PHASE0_MATMUL_M = 8
+PHASE0_MATMUL_N = 8
+PHASE0_MATMUL_K = 8
+PHASE0_MATMUL_ARRAY_CONTROL_CYCLES = 4
+PHASE0_DATA_MOVER_WORDS_PER_CYCLE = 4
+PHASE0_DATA_MOVER_SETUP_CYCLES = 1
+
+
+def add_estimates(job: dict) -> dict:
+    if job.get("name") != "matmul":
+        return job
+
+    scalar_compute = PHASE0_MATMUL_M * PHASE0_MATMUL_N * PHASE0_MATMUL_K
+    ideal_array_compute = PHASE0_MATMUL_K
+    conservative_array_compute = ideal_array_compute + PHASE0_MATMUL_ARRAY_CONTROL_CYCLES
+    measured_compute = int(job.get("core", {}).get("matmul", 0))
+    non_matmul_cycles = int(job["total_cycles"]) - measured_compute
+
+    job["estimates"] = {
+        "matmul_shape": [PHASE0_MATMUL_M, PHASE0_MATMUL_N, PHASE0_MATMUL_K],
+        "scalar_compute_cycles": scalar_compute,
+        "ideal_array_compute_cycles": ideal_array_compute,
+        "conservative_array_compute_cycles": conservative_array_compute,
+        "measured_compute_cycles": measured_compute,
+        "projected_total_with_conservative_array": non_matmul_cycles + conservative_array_compute,
+    }
+    return job
+
+
+def ceil_div(value: int, divisor: int) -> int:
+    return (value + divisor - 1) // divisor
+
+
+def add_movement_estimates(job: dict) -> dict:
+    movement = job.get("movement")
+    if not movement:
+        return job
+
+    transfer_fields = [
+        "desc_words",
+        "program_words",
+        "input0_words",
+        "input1_words",
+        "output_words",
+    ]
+    words = {field: int(movement.get(field, 0)) for field in transfer_fields}
+    active_segments = sum(1 for value in words.values() if value > 0)
+    total_words = sum(words.values())
+    measured_sram_cycles = int(movement.get("sram_read_cycles", 0)) + int(
+        movement.get("sram_write_cycles", 0)
+    )
+    measured_host_window_cycles = int(movement.get("core_host_write_cycles", 0)) + int(
+        movement.get("core_host_read_cycles", 0)
+    )
+    ideal_burst_cycles = ceil_div(total_words, PHASE0_DATA_MOVER_WORDS_PER_CYCLE)
+    conservative_burst_cycles = sum(
+        ceil_div(value, PHASE0_DATA_MOVER_WORDS_PER_CYCLE)
+        for value in words.values()
+        if value > 0
+    ) + active_segments * PHASE0_DATA_MOVER_SETUP_CYCLES
+
+    job["movement_estimates"] = {
+        "total_words": total_words,
+        "measured_sram_cycles": measured_sram_cycles,
+        "measured_host_window_cycles": measured_host_window_cycles,
+        "model_words_per_cycle": PHASE0_DATA_MOVER_WORDS_PER_CYCLE,
+        "model_setup_cycles_per_segment": PHASE0_DATA_MOVER_SETUP_CYCLES,
+        "ideal_burst_cycles": ideal_burst_cycles,
+        "conservative_burst_cycles": conservative_burst_cycles,
+    }
+    return job
 
 
 def add_timeline(job: dict) -> dict:
@@ -19,7 +90,7 @@ def add_timeline(job: dict) -> dict:
         ("done", "Done latch", "work"),
     ]
     core_order = [
-        ("fetch", "Fetch/vector ops", "work"),
+        ("fetch", "Uop fetch/execute", "work"),
         ("matmul", "Matmul", "work"),
         ("done", "Done", "work"),
     ]
@@ -59,6 +130,26 @@ def add_timeline(job: dict) -> dict:
             )
         cursor += value
 
+    data_mover_spans = []
+    movement_labels = {
+        "Program fetch": "Program load",
+        "Input0 fetch": "Input0 load",
+        "Input1 fetch": "Input1 load",
+        "Output writeback": "Output store",
+    }
+    for span in wrapper_spans:
+        label = movement_labels.get(span["label"])
+        if label is not None:
+            data_mover_spans.append(
+                {
+                    "label": label,
+                    "start": span["start"],
+                    "end": span["end"],
+                    "cycles": span["cycles"],
+                    "kind": "work",
+                }
+            )
+
     job["timeline"] = [
         {
             "module": "CPU firmware",
@@ -74,6 +165,7 @@ def add_timeline(job: dict) -> dict:
             ],
         },
         {"module": "NPU wrapper", "spans": wrapper_spans},
+        {"module": "Data mover", "spans": data_mover_spans},
         {"module": "NPU core", "spans": core_spans},
     ]
     return job
@@ -85,7 +177,11 @@ def parse_perf_log(path: Path) -> dict:
         for line in f:
             line = line.strip()
             if line.startswith(PERF_PREFIX):
-                jobs.append(add_timeline(json.loads(line[len(PERF_PREFIX) :])))
+                jobs.append(
+                    add_timeline(
+                        add_movement_estimates(add_estimates(json.loads(line[len(PERF_PREFIX) :])))
+                    )
+                )
     if not jobs:
         raise ValueError(f"no {PERF_PREFIX.strip()} records found in {path}")
     return {
@@ -299,6 +395,28 @@ def write_html(report: dict, path: Path) -> None:
       margin-right: 5px;
       vertical-align: -1px;
     }}
+    .estimate-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 10px;
+      margin: 10px 0 6px;
+    }}
+    .estimate {{
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      background: #fbfcfe;
+    }}
+    .estimate .label {{
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 4px;
+    }}
+    .estimate .value {{
+      font-size: 18px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }}
     pre {{
       margin: 0;
       white-space: pre-wrap;
@@ -337,6 +455,7 @@ def write_html(report: dict, path: Path) -> None:
     const timelineColors = {{
       "CPU firmware": "#7b61d1",
       "NPU wrapper": "#2068d8",
+      "Data mover": "#c46b1f",
       "NPU core": "#1a9a7a"
     }};
     const wrappers = [
@@ -350,7 +469,7 @@ def write_html(report: dict, path: Path) -> None:
       ["done", "Done latch"]
     ];
     const cores = [
-      ["fetch", "Fetch/vector"],
+      ["fetch", "Uop fetch/execute"],
       ["matmul", "Matmul"],
       ["done", "Done"]
     ];
@@ -481,22 +600,90 @@ def write_html(report: dict, path: Path) -> None:
         lane.className = "lane";
         const el = document.createElement("div");
         const width = ((span.end - span.start) / total) * 100;
+        const detail = phaseDetail(laneData.module, span.label);
         el.className = `span ${{span.kind}}`;
         el.style.left = `${{(span.start / total) * 100}}%`;
         el.style.width = `${{Math.max(width, 0.6)}}%`;
         if (span.kind !== "wait") el.style.background = moduleColor;
-        el.title = `${{laneData.module}}: ${{span.label}}\\n${{span.start}}-${{span.end}} cycles (${{span.cycles}})`;
+        el.title = `${{laneData.module}}: ${{span.label}}\\n${{detail}}\\n${{span.start}}-${{span.end}} cycles (${{span.cycles}})`;
         el.textContent = width >= 7 ? `${{span.start}}-${{span.end}}` : "";
         lane.appendChild(el);
         const laneValue = document.createElement("div");
         laneValue.className = "lane-value";
-        laneValue.textContent = `${{span.cycles}} cycles`;
+        laneValue.textContent = detail ? `${{span.cycles}} cycles - ${{detail}}` : `${{span.cycles}} cycles`;
         timeline.appendChild(label);
         timeline.appendChild(lane);
         timeline.appendChild(laneValue);
       }});
       scroll.appendChild(timeline);
       parent.appendChild(scroll);
+    }}
+
+    function phaseDetail(moduleName, label) {{
+      if (moduleName !== "NPU wrapper") return "";
+      const details = {{
+        "Descriptor read": "wrapper reads job descriptor words from SRAM",
+        "Program fetch": "wrapper reads program words from SRAM and writes core instr_mem through host window",
+        "Input0 fetch": "wrapper reads input0 tensor from SRAM and writes core A/X window",
+        "Input1 fetch": "wrapper reads input1 tensor from SRAM and writes core B window",
+        "Core launch": "wrapper pulses NPU core start",
+        "Core wait": "wrapper waits while NPU core executes its already-loaded uops/data",
+        "Output writeback": "wrapper reads core C/Y output window and writes result words to SRAM",
+        "Done latch": "wrapper updates done/status"
+      }};
+      return details[label] || "";
+    }}
+
+    function renderEstimates(parent, job) {{
+      if (!job.estimates) return;
+      const title = document.createElement("h3");
+      title.className = "module-title";
+      title.textContent = "Matmul model";
+      parent.appendChild(title);
+
+      const grid = document.createElement("div");
+      grid.className = "estimate-grid";
+      const items = [
+        ["Measured compute", `${{job.estimates.measured_compute_cycles}} cycles`],
+        ["Scalar baseline", `${{job.estimates.scalar_compute_cycles}} cycles`],
+        ["Ideal 8x8 array", `${{job.estimates.ideal_array_compute_cycles}} cycles`],
+        ["Conservative array", `${{job.estimates.conservative_array_compute_cycles}} cycles`],
+        ["Projected total", `${{job.estimates.projected_total_with_conservative_array}} cycles`]
+      ];
+      items.forEach(([label, value]) => {{
+        const div = document.createElement("div");
+        div.className = "estimate";
+        div.innerHTML = `<div class="label">${{label}}</div><div class="value">${{value}}</div>`;
+        grid.appendChild(div);
+      }});
+      parent.appendChild(grid);
+    }}
+
+    function renderMovementEstimates(parent, job) {{
+      if (!job.movement_estimates) return;
+      const title = document.createElement("h3");
+      title.className = "module-title";
+      title.textContent = "Movement model";
+      parent.appendChild(title);
+
+      const grid = document.createElement("div");
+      grid.className = "estimate-grid";
+      const m = job.movement_estimates;
+      const items = [
+        ["Moved words", `${{m.total_words}} words`],
+        ["Measured SRAM", `${{m.measured_sram_cycles}} cycles`],
+        ["Measured host window", `${{m.measured_host_window_cycles}} cycles`],
+        ["Model bandwidth", `${{m.model_words_per_cycle}} words/cycle`],
+        ["Ideal burst", `${{m.ideal_burst_cycles}} cycles`],
+        ["Conservative burst", `${{m.conservative_burst_cycles}} cycles`]
+      ];
+      items.forEach(([label, value]) => {{
+        const div = document.createElement("div");
+        div.className = "estimate";
+        div.innerHTML = `<div class="label">${{label}}</div><div class="value">${{value}}</div>`;
+        grid.appendChild(div);
+      }});
+      parent.appendChild(grid);
     }}
 
     const root = document.getElementById("jobs");
@@ -510,8 +697,11 @@ def write_html(report: dict, path: Path) -> None:
         </div>
       `;
       renderTimeline(section, job);
+      renderEstimates(section, job);
+      renderMovementEstimates(section, job);
       renderPhaseTimeline(section, "Wrapper phases", job.timeline[1], job.total_cycles, timelineColors["NPU wrapper"]);
-      renderPhaseTimeline(section, "Core phases", job.timeline[2], job.total_cycles, timelineColors["NPU core"]);
+      renderPhaseTimeline(section, "Data mover phases", job.timeline[2], job.total_cycles, timelineColors["Data mover"]);
+      renderPhaseTimeline(section, "Core phases", job.timeline[3], job.total_cycles, timelineColors["NPU core"]);
       root.appendChild(section);
     }});
   </script>

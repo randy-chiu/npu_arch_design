@@ -71,7 +71,7 @@ Major blocks inside the module:
 | On-chip buffers | Register arrays for `spad_a`, `spad_b`, `acc_buf`, and `vec_buf` |
 | Instruction memory | 16-entry register array, one 32-bit encoded micro-op per entry |
 | Sequencer | FSM with `ST_IDLE`, `ST_FETCH`, `ST_MATMUL`, and `ST_DONE` |
-| Matmul datapath | One multiply-accumulate update per clock while in `ST_MATMUL` |
+| Matmul datapath | `matmul_array.sv` updates the 8x8 output tile in parallel, one K slice per active cycle |
 | Vector datapath | Whole-vector task execution for each vector micro-op in `ST_FETCH` |
 
 ### Execution Model
@@ -84,7 +84,7 @@ reset
   -> start asserted
   -> ST_FETCH
   -> execute LOAD / STORE / vector op immediately, or enter ST_MATMUL
-  -> ST_MATMUL loops over i, j, k for one 8x8x8 tile
+  -> ST_MATMUL runs the 8x8 output-parallel matmul array
   -> ST_FETCH continues with the next micro-op
   -> HALT
   -> ST_DONE
@@ -97,9 +97,11 @@ for early functional validation, but it is not a realistic bandwidth-limited
 DMA or multi-lane vector unit yet.
 
 `MATMUL` is the only operation that is explicitly multi-cycle in the current
-RTL. It walks the 8x8x8 nested loop with indices `i_idx`, `j_idx`, and `k_idx`.
-That means one output element takes 8 MAC cycles, and the whole tile takes
-8 * 8 * 8 = 512 MAC cycles, plus fetch/control cycles.
+RTL. The old Phase 0 baseline walked the 8x8x8 nested loop with one MAC update
+per clock, so the compute phase took 512 cycles. A1 replaced that path with
+`matmul_array.sv`: it keeps 64 output accumulators and consumes one K slice per
+active cycle. The current measured core matmul phase is about 10 cycles,
+including launch/observe overhead around the 8 K steps.
 
 ### Pipeline Depth
 
@@ -114,7 +116,8 @@ The current control path has these visible phases:
 | Complete | `HALT` enters `ST_DONE`, asserts `done`, then returns to `ST_IDLE` when `start` is low |
 
 So the honest answer is: **pipeline depth is effectively 1 for the current
-non-matmul micro-op sequencer, with a multi-cycle iterative matmul engine**.
+non-matmul micro-op sequencer, with a small multi-cycle array-style matmul
+engine**.
 There is no separated fetch/decode/issue/execute/writeback pipeline, no
 valid/ready handshaking between stages, no overlapping DMA and compute, and no
 hazard handling. Those should be added in later versions when the design is

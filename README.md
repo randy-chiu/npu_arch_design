@@ -1,12 +1,83 @@
 # NPU Architecture Design System
 
-This repository builds a small NPU-centered SoC for architecture validation.
-The current goal is not a full production NPU. It is a hardware/software
-closed loop where a CPU firmware program stages NPU inputs and program streams
-in SRAM, launches the NPU wrapper, lets the NPU core run, and checks results.
+An open, from-scratch NPU/AI accelerator architecture lab: RTL, compiler,
+firmware, SoC simulation, and cycle-level performance UI, evolving step by
+step toward tensor-array accelerator designs.
+
+This repository is not just a toy RTL block. The goal is to build a complete,
+inspectable, and extensible hardware/software loop for NPU architecture
+exploration:
+
+- graph/operator lowering to NPU micro-ops;
+- assembler-generated program artifacts;
+- RTL NPU core and CPU-visible wrapper;
+- CPU firmware-controlled SoC simulation;
+- descriptor/SRAM-based CPU-NPU launch protocol;
+- golden-model and RTL verification;
+- cycle-level performance timeline reports;
+- research-driven evolution toward systolic/tensor-array NPU designs.
 
 Current smoke coverage focuses on `matmul`, `softmax`, and the CPU-controlled
-SoC path around them.
+SoC path around them. The next architecture step is replacing the scalar
+iterative matmul path with a measured matrix-array engine while keeping
+compiler, RTL, firmware, tests, docs, and performance reports aligned.
+
+## GitHub About
+
+Suggested short description:
+
+```text
+Open NPU architecture lab: RTL + compiler + firmware + SoC simulation + cycle timeline UI, evolving toward tensor-array accelerator designs.
+```
+
+Suggested topics:
+
+```text
+npu
+ai-accelerator
+rtl
+systemverilog
+riscv
+soc
+compiler
+systolic-array
+tensor-core
+hardware-architecture
+performance-modeling
+cycle-simulator
+fpga
+machine-learning-systems
+```
+
+## Why This Project Exists
+
+Modern AI accelerators are full systems. ISA, compiler, runtime, memory
+hierarchy, data movement, RTL, firmware, verification, and performance analysis
+all have to evolve together.
+
+This project is built around that idea. Every architecture change should be
+measurable, documented, and verified end to end.
+
+If you are interested in NPU architecture, systolic arrays, AI accelerator RTL,
+compiler lowering, cycle simulators, performance counters, or SoC bring-up,
+this project is intended to be a practical playground and collaboration base.
+
+## Contributions Welcome
+
+Contributions are welcome across multiple areas:
+
+- NPU RTL and microarchitecture;
+- systolic/tensor-array matmul engines;
+- vector/SFU pipelines for softmax and normalization;
+- compiler lowering and scheduling;
+- cycle models and performance visualization;
+- firmware/runtime and descriptor protocols;
+- verification, golden models, and randomized tests;
+- documentation and architecture research notes.
+
+The project values measured progress: propose the bottleneck, update the
+relevant contracts, implement the change, run the verification loop, and record
+the result.
 
 ## Start Here
 

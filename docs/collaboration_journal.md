@@ -1423,3 +1423,152 @@ Added `docs/target_architecture.md` with:
 - staged architecture milestones A0-A5;
 - immediate next implementation plan focused on a measured parallel matmul
   engine before DMA/banking/vector-pipeline complexity.
+
+## Session 32: Implement A1 Matmul Array
+
+Implemented A1.0 through A1.3:
+
+- Added matmul model estimates to `perf-report`:
+  measured compute, scalar baseline, ideal 8x8 array, conservative array, and
+  projected total.
+- Added `docs/matmul_array_a1.md` describing the module interface, timing, and
+  verification plan.
+- Added `hw/npu_core/rtl/matmul_array.sv`, an 8x8 output-parallel matmul engine
+  that consumes one K slice per active cycle.
+- Updated `hw/npu_core/rtl/npu_v0_top.sv` so `UOP_MATMUL` launches the array
+  engine and commits `result_flat` into `acc_buf`.
+- Updated Makefile RTL/SoC/perf targets to compile the new module.
+
+Measured result:
+
+```text
+matmul total cycles: 738 -> 236
+core matmul cycles:  512 -> 10
+softmax total cycles: unchanged at 53
+```
+
+Interpretation:
+
+- A1 achieved the intended compute reduction.
+- The current matmul job is now dominated by wrapper program/input/output
+  movement rather than the core compute phase.
+- The next architecture milestone should be A2: real data movement,
+  scratchpad/banking, and overlap.
+
+## Session 33: Add A2.0 Data-Movement Profiling
+
+Started A2 with profiling rather than a DMA rewrite.
+
+Added movement counters to `soc_cpu_tb` PERF_JOB records:
+
+- SRAM NPU-port read/write cycles;
+- core host-window write/read cycles;
+- descriptor/program/input/output word counts.
+
+Updated `perf-report` to render:
+
+- movement annotations inside `Wrapper phases`, such as
+  `SRAM read program -> core host write instr_mem`;
+- raw movement counters in `perf.json` for later tooling.
+
+Measured post-A1 matmul movement profile:
+
+```text
+total job cycles:              236
+core matmul cycles:             10
+SRAM read cycles:              153
+SRAM write cycles:              64
+core host write cycles:        144
+core host read cycles:          64
+```
+
+Interpretation:
+
+- Compute is no longer the bottleneck for the Phase 0 matmul.
+- The wrapper still performs one-word-per-cycle movement through the SRAM port
+  and core host window.
+- `Core host window` means wrapper-to-core host-interface accesses, not
+  independent core-to-SRAM writes.
+- The next A2 design step should define a real data mover/burst path and
+  scratchpad banking model.
+
+## Session 34: Define A2.1 Movement Direction
+
+Clarified the temporary nature of the current wrapper/core host-window path:
+
+- wrapper preload/readback through core host windows is an A0/A1 bring-up
+  mechanism;
+- core A/B/X/program/output windows are small NPU-core internal memories;
+- wrapper currently reads SRAM and writes those internal memories one word at a
+  time;
+- core output is read back by wrapper and then written to SRAM;
+- fixed-size `instr_mem` preload is not suitable for future variable-length
+  programs.
+
+Added `docs/data_mover_a2.md` as the A2 working plan. It defines the intended
+direction: data mover commands, burst SRAM movement, banked scratchpad,
+instruction buffer/prefetch, movement/stall timeline lanes, and double-buffer
+overlap later.
+
+Updated `perf-report` with a `Movement model` panel. It uses current movement
+word counts and a simple 4-word-per-cycle burst estimate to compare today's
+one-word wrapper movement against the first A2 data-mover target. This is a
+projection, not RTL behavior yet.
+
+## Session 35: Start A2 RTL Data Mover
+
+Documented how perf counters are collected:
+
+- current counters live in `soc_cpu_tb`;
+- the testbench samples wrapper/core state and SRAM/host-window signals once
+  per clock;
+- `PERF_JOB` lines are simulation records, not CPU-readable hardware counters;
+- once the taxonomy stabilizes, these counters should move into optional RTL
+  perf registers or debug CSRs.
+
+Started A2 RTL with a structural data mover:
+
+- added `hw/npu_wrapper/rtl/npu_v0_data_mover.sv`;
+- routed wrapper program/input/output linear transfers through the module;
+- preserved the current one-word-per-cycle timing;
+- added `Data mover` as a report timeline lane, currently reconstructed from
+  wrapper movement phases.
+
+Verification:
+
+```text
+make test        PASS
+make perf-report PASS
+matmul total cycles: 236
+softmax total cycles: 53
+```
+
+## Session 36: Freeze Next-Step Context
+
+Before pausing, recorded the next-session plan in `docs/data_mover_a2.md`.
+
+Resume point:
+
+- A2 RTL has started.
+- The current data mover is structural and still behaves as one word per cycle.
+- The report has a `Data mover` lane, but that lane is currently reconstructed
+  from wrapper movement phases.
+- Perf counters are still collected in `soc_cpu_tb`, not CPU-readable RTL CSRs.
+
+Next work:
+
+1. Add data mover timing parameters: `WORDS_PER_CYCLE` and `SETUP_CYCLES`.
+2. Preserve current `1 word/cycle` default behavior and pass tests.
+3. Add a profiled burst mode matching the current report model:
+   `4 words/cycle + 1 setup cycle per transfer segment`.
+4. Emit explicit data mover counters in `PERF_JOB`.
+5. Drive the report `Data mover` lane from those counters rather than wrapper
+   phase reconstruction.
+6. Compare measured movement cycles against the existing matmul movement model:
+   current measured SRAM movement is 217 cycles; conservative burst estimate is
+   about 60 cycles.
+7. Start scratchpad banking only after data mover counters and burst timing are
+   stable.
+
+Do not jump directly to double buffering, bank conflicts, or variable-length
+program streaming in the next session.
