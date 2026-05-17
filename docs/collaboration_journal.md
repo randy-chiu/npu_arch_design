@@ -67,6 +67,32 @@ make soc-sim: PASS
 make test: PASS, 8 tests
 ```
 
+新增 cycle 级性能报告入口：
+
+```text
+make perf-report
+```
+
+它运行 CPU-controlled SoC simulation，采集每个 NPU job 的 wrapper/core cycle
+分解和 CPU/wrapper/core timeline，并生成：
+
+```text
+build/perf/perf.json
+build/perf/perf_report.html
+```
+
+当前 perf 现状、timeline 语义、限制和后续扩展点记录在：
+
+```text
+sw/tools/perf/README.md
+```
+
+长期 NPU 目标架构、业界资料提炼、matmul array 化路线记录在：
+
+```text
+docs/target_architecture.md
+```
+
 本地 RISC-V GCC 曾使用：
 
 ```text
@@ -1341,3 +1367,59 @@ Validation:
 
 - `make demo`: PASS through the compatibility CLI with the new compiler path.
 - `make test`: PASS, 8 tests.
+
+## Session 30: Add Cycle Performance Report UI
+
+The user decided that before adding NPU core architectural complexity, the
+project should first expose cycle-level runtime cost. The report must have a UI,
+not only terminal text, so it can grow with later fine-grained module counters.
+
+Implemented a first CPU-controlled SoC performance path:
+
+- `hw/soc/tb/soc_cpu_tb.sv` now observes the NPU wrapper/core through hierarchy
+  and emits one `PERF_JOB` JSON line per firmware-launched job.
+- Current counters cover wrapper phases:
+  descriptor read, program fetch, input fetch, core launch/wait, output
+  writeback.
+- Current core counters cover fetch/vector-style cycles, matmul cycles, and
+  done cycles.
+- Added `sw/tools/perf/report.py` to parse the simulation log and generate both
+  `build/perf/perf.json` and `build/perf/perf_report.html`.
+- Added `make perf-report`.
+
+Initial measured baseline:
+
+```text
+matmul:  738 total cycles, 520 core cycles, 512 matmul cycles
+softmax:  53 total cycles,  11 core cycles
+```
+
+Validation:
+
+- `make perf-report`: PASS, generated JSON and HTML report.
+
+## Session 31: Define Research-Backed Target Architecture
+
+The user asked why current matmul takes 512 cycles and whether cube-style
+accelerators should do a matrix multiply in one cycle. The answer is that the
+current Phase 0 RTL is still a single-lane iterative MAC baseline: an 8x8x8 tile
+performs 512 multiply-accumulate updates. It does not yet implement a
+systolic/tensor/cube matrix engine.
+
+Researched public architecture directions from NVIDIA Blackwell, Google TPU
+v6e/v4, AMD MI300X, Intel Gaudi 3, Gemmini, Eyeriss v2, and SCALE-Sim v3. The
+shared direction is:
+
+- matrix/tensor arrays for many MACs per cycle;
+- explicit SRAM/HBM-style memory hierarchy and data movement;
+- compiler-controlled tiling/dataflow/overlap;
+- vector/SFU pipelines for transformer support;
+- low precision and sparsity as later measured extensions.
+
+Added `docs/target_architecture.md` with:
+
+- current 512-cycle matmul explanation;
+- long-term target block diagram;
+- staged architecture milestones A0-A5;
+- immediate next implementation plan focused on a measured parallel matmul
+  engine before DMA/banking/vector-pipeline complexity.

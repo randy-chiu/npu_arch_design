@@ -9,6 +9,7 @@
 | Document | Purpose |
 | --- | --- |
 | `architecture.md` | 当前 NPU SoC 架构、计算逻辑、CPU/NPU 软件硬件交互协议 |
+| `target_architecture.md` | 业界架构资料提炼、长期目标 NPU 架构、分阶段扩展计划 |
 | `code_structure_review.md` | 当前代码结构、逐文件走读、验证流程和 review 辅助说明 |
 | `work_rules.md` | 协作规则、source-of-truth 规则、spec change protocol |
 | `collaboration_journal.md` | 每次重要讨论和实现决策的纪要 |

@@ -40,6 +40,13 @@ update compiler/tooling, simulator, RTL, tests, and docs together.
 
 ## Near-Term Milestones
 
+Architecture evolution after the current Phase 0 loop is tracked in
+`docs/target_architecture.md`. The short version is: keep the performance report
+as the baseline, replace the scalar iterative matmul with a measured
+matrix-array engine first, then add real data movement, scratchpad banking,
+vector/SFU pipeline timing, and compiler overlap only when counters justify the
+complexity.
+
 ### M0: Phase 0 Core Loop
 
 Status: implemented.

@@ -15,6 +15,7 @@ Read these first when entering the project:
 | Entry | Purpose |
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | Current SoC/NPU architecture, NPU compute model, CPU/NPU interaction protocol |
+| [docs/target_architecture.md](docs/target_architecture.md) | Research-backed target NPU architecture and staged evolution plan |
 | [docs/code_structure_review.md](docs/code_structure_review.md) | File-level code map, RTL walkthrough, software flow, and verification details |
 | [docs/README.md](docs/README.md) | Full docs map and current status of planning/history documents |
 | [docs/work_rules.md](docs/work_rules.md) | Collaboration and source-of-truth rules |
@@ -77,11 +78,19 @@ Key simulation targets:
 | `make npu-core-sim` | Standalone NPU core RTL fixture |
 | `make soc-sim` | Legacy direct-wrapper-window SoC smoke |
 | `make cpu-soc-sim` | PicoRV32 firmware-controlled descriptor/SRAM SoC smoke |
+| `make perf-report` | CPU-controlled SoC smoke plus cycle JSON/HTML report |
 | `make test` | Python unit tests plus available RTL/SoC smoke tests |
 
 If a RISC-V bare-metal GCC is available in `PATH`, `make cpu-soc-sim` builds
 the C/ASM firmware under `sw/soc_cpu`. Otherwise the Makefile can fall back to
 the generated smoke image path used during early bring-up.
+
+`make perf-report` writes:
+
+```text
+build/perf/perf.json
+build/perf/perf_report.html
+```
 
 ## Current End-To-End Flow
 

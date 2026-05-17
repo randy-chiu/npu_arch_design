@@ -1,4 +1,4 @@
-.PHONY: test demo validate-arch soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke npu-core-sim rtl-sim soc-sim cpu-soc-sim
+.PHONY: test demo validate-arch soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke npu-core-sim rtl-sim soc-sim cpu-soc-sim perf-report
 
 PYTHONPATH := sw/tools
 ARCH := arch/configs/npu_v0.jsonc
@@ -88,3 +88,19 @@ cpu-soc-sim: firmware-smoke
 		hw/soc/rtl/soc_cpu_top.sv \
 		hw/soc/tb/soc_cpu_tb.sv
 	vvp build/soc/soc_cpu_tb
+
+perf-report: firmware-smoke
+	mkdir -p build/soc build/perf
+	iverilog -g2012 -I build/rtl_fixture -I build/soc -I build/npu_wrapper -I hw/npu_wrapper/rtl -o build/soc/soc_cpu_tb \
+		hw/soc/cpu/third_party/picorv32/picorv32.v \
+		hw/soc/cpu/rtl/picorv32_native_cpu.sv \
+		hw/npu_core/rtl/npu_v0_top.sv \
+		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
+		hw/soc/rtl/bus/simple_bus.sv \
+		hw/soc/rtl/mem/boot_rom.sv \
+		hw/soc/rtl/mem/simple_sram.sv \
+		hw/soc/rtl/debug/test_status.sv \
+		hw/soc/rtl/soc_cpu_top.sv \
+		hw/soc/tb/soc_cpu_tb.sv
+	vvp build/soc/soc_cpu_tb > build/perf/cpu_soc_perf.log
+	python sw/tools/perf/report.py --log build/perf/cpu_soc_perf.log --json-out build/perf/perf.json --html-out build/perf/perf_report.html

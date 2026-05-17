@@ -250,6 +250,21 @@ for i in M:
     C[i, j] = acc
 ```
 
+因此当前 8x8x8 matmul 的 compute 部分会消耗约：
+
+```text
+8 * 8 * 8 = 512 MAC cycles
+```
+
+这不是现代 tensor/cube/MXU 风格矩阵单元的实现。当前 RTL 虽然在
+`arch/configs/npu_v0.jsonc` 中记录了 Phase 0 逻辑 tile 和 `mac_lanes = 64`，
+但手写 core 仍然是单 lane iterative MAC baseline。后续目标是把该路径替换为
+parameterized systolic/tensor-array matmul engine。长期目标和分阶段计划见：
+
+```text
+docs/target_architecture.md
+```
+
 Softmax 逻辑当前是 vector pipeline 风格的 sequential task 组合：
 
 ```text
@@ -305,6 +320,7 @@ sw/tools/npu_phase0/rtl_fixture.py   // fixture generation wrapper/user
 | `make npu-core-sim` | 单独 NPU core RTL fixture |
 | `make soc-sim` | legacy wrapper-window SoC path |
 | `make cpu-soc-sim` | PicoRV32 firmware + descriptor/SRAM path |
+| `make perf-report` | CPU-controlled SoC sim + cycle JSON/HTML performance report |
 | `make test` | Python unit tests + 可用时运行 RTL/SoC sims |
 
 当前最重要的闭环是：
@@ -318,6 +334,30 @@ graph/input fixture
   -> wrapper writes output to SRAM
   -> CPU checks output
   -> test_status reports PASS/FAIL
+```
+
+当前 cycle 级性能报告入口：
+
+```text
+make perf-report
+```
+
+生成：
+
+```text
+build/perf/cpu_soc_perf.log
+build/perf/perf.json
+build/perf/perf_report.html
+```
+
+`soc_cpu_tb` 会按 NPU job 输出 `PERF_JOB` JSON line。当前 HTML report 已包含
+cycle timeline：横轴是 cycle 时间，纵轴是 `CPU firmware`、`NPU wrapper`、
+`NPU core`，实色块表示 active work，斜纹块表示 wait/blocked。当前统计 wrapper
+的 descriptor/program/input/core/output 阶段，以及 core 的 fetch/matmul/done
+阶段。详细现状、限制和扩展点见：
+
+```text
+sw/tools/perf/README.md
 ```
 
 ## 9. Current Limitations
