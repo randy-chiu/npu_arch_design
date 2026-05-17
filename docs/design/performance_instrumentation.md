@@ -1,0 +1,173 @@
+# Performance Instrumentation Design
+
+[TOC]
+
+This document describes how cycle-level performance data is collected and
+rendered today.
+
+## 1. Goal
+
+The performance system should show where time goes in a CPU-launched NPU job:
+
+```text
+CPU firmware start/poll
+NPU wrapper descriptor and control phases
+Data mover load/store phases
+NPU core execution phases
+```
+
+The main UI requirement is a timeline where the x-axis is cycle time and the
+y-axis is module/resource. It should make overlap, waiting, and wasted time
+visible.
+
+## 2. Current Collection Method
+
+Counters are currently collected in `hw/soc/tb/soc_cpu_tb.sv`.
+
+This is testbench-side profiling:
+
+- no CPU-visible perf registers yet;
+- no synthesizable counter block yet;
+- no counter logic inserted into every RTL module;
+- the testbench observes existing hierarchical RTL signals once per cycle.
+
+This choice keeps RTL simple while phase definitions are still changing.
+
+## 3. Job Boundary
+
+Start condition:
+
+```text
+CPU writes NPU_OPSCHED_CTRL with bit 0 set
+```
+
+End condition:
+
+```text
+wrapper reaches DESC_DONE and PERF_JOB is printed
+```
+
+Current measured interval starts at NPU launch, not at CPU input staging. CPU
+copying tensors/programs into SRAM and checking outputs are outside the current
+cycle report.
+
+## 4. Sampled Signals
+
+| Counter group | Source signal |
+| --- | --- |
+| wrapper phases | `dut.u_npu_wrapper.desc_state` |
+| core phases | `dut.u_npu_wrapper.u_npu.state` |
+| SRAM read/write cycles | `dut.u_npu_wrapper.sram_req/sram_we` |
+| core host writes | `dut.u_npu_wrapper.desc_host_we` |
+| core host reads | inferred during `DESC_WRITE_OUTPUT` |
+| moved words | SRAM request counts by wrapper state |
+
+The testbench prints one JSON line:
+
+```text
+PERF_JOB {...}
+```
+
+`sw/tools/perf/report.py` parses these lines and generates:
+
+```text
+build/perf/perf.json
+build/perf/perf_report.html
+```
+
+## 5. Current JSON Shape
+
+Each job has:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | job sequence number |
+| `name` | `matmul`, `softmax`, or `unknown` |
+| `total_cycles` | measured launch-to-wrapper-done cycles |
+| `wrapper` | wrapper phase cycles |
+| `core` | core phase cycles |
+| `movement` | SRAM/core-host movement counters |
+| `estimates` | matmul compute model, if applicable |
+| `movement_estimates` | burst-style movement model |
+| `timeline` | reconstructed lanes and spans |
+
+The schema is intentionally small and additive. New counters should be added as
+nested fields rather than breaking existing fields.
+
+## 6. Timeline Reconstruction
+
+The report builds lanes:
+
+| Lane | Current source |
+| --- | --- |
+| `CPU firmware` | synthetic start + poll/wait span |
+| `NPU wrapper` | wrapper phase counters |
+| `Data mover` | currently reconstructed from wrapper movement phases |
+| `NPU core` | core phase counters offset to wrapper core-wait position |
+
+Current data mover lane is a bridge step. After A2 adds explicit data mover
+counters/state, the lane should come from real data mover measurements.
+
+## 7. Report Panels
+
+Current HTML panels:
+
+- summary metrics;
+- cycle timeline;
+- matmul compute model;
+- movement model;
+- wrapper phase timeline;
+- data mover phase timeline;
+- core phase timeline;
+- raw JSON.
+
+The UI should prefer timeline views over plain tables because the main question
+is whether phases overlap or block each other.
+
+## 8. Movement Model
+
+The current movement model estimates a future burst data mover:
+
+```text
+ideal_burst_cycles = ceil(total_words / 4)
+conservative_burst_cycles =
+  sum(ceil(segment_words / 4)) + active_segments * 1 setup cycle
+```
+
+For matmul, current measured SRAM movement is 217 cycles and conservative burst
+estimate is about 60 cycles. This is a target model, not current RTL behavior.
+
+## 9. Known Limitations
+
+- CPU staging/check work is not measured.
+- CPU polling is modeled as one synthetic wait span.
+- Data mover lane is reconstructed, not from independent data mover counters.
+- SRAM `ready`/stall cycles are not separated.
+- Core host-window reads are inferred by wrapper state.
+- Counters are not software-readable.
+- No global multi-job timeline yet.
+
+## 10. Counter Placement Policy
+
+Short term:
+
+- keep rapidly changing counters in `soc_cpu_tb`;
+- expose enough hierarchy for testbench sampling;
+- keep `PERF_JOB` JSON additive.
+
+Medium term:
+
+- move stable counters into an optional RTL perf-counter/debug block;
+- expose CPU-readable counters through wrapper debug CSRs;
+- keep simulation report able to consume either testbench or RTL counter source.
+
+## 11. Next Work
+
+Next performance work should match A2:
+
+1. Add explicit data mover counters:
+   `dm_active_cycles`, `dm_setup_cycles`, `dm_transfer_cycles`, `dm_words`,
+   `dm_stall_cycles`.
+2. Drive the `Data mover` lane from those counters.
+3. Add burst-mode comparison against the movement model.
+4. Later add scratchpad bank conflict and core input-stall counters.

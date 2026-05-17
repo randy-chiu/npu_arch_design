@@ -1572,3 +1572,53 @@ Next work:
 
 Do not jump directly to double buffering, bank conflicts, or variable-length
 program streaming in the next session.
+
+## Session 37: Add Module Design Documentation
+
+Paused feature work to improve design documentation before the system grows
+further.
+
+Added detailed design docs:
+
+- `docs/design/soc_architecture.md`: SoC top, memory map, bus semantics,
+  ROM/SRAM, NPU attachment, simulation top, source-of-truth rules.
+- `docs/design/npu_wrapper.md`: wrapper register interface, descriptor ABI,
+  FSM, core host-window map, A2.1 data mover, timing semantics, status/error
+  limitations.
+- `docs/design/npu_core.md`: core interface, internal memories, host-window map,
+  uop execution, A1 matmul array, softmax path, timing baseline and limitations.
+- `docs/design/software_hardware_flow.md`: compiler/assembler/firmware/runtime
+  flow, descriptor setup, program format, pass/fail contract.
+- `docs/design/performance_instrumentation.md`: testbench-side perf collection,
+  sampled signals, `PERF_JOB` schema, report lanes, movement model, counter
+  placement policy.
+- `docs/design/verification_strategy.md`: verification layers, current
+  baselines, gaps, and test update rules.
+
+Updated `docs/README.md` and `docs/architecture.md` so these files are formal
+entry points rather than scattered notes.
+
+## Session 38: Prune Redundant Docs And Strengthen Doc Rules
+
+Cleaned up confusing historical/redundant documentation:
+
+- deleted `docs/code_structure_review.md`; its active content is now covered by
+  `docs/architecture.md` and the focused `docs/design/*.md` documents;
+- deleted `docs/soc_bringup.md`; the current SoC design now lives in
+  `docs/design/soc_architecture.md` and `docs/design/npu_wrapper.md`;
+- updated `README.md`, `docs/README.md`, `docs/archive/README.md`,
+  `docs/fpga_bringup.md`, and `docs/bugfix_list.md` to stop pointing developers
+  at deleted active-entry files;
+- added `docs/design/README.md` as the index for active module design docs.
+
+Updated `docs/work_rules.md` with a design-before-implementation rule:
+
+- before non-trivial implementation, write the design intent into the matching
+  active document under `docs/`;
+- include problem, scope, affected modules, interfaces, timing/perf impact,
+  verification plan, limitations, and follow-up work;
+- after implementation, update the same document with actual behavior, test
+  results, and gaps.
+
+This keeps future contributors from relying on stale chat context or scattered
+historical notes.

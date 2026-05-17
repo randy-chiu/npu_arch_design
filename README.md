@@ -86,8 +86,8 @@ Read these first when entering the project:
 | Entry | Purpose |
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | Current SoC/NPU architecture, NPU compute model, CPU/NPU interaction protocol |
+| [docs/design/](docs/design/) | Detailed module design docs for SoC, wrapper, NPU core, perf, verification, and software/hardware flow |
 | [docs/target_architecture.md](docs/target_architecture.md) | Research-backed target NPU architecture and staged evolution plan |
-| [docs/code_structure_review.md](docs/code_structure_review.md) | File-level code map, RTL walkthrough, software flow, and verification details |
 | [docs/README.md](docs/README.md) | Full docs map and current status of planning/history documents |
 | [docs/work_rules.md](docs/work_rules.md) | Collaboration and source-of-truth rules |
 | [docs/collaboration_journal.md](docs/collaboration_journal.md) | Current project snapshot, next plan, important decisions, and implementation history |
@@ -181,10 +181,10 @@ graph/input fixture
 ## Planning And History
 
 The current architecture entry is [docs/architecture.md](docs/architecture.md).
-Planning and historical notes are still kept for context:
+Detailed active module docs live under [docs/design/](docs/design/). Planning
+and historical notes are kept only when they add context:
 
 - [docs/project_plan.md](docs/project_plan.md): milestones and ownership notes.
-- [docs/soc_bringup.md](docs/soc_bringup.md): earlier SoC bring-up plan.
 - [docs/fpga_bringup.md](docs/fpga_bringup.md): FPGA direction and gaps.
 - [docs/archive/](docs/archive/): archived design drafts.
 

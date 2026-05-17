@@ -162,6 +162,49 @@ that adds a key subsystem, command, verification flow, document, architecture
 contract, or review-critical behavior must update the README with a short link
 and description.
 
-The code map in `docs/code_structure_review.md` must stay aligned with the
-actual repository structure. Update it whenever entry points, test flow,
-compiler/simulator/RTL fixture paths, or major file responsibilities change.
+The active design entry points are:
+
+```text
+docs/architecture.md
+docs/design/*.md
+docs/target_architecture.md
+docs/data_mover_a2.md
+docs/matmul_array_a1.md
+```
+
+Historical notes belong under `docs/archive/` only when they still have useful
+context. Do not keep duplicate active design documents that describe an older
+version of the system.
+
+## 8. Design-Before-Implementation Rule
+
+Before implementing a non-trivial change, write the design intent into the
+appropriate document under `docs/`.
+
+The design note should be detailed enough that another developer can understand
+the intended behavior before reading the patch. Include, as applicable:
+
+- problem statement and scope;
+- affected modules and ownership boundaries;
+- interface or ABI changes;
+- state-machine or timing changes;
+- expected performance/cycle impact;
+- verification plan and expected test commands;
+- known limitations and follow-up work.
+
+Use the most specific active document:
+
+| Change area | Preferred document |
+| --- | --- |
+| SoC top, bus, memory map | `docs/design/soc_architecture.md` |
+| Wrapper, descriptor path, data mover | `docs/design/npu_wrapper.md` |
+| NPU core, uops, matmul/vector datapath | `docs/design/npu_core.md` |
+| Firmware, compiler artifacts, CPU/NPU ABI | `docs/design/software_hardware_flow.md` |
+| Perf counters, report schema, UI lanes | `docs/design/performance_instrumentation.md` |
+| Tests and coverage | `docs/design/verification_strategy.md` |
+| Long-term direction | `docs/target_architecture.md` |
+
+After implementation, update the same document with what actually changed,
+the observed test/perf result, and any gap between the plan and the result.
+If the work changes a public entry point, update `README.md` and
+`docs/README.md` as well.

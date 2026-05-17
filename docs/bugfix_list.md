@@ -112,8 +112,8 @@ stack     = 0x0003_fff0
 
 ```text
 arch/configs/soc_v0.jsonc
-docs/code_structure_review.md
-docs/soc_bringup.md
+docs/architecture.md
+docs/design/soc_architecture.md
 ```
 
 现在 linker script 已经改为由 `make soc-spec` 从 `arch/configs/soc_v0.jsonc`

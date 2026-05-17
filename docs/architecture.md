@@ -3,8 +3,19 @@
 [TOC]
 
 本文档描述当前 `npu_v0` SoC 的基本架构、NPU 计算逻辑、CPU 软件交互逻辑和
-后续演进边界。它是“当前系统架构怎么工作”的入口；代码路径和逐文件走读见
-`docs/code_structure_review.md`。
+后续演进边界。它是“当前系统架构怎么工作”的入口；模块级细节见
+`docs/design/`。
+
+详细模块设计文档：
+
+| Document | Scope |
+| --- | --- |
+| `docs/design/soc_architecture.md` | SoC 顶层、memory map、bus、ROM/SRAM、NPU 接入方式 |
+| `docs/design/npu_wrapper.md` | NPU wrapper、descriptor FSM、core host window、A2 data mover |
+| `docs/design/npu_core.md` | NPU core、内部 memory、uop 执行、matmul array、softmax 路径 |
+| `docs/design/software_hardware_flow.md` | compiler/assembler/firmware/descriptor/wrapper/core 的交互 |
+| `docs/design/performance_instrumentation.md` | cycle 级 perf 计数、PERF_JOB、HTML timeline、counter 策略 |
+| `docs/design/verification_strategy.md` | 测试层级、验证入口、coverage 边界和下一步测试计划 |
 
 ## 1. 当前目标
 
