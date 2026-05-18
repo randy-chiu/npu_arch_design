@@ -3,7 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(_REPO_ROOT / "sw" / "tools"))
+
+from npu_phase0.digits_classifier import (  # noqa: E402
+    CLASS_COLUMNS,
+    REAL_CLASSES,
+    classifier_inputs_from_image,
+    lower_classifier_to_rtl_tiles,
+    predict_label,
+    reference_logits_from_image,
+)
 
 
 DATASETS = (
@@ -40,6 +54,8 @@ def main() -> None:
             lines.append(f"    0x{value & 0xFFFF_FFFF:08x}u,")
         lines.append("};")
         lines.append("")
+
+    _append_digits_classifier_data(lines)
     lines.append("#endif")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -48,6 +64,61 @@ def main() -> None:
 
 def _read_hex(path: Path) -> list[int]:
     return [int(line.strip(), 16) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _append_digits_classifier_data(lines: list[str]) -> None:
+    image_path = _REPO_ROOT / "test/assets/digits/digit_2.pgm"
+    inputs = classifier_inputs_from_image(image_path)
+    jobs = lower_classifier_to_rtl_tiles(inputs)
+    logits = reference_logits_from_image(image_path)
+    expected_label = predict_label(logits)
+
+    lines.append("#define DIGITS_TILE_COUNT 16u")
+    lines.append("#define DIGITS_TILE_WORDS 64u")
+    lines.append(f"#define DIGITS_LOGITS_WORDS {len(logits) * len(logits[0])}u")
+    lines.append(f"#define DIGITS_CLASS_COUNT {REAL_CLASSES}u")
+    lines.append(f"#define DIGITS_CLASS_COLUMNS {CLASS_COLUMNS}u")
+    lines.append(f"#define DIGITS_EXPECTED_LABEL {expected_label}u")
+    lines.append("")
+
+    _append_2d_array(lines, "digits_tile_n_offsets", [[job["n_offset"] for job in jobs]], bits=32)
+    _append_2d_array(lines, "digits_tile_a", [job["inputs"]["A"] for job in jobs], bits=8)
+    _append_2d_array(lines, "digits_tile_b", [job["inputs"]["B"] for job in jobs], bits=8)
+    _append_flat_array(lines, "digits_expected_logits", _flatten(logits), bits=32)
+
+
+def _append_2d_array(lines: list[str], symbol: str, values: list, bits: int) -> None:
+    if symbol == "digits_tile_n_offsets":
+        flat_rows = values
+        row_len = len(values[0])
+    else:
+        flat_rows = [_flatten(item) for item in values]
+        row_len = len(flat_rows[0])
+    lines.append(f"static const uint32_t {symbol}[{len(flat_rows)}][{row_len}] = {{")
+    mask = (1 << bits) - 1
+    for row in flat_rows:
+        lines.append("    {" + ", ".join(f"0x{(int(value) & mask):08x}u" for value in row) + "},")
+    lines.append("};")
+    lines.append("")
+
+
+def _append_flat_array(lines: list[str], symbol: str, values: list[int], bits: int) -> None:
+    mask = (1 << bits) - 1
+    lines.append(f"static const uint32_t {symbol}[{len(values)}] = {{")
+    for value in values:
+        lines.append(f"    0x{(int(value) & mask):08x}u,")
+    lines.append("};")
+    lines.append("")
+
+
+def _flatten(value):
+    out = []
+    for item in value:
+        if isinstance(item, list):
+            out.extend(_flatten(item))
+        else:
+            out.append(item)
+    return out
 
 
 if __name__ == "__main__":

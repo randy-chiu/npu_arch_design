@@ -47,6 +47,29 @@ matrix-array engine first, then add real data movement, scratchpad banking,
 vector/SFU pipeline timing, and compiler overlap only when counters justify the
 complexity.
 
+### W1: Digits Classifier Workload
+
+Status: linear classifier SoC path implemented; Tiny MLP tool path implemented;
+Tiny MLP SoC path pending.
+
+Purpose:
+
+- pause further core optimization long enough to add a realistic model-level
+  workload;
+- run an image-like input through NPU-visible classifier math;
+- validate predicted digit labels rather than only operator tensors.
+
+Exit condition:
+
+- checked-in 8x8 digit inputs and int8 classifier weights exist;
+- host-side golden predicts expected labels;
+- compiler and micro-op simulator run the classifier graph end to end;
+- CPU firmware launches 16 RTL-compatible `8x8x8` matmul tile jobs and checks
+  classifier logits/predicted label;
+- Tiny MLP graph exists with CPU/NPU placement and tiled matmul tests;
+- next step is moving Tiny MLP orchestration into firmware, then designing a
+  Tiny CNN only after the MLP path is stable.
+
 ### M0: Phase 0 Core Loop
 
 Status: implemented.

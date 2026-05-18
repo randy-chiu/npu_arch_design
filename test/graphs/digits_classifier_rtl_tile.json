@@ -1,0 +1,10 @@
+{
+  "description": "One RTL-compatible tile job used by digits classifier lowering. The full classifier is 16 of these jobs: 2 N tiles x 8 K tiles.",
+  "tensors": {
+    "A": {"shape": [8, 8], "dtype": "int8"},
+    "B": {"shape": [8, 8], "dtype": "int8"}
+  },
+  "ops": [
+    {"type": "matmul", "a": "A", "b": "B", "out": "C"}
+  ]
+}

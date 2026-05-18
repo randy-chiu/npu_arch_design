@@ -14,6 +14,11 @@ static uint32_t softmax_x_sram[SOFTMAX_X_LEN];
 static uint32_t softmax_program_sram[SOFTMAX_PROGRAM_LEN];
 static uint32_t softmax_y_sram[SOFTMAX_EXPECTED_Y_LEN];
 
+static uint32_t digits_a_tile_sram[DIGITS_TILE_WORDS];
+static uint32_t digits_b_tile_sram[DIGITS_TILE_WORDS];
+static uint32_t digits_c_tile_sram[DIGITS_TILE_WORDS];
+static int32_t digits_logits_sram[DIGITS_LOGITS_WORDS];
+
 static soc_npu_job_desc_t job_desc;
 
 static uint32_t ptr32(const void *ptr)
@@ -57,6 +62,83 @@ static void run_job(void)
     npu_wait_done();
 }
 
+static void clear_digits_logits(void)
+{
+    for (uint32_t i = 0; i < DIGITS_LOGITS_WORDS; ++i) {
+        digits_logits_sram[i] = 0;
+    }
+}
+
+static void run_digits_tile(uint32_t tile)
+{
+    copy_words(digits_a_tile_sram, digits_tile_a[tile], DIGITS_TILE_WORDS);
+    copy_words(digits_b_tile_sram, digits_tile_b[tile], DIGITS_TILE_WORDS);
+
+    job_desc.op_type = SOC_NPU_JOB_OP_MATMUL;
+    job_desc.program_addr = ptr32(matmul_program_sram);
+    job_desc.program_words = MATMUL_PROGRAM_LEN;
+    job_desc.input0_addr = ptr32(digits_a_tile_sram);
+    job_desc.input0_words = DIGITS_TILE_WORDS;
+    job_desc.input1_addr = ptr32(digits_b_tile_sram);
+    job_desc.input1_words = DIGITS_TILE_WORDS;
+    job_desc.output_addr = ptr32(digits_c_tile_sram);
+    job_desc.output_words = DIGITS_TILE_WORDS;
+    run_job();
+}
+
+static void accumulate_digits_tile(uint32_t tile)
+{
+    uint32_t n_offset = digits_tile_n_offsets[0][tile];
+    for (uint32_t row = 0; row < 8u; ++row) {
+        for (uint32_t col = 0; col < 8u; ++col) {
+            uint32_t tile_idx = row * 8u + col;
+            uint32_t logits_idx = row * DIGITS_CLASS_COLUMNS + n_offset + col;
+            digits_logits_sram[logits_idx] += (int32_t)digits_c_tile_sram[tile_idx];
+        }
+    }
+}
+
+static int check_digits_logits(void)
+{
+    for (uint32_t i = 0; i < DIGITS_LOGITS_WORDS; ++i) {
+        if (digits_logits_sram[i] != (int32_t)digits_expected_logits[i]) {
+            test_status_fail_code(0x300u | ((uint32_t)i & 0xffu));
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static uint32_t predict_digits_label(void)
+{
+    uint32_t best = 0u;
+    int32_t best_value = digits_logits_sram[0];
+    for (uint32_t cls = 1u; cls < DIGITS_CLASS_COUNT; ++cls) {
+        if (digits_logits_sram[cls] > best_value) {
+            best = cls;
+            best_value = digits_logits_sram[cls];
+        }
+    }
+    return best;
+}
+
+static int run_digits_classifier(void)
+{
+    clear_digits_logits();
+    for (uint32_t tile = 0; tile < DIGITS_TILE_COUNT; ++tile) {
+        run_digits_tile(tile);
+        accumulate_digits_tile(tile);
+    }
+    if (!check_digits_logits()) {
+        return 0;
+    }
+    if (predict_digits_label() != DIGITS_EXPECTED_LABEL) {
+        test_status_fail_code(0x400u | (predict_digits_label() & 0xffu));
+        return 0;
+    }
+    return 1;
+}
+
 int main(void)
 {
     copy_words(matmul_a_sram, matmul_a, MATMUL_A_LEN);
@@ -93,6 +175,10 @@ int main(void)
     run_job();
 
     if (!check_low_bytes(softmax_y_sram, softmax_expected_y, SOFTMAX_EXPECTED_Y_LEN, 0x200u)) {
+        return 1;
+    }
+
+    if (!run_digits_classifier()) {
         return 1;
     }
 

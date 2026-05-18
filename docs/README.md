@@ -16,6 +16,7 @@
 | `design/software_hardware_flow.md` | compiler/assembler/firmware/descriptor/wrapper/core 的软硬件交互流程 |
 | `design/performance_instrumentation.md` | cycle 级 perf 计数、PERF_JOB、HTML timeline、counter 下沉策略 |
 | `design/verification_strategy.md` | 当前测试层级、验证入口、coverage 边界和下一步测试计划 |
+| `digits_classifier_workload.md` | 下一阶段真实 workload：8x8 手写数字分类闭环 |
 | `target_architecture.md` | 业界架构资料提炼、长期目标 NPU 架构、分阶段扩展计划 |
 | `matmul_array_a1.md` | A1 matmul array 的接口、时序、性能目标和验证标准 |
 | `data_mover_a2.md` | A2 data mover、scratchpad banking、program streaming 的临时约束和下一步计划 |

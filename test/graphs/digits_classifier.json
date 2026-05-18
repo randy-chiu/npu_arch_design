@@ -1,0 +1,10 @@
+{
+  "description": "Logical classifier graph: one 8x8 grayscale image is flattened into A[0], padded to 8x64, multiplied by 64x16 int8 weights, and argmax(Logits[0][0:10]) gives the digit.",
+  "tensors": {
+    "A": {"shape": [8, 64], "dtype": "int8"},
+    "W": {"shape": [64, 16], "dtype": "int8"}
+  },
+  "ops": [
+    {"type": "matmul", "a": "A", "b": "W", "out": "Logits"}
+  ]
+}

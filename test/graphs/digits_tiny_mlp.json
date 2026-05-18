@@ -1,0 +1,17 @@
+{
+  "description": "Tiny MLP graph. Matmul ops are NPU-visible tile workloads; relu and argmax are CPU/tool-side until the ISA grows vector activation/topk ops.",
+  "tensors": {
+    "A": {"shape": [8, 64], "dtype": "int8"},
+    "W1": {"shape": [64, 16], "dtype": "int8"},
+    "Hidden": {"shape": [8, 16], "dtype": "int32"},
+    "HiddenInt8": {"shape": [8, 16], "dtype": "int8"},
+    "W2": {"shape": [16, 16], "dtype": "int8"},
+    "Logits": {"shape": [8, 16], "dtype": "int32"}
+  },
+  "ops": [
+    {"type": "matmul", "a": "A", "b": "W1", "out": "Hidden", "placement": "npu"},
+    {"type": "relu_requantize", "x": "Hidden", "out": "HiddenInt8", "placement": "cpu"},
+    {"type": "matmul", "a": "HiddenInt8", "b": "W2", "out": "Logits", "placement": "npu"},
+    {"type": "argmax", "x": "Logits", "classes": 10, "out": "Predicted", "placement": "cpu"}
+  ]
+}

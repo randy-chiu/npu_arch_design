@@ -64,7 +64,8 @@ workflow.
 ```text
 make cpu-soc-sim: PASS
 make soc-sim: PASS
-make test: PASS, 8 tests
+make digits-demo: PASS
+make test: PASS, 16 tests
 ```
 
 新增 cycle 级性能报告入口：
@@ -93,6 +94,24 @@ sw/tools/perf/README.md
 docs/target_architecture.md
 ```
 
+当前新增真实 workload 记录在：
+
+```text
+docs/digits_classifier_workload.md
+```
+
+它已经跑通两个 workload 阶段：
+
+1. Linear classifier 已进入 CPU-controlled SoC：firmware 对 digit_2 PGM 输入
+   发起 16 个 `8x8x8` matmul tile job，在 SRAM 中累加 logits，并校验 expected
+   logits / predicted label。
+2. Tiny MLP 已在工具层跑通：graph 为
+   `matmul -> relu_requantize -> matmul -> argmax`，两个 matmul 都 lower 到
+   current-RTL-compatible tile jobs，CPU/tool 侧负责 activation 和 argmax。
+
+明天继续前，优先决定 Tiny MLP 是否搬进 firmware；Tiny CNN 设计要等 MLP
+firmware path 稳定后再展开。
+
 本地 RISC-V GCC 曾使用：
 
 ```text
@@ -117,13 +136,17 @@ thirdparty/xpack-riscv-none-elf-gcc-15.2.0-1/bin/riscv-none-elf-gcc
 
 短期下一步：
 
-1. 继续完善 operator template schema，增加字段校验，避免 template 写错后到
+1. 在继续优化 NPU core 之前，先加入真实 workload：
+   `docs/digits_classifier_workload.md` 记录 8x8 手写数字分类闭环。第一版使用
+   `8x64 * 64x16` 的 Phase 0 合法 matmul 形状，NPU-visible 部分输出 logits，
+   CPU/tool 侧做 `argmax` 校验 expected digit。
+2. 继续完善 operator template schema，增加字段校验，避免 template 写错后到
    RTL/firmware 阶段才暴露。
-2. 把 `npu_phase0` compatibility package 中剩余的 Phase 0 专用职责逐步迁到
+3. 把 `npu_phase0` compatibility package 中剩余的 Phase 0 专用职责逐步迁到
    `npu_compiler`、`npu_assembler`、simulator/golden 等更清晰目录。
-3. 让固定 operator program artifact 在合适时进入 `sw/npu_core/programs`，区分
+4. 让固定 operator program artifact 在合适时进入 `sw/npu_core/programs`，区分
    “operator intent/source”和“已编码 program artifact”。
-4. descriptor 增加错误码、状态码、更清晰的 job validation。
+5. descriptor 增加错误码、状态码、更清晰的 job validation。
 
 中期计划：
 

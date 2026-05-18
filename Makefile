@@ -1,4 +1,4 @@
-.PHONY: test demo validate-arch soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke npu-core-sim rtl-sim soc-sim cpu-soc-sim perf-report
+.PHONY: test demo digits-demo validate-arch soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke npu-core-sim rtl-sim soc-sim cpu-soc-sim perf-report
 
 PYTHONPATH := sw/tools
 ARCH := arch/configs/npu_v0.jsonc
@@ -15,6 +15,9 @@ validate-arch:
 
 demo:
 	PYTHONPATH=$(PYTHONPATH) python -m npu_phase0.cli demo --arch $(ARCH)
+
+digits-demo:
+	PYTHONPATH=$(PYTHONPATH) python -m npu_phase0.cli digits-demo --arch $(ARCH) --label 2
 
 rtl-fixtures:
 	PYTHONPATH=$(PYTHONPATH) python -m npu_phase0.cli emit-rtl-fixtures --arch $(ARCH) --out-dir build/rtl_fixture

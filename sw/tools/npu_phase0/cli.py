@@ -9,6 +9,14 @@ from typing import Union
 
 from .arch import load_arch
 from .compiler import compile_graph
+from .digits_classifier import (
+    classifier_graph,
+    classifier_inputs,
+    classifier_inputs_from_image,
+    glyph_rows,
+    image_to_glyph_rows,
+    predict_label,
+)
 from .golden import assert_close, matmul, softmax
 from .rtl_fixture import generate_default_fixtures
 from .simulator import MicroOpFunctionalSimulator
@@ -29,6 +37,11 @@ def main() -> int:
 
     demo = sub.add_parser("demo")
     demo.add_argument("--arch", required=True)
+
+    digits_demo = sub.add_parser("digits-demo")
+    digits_demo.add_argument("--arch", required=True)
+    digits_demo.add_argument("--label", type=int, default=2)
+    digits_demo.add_argument("--image")
 
     fixtures = sub.add_parser("emit-rtl-fixtures")
     fixtures.add_argument("--arch", required=True)
@@ -53,6 +66,10 @@ def main() -> int:
 
     if args.cmd == "demo":
         _run_demo(Path(args.arch))
+        return 0
+
+    if args.cmd == "digits-demo":
+        _run_digits_demo(Path(args.arch), args.label, Path(args.image) if args.image else None)
         return 0
 
     if args.cmd == "emit-rtl-fixtures":
@@ -87,6 +104,37 @@ def _run_demo(arch_path: Path) -> None:
     assert_close(result["dram"]["Y"], expected, arch["verification"]["softmax_abs_tolerance"])
     print("PASS demo matmul -> softmax")
     print(json.dumps({"program": artifact["program"], "counters": result["counters"]}, indent=2))
+
+
+def _run_digits_demo(arch_path: Path, label: int, image_path: Path | None) -> None:
+    arch = load_arch(arch_path)
+    graph = classifier_graph()
+    artifact = compile_graph(graph, arch)
+    if image_path is None:
+        inputs = classifier_inputs(label)
+        input_glyph = glyph_rows(label)
+    else:
+        inputs = classifier_inputs_from_image(image_path)
+        input_glyph = image_to_glyph_rows(image_path)
+    result = MicroOpFunctionalSimulator(arch).run(artifact, inputs)
+    logits_10 = result["dram"]["Logits"][0][:10]
+    predicted = predict_label(result["dram"]["Logits"])
+    if predicted != label:
+        raise AssertionError(f"digits classifier predicted {predicted}, expected {label}")
+    print(f"PASS digits classifier label={label} predicted={predicted}")
+    print(
+        json.dumps(
+            {
+                "input_image": str(image_path) if image_path else None,
+                "input_glyph": input_glyph,
+                "class_logits_0_to_9": logits_10,
+                "predicted_label": predicted,
+                "program": artifact["program"],
+                "counters": result["counters"],
+            },
+            indent=2,
+        )
+    )
 
 
 def _read_json(path: Union[str, Path]):

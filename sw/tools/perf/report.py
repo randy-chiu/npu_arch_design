@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import html
 import json
@@ -184,16 +186,98 @@ def parse_perf_log(path: Path) -> dict:
                 )
     if not jobs:
         raise ValueError(f"no {PERF_PREFIX.strip()} records found in {path}")
+    workloads = infer_workloads(jobs)
     return {
         "schema": "npu_perf_report_v0",
         "source_log": str(path),
         "summary": {
             "jobs": len(jobs),
+            "workloads": len(workloads),
             "total_cycles": sum(job["total_cycles"] for job in jobs),
             "max_job_cycles": max(job["total_cycles"] for job in jobs),
         },
+        "workloads": workloads,
         "jobs": jobs,
     }
+
+
+def infer_workloads(jobs: list[dict]) -> list[dict]:
+    workloads = []
+    if not jobs:
+        return workloads
+
+    if len(jobs) >= 1:
+        workloads.append(_workload_summary("operator_smoke_matmul", jobs[0:1], "operator_smoke"))
+    if len(jobs) >= 2:
+        workloads.append(_workload_summary("operator_smoke_softmax", jobs[1:2], "operator_smoke"))
+
+    cursor = 2
+    classifier_tile_count = 16
+    while cursor + classifier_tile_count <= len(jobs):
+        candidate = jobs[cursor : cursor + classifier_tile_count]
+        if all(job.get("name") == "matmul" for job in candidate):
+            workloads.append(
+                _workload_summary(
+                    "digits_linear_classifier",
+                    candidate,
+                    "model",
+                    metadata={
+                        "input": "test/assets/digits/digit_2.pgm",
+                        "graph": "test/graphs/digits_classifier.json",
+                        "tile_graph": "test/graphs/digits_classifier_rtl_tile.json",
+                        "tile_jobs": classifier_tile_count,
+                        "description": "8x8 digit image, 16 matmul tiles, CPU-side partial-sum accumulation and argmax",
+                    },
+                )
+            )
+            cursor += classifier_tile_count
+        else:
+            workloads.append(_workload_summary(f"unclassified_jobs_{cursor + 1}", candidate, "unknown"))
+            cursor += classifier_tile_count
+
+    if cursor < len(jobs):
+        workloads.append(_workload_summary(f"unclassified_jobs_{cursor + 1}", jobs[cursor:], "unknown"))
+    return workloads
+
+
+def _workload_summary(
+    name: str,
+    jobs: list[dict],
+    kind: str,
+    metadata: dict | None = None,
+) -> dict:
+    movement_totals: dict[str, int] = {}
+    wrapper_totals: dict[str, int] = {}
+    core_totals: dict[str, int] = {}
+    for job in jobs:
+        _accumulate_counter_dict(wrapper_totals, job.get("wrapper", {}))
+        _accumulate_counter_dict(core_totals, job.get("core", {}))
+        _accumulate_counter_dict(movement_totals, job.get("movement", {}))
+
+    total_cycles = sum(int(job["total_cycles"]) for job in jobs)
+    core_matmul_cycles = int(core_totals.get("matmul", 0))
+    movement_cycles = int(movement_totals.get("sram_read_cycles", 0)) + int(
+        movement_totals.get("sram_write_cycles", 0)
+    )
+    return {
+        "name": name,
+        "kind": kind,
+        "job_ids": [job["id"] for job in jobs],
+        "jobs": len(jobs),
+        "total_cycles": total_cycles,
+        "max_job_cycles": max(int(job["total_cycles"]) for job in jobs),
+        "core_matmul_cycles": core_matmul_cycles,
+        "movement_sram_cycles": movement_cycles,
+        "wrapper": wrapper_totals,
+        "core": core_totals,
+        "movement": movement_totals,
+        "metadata": metadata or {},
+    }
+
+
+def _accumulate_counter_dict(dst: dict[str, int], src: dict) -> None:
+    for key, value in src.items():
+        dst[key] = int(dst.get(key, 0)) + int(value)
 
 
 def write_json(report: dict, path: Path) -> None:
@@ -206,6 +290,7 @@ def write_json(report: dict, path: Path) -> None:
 def write_html(report: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     jobs_json = json.dumps(report["jobs"])
+    workloads_json = json.dumps(report.get("workloads", []))
     report_json = json.dumps(report, indent=2)
     with path.open("w", encoding="utf-8") as f:
         f.write(
@@ -407,6 +492,23 @@ def write_html(report: dict, path: Path) -> None:
       padding: 10px;
       background: #fbfcfe;
     }}
+    .workload-table {{
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-variant-numeric: tabular-nums;
+    }}
+    .workload-table th, .workload-table td {{
+      border-bottom: 1px solid var(--line);
+      padding: 8px 6px;
+      text-align: left;
+      vertical-align: top;
+    }}
+    .workload-table th {{
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }}
     .estimate .label {{
       color: var(--muted);
       font-size: 12px;
@@ -440,8 +542,15 @@ def write_html(report: dict, path: Path) -> None:
   <main>
     <section class="metrics">
       <div class="metric"><h2>Jobs</h2><div class="value">{report["summary"]["jobs"]}</div></div>
+      <div class="metric"><h2>Workloads</h2><div class="value">{report["summary"].get("workloads", 0)}</div></div>
       <div class="metric"><h2>Total Cycles</h2><div class="value">{report["summary"]["total_cycles"]}</div></div>
       <div class="metric"><h2>Max Job Cycles</h2><div class="value">{report["summary"]["max_job_cycles"]}</div></div>
+    </section>
+    <section class="job" id="workloads">
+      <div class="job-head">
+        <h2>Workload Summary</h2>
+        <div class="subtle">Grouped model/operator runs inferred from PERF_JOB records</div>
+      </div>
     </section>
     <section class="grid" id="jobs"></section>
     <section class="raw" style="margin-top:16px">
@@ -451,6 +560,7 @@ def write_html(report: dict, path: Path) -> None:
   </main>
   <script>
     const jobs = {jobs_json};
+    const workloads = {workloads_json};
     const colors = ["var(--accent)", "var(--accent-2)", "var(--accent-3)", "var(--accent-4)"];
     const timelineColors = {{
       "CPU firmware": "#7b61d1",
@@ -687,6 +797,39 @@ def write_html(report: dict, path: Path) -> None:
     }}
 
     const root = document.getElementById("jobs");
+    const workloadRoot = document.getElementById("workloads");
+    if (workloads.length) {{
+      const table = document.createElement("table");
+      table.className = "workload-table";
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Kind</th>
+            <th>Jobs</th>
+            <th>Total cycles</th>
+            <th>Core matmul</th>
+            <th>SRAM movement</th>
+            <th>Metadata</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${{workloads.map((w) => `
+            <tr>
+              <td>${{w.name}}</td>
+              <td>${{w.kind}}</td>
+              <td>#${{w.job_ids.join(", #")}}</td>
+              <td>${{w.total_cycles}}</td>
+              <td>${{w.core_matmul_cycles}}</td>
+              <td>${{w.movement_sram_cycles}}</td>
+              <td>${{w.metadata && w.metadata.description ? w.metadata.description : ""}}</td>
+            </tr>
+          `).join("")}}
+        </tbody>
+      `;
+      workloadRoot.appendChild(table);
+    }}
+
     jobs.forEach((job) => {{
       const section = document.createElement("article");
       section.className = "job";

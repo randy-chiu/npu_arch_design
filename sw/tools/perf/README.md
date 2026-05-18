@@ -22,6 +22,15 @@ The schema is intentionally small: each job has total cycles plus nested module
 phase counters. Later RTL modules can add more nested counters without changing
 the basic report flow.
 
+The report also emits an inferred `workloads` section for the current firmware
+smoke sequence:
+
+- `operator_smoke_matmul`: the original single matmul job;
+- `operator_smoke_softmax`: the original single softmax job;
+- `digits_linear_classifier`: 16 tiled `8x8x8` matmul jobs that implement the
+  linear digit classifier, with CPU firmware accumulating partial sums and
+  checking the predicted label.
+
 ## Counter Placement
 
 The current perf counters are testbench-side instrumentation. They do not add
@@ -54,6 +63,7 @@ the job. The HTML report currently shows:
 
 - a cycle timeline with `CPU firmware`, `NPU wrapper`, `Data mover`, and
   `NPU core` lanes;
+- a workload summary table for grouped operator/model runs;
 - active work spans as solid blocks;
 - wait/blocked spans as patterned blocks;
 - per-job total cycles;
@@ -123,6 +133,16 @@ phase is only 10 cycles, while input/program movement and output writeback are
 hundreds of single-word cycles. This is the main evidence for A2 work on data
 movers, scratchpad banking, and overlap.
 
+Digits classifier model profile:
+
+| Workload | Jobs | Total cycles | Notes |
+| --- | ---: | ---: | --- |
+| `digits_linear_classifier` | 16 matmul tiles | 3776 | `8x64 * 64x16` lowered into 16 current-RTL-compatible `8x8x8` jobs |
+
+The model profile currently counts only NPU job intervals. CPU-side work between
+jobs, including copying tile tensors, accumulating partial sums, and argmax, is
+validated by firmware but not yet measured as a separate span.
+
 The UI intentionally does not render separate `SRAM NPU port` and
 `Core host window` timelines because those phases currently overlap almost
 one-to-one with wrapper phases. Instead, the `Wrapper phases` rows include the
@@ -176,6 +196,9 @@ mover state directly and may no longer match wrapper phase boundaries.
 
 - CPU time before `CTRL.start` is not measured yet. Descriptor construction,
   SRAM buffer writes, and result checking are outside the current timeline.
+- CPU time between tiled model jobs is not measured yet. For
+  `digits_linear_classifier`, partial-sum accumulation and argmax are validated
+  by firmware but not included in workload cycle totals.
 - The CPU lane currently models firmware as `MMIO start` followed by polling
   wait; it does not yet break down individual firmware instructions or bus
   transactions.
@@ -193,6 +216,8 @@ Near-term extensions:
 
 - Add CPU-side spans before and after NPU launch: input staging, descriptor
   write, program copy, result check, and test-status write.
+- Emit explicit firmware workload metadata instead of relying on report-side
+  inference for `digits_linear_classifier`.
 - Split CPU polling into MMIO read transactions and idle cycles.
 - Convert SRAM NPU-port read/write spans from simple one-word-per-cycle movement
   into burst/bandwidth-aware data mover counters.

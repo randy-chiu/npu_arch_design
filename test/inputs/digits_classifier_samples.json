@@ -1,0 +1,76 @@
+{
+  "description": "Human-readable 8x8 digit classifier samples. Each image row uses 1 for foreground and 0 for background. The current classifier maps foreground to int8 3 and background to int8 -1.",
+  "class_columns": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+  "samples": [
+    {
+      "label": 0,
+      "image_path": "test/assets/digits/digit_0.pgm",
+      "image": ["01111110", "11000011", "11000111", "11001011", "11010011", "11100011", "11000011", "01111110"],
+      "expected_logits_0_to_9": [384, -12, 140, 228, 44, 220, 248, 56, 312, 248],
+      "expected_prediction": 0
+    },
+    {
+      "label": 1,
+      "image_path": "test/assets/digits/digit_1.pgm",
+      "image": ["00011000", "00111000", "01111000", "00011000", "00011000", "00011000", "00011000", "01111110"],
+      "expected_logits_0_to_9": [-12, 248, 32, 8, -16, 16, 28, 28, -4, -4],
+      "expected_prediction": 1
+    },
+    {
+      "label": 2,
+      "image_path": "test/assets/digits/digit_2.pgm",
+      "image": ["01111110", "11000011", "00000011", "00000110", "00011100", "00110000", "01100000", "11111111"],
+      "expected_logits_0_to_9": [140, 32, 296, 160, 8, 88, 52, 132, 132, 148],
+      "expected_prediction": 2
+    },
+    {
+      "label": 3,
+      "image_path": "test/assets/digits/digit_3.pgm",
+      "image": ["01111110", "11000011", "00000011", "00111110", "00000011", "00000011", "11000011", "01111110"],
+      "expected_logits_0_to_9": [228, 8, 160, 312, 48, 240, 204, 60, 284, 172],
+      "expected_prediction": 3
+    },
+    {
+      "label": 4,
+      "image_path": "test/assets/digits/digit_4.pgm",
+      "image": ["00000110", "00001110", "00011110", "00110110", "01100110", "11111111", "00000110", "00000110"],
+      "expected_logits_0_to_9": [44, -16, 8, 48, 296, 8, 52, -12, 68, 36],
+      "expected_prediction": 4
+    },
+    {
+      "label": 5,
+      "image_path": "test/assets/digits/digit_5.pgm",
+      "image": ["11111111", "11000000", "11000000", "11111110", "00000011", "00000011", "11000011", "01111110"],
+      "expected_logits_0_to_9": [220, 16, 88, 240, 8, 328, 260, 36, 260, 164],
+      "expected_prediction": 5
+    },
+    {
+      "label": 6,
+      "image_path": "test/assets/digits/digit_6.pgm",
+      "image": ["00111110", "01100000", "11000000", "11111110", "11000011", "11000011", "11000011", "01111110"],
+      "expected_logits_0_to_9": [248, 28, 52, 204, 52, 260, 336, -16, 288, 144],
+      "expected_prediction": 6
+    },
+    {
+      "label": 7,
+      "image_path": "test/assets/digits/digit_7.pgm",
+      "image": ["11111111", "00000011", "00000110", "00001100", "00011000", "00110000", "00110000", "00110000"],
+      "expected_logits_0_to_9": [56, 28, 132, 60, -12, 36, -16, 240, 32, 48],
+      "expected_prediction": 7
+    },
+    {
+      "label": 8,
+      "image_path": "test/assets/digits/digit_8.pgm",
+      "image": ["01111110", "11000011", "11000011", "01111110", "11000011", "11000011", "11000011", "01111110"],
+      "expected_logits_0_to_9": [312, -4, 132, 284, 68, 260, 288, 32, 368, 208],
+      "expected_prediction": 8
+    },
+    {
+      "label": 9,
+      "image_path": "test/assets/digits/digit_9.pgm",
+      "image": ["01111110", "11000011", "11000011", "11000011", "01111111", "00000011", "00000110", "01111100"],
+      "expected_logits_0_to_9": [248, -4, 148, 172, 36, 164, 144, 48, 208, 336],
+      "expected_prediction": 9
+    }
+  ]
+}
