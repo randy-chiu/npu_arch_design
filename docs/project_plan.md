@@ -50,7 +50,8 @@ complexity.
 ### W1: Digits Classifier Workload
 
 Status: linear classifier SoC path implemented; Tiny MLP tool path implemented;
-Tiny MLP SoC path pending.
+real MNIST CNN `fc2` SoC path implemented. Tiny MLP SoC path is no longer the
+active priority.
 
 Purpose:
 
@@ -67,8 +68,34 @@ Exit condition:
 - CPU firmware launches 16 RTL-compatible `8x8x8` matmul tile jobs and checks
   classifier logits/predicted label;
 - Tiny MLP graph exists with CPU/NPU placement and tiled matmul tests;
-- next step is moving Tiny MLP orchestration into firmware, then designing a
-  Tiny CNN only after the MLP path is stable.
+- real open-source MNIST CNN is documented in `docs/real_mnist_cnn_workload.md`;
+- CPU firmware launches 32 RTL-compatible `8x8x8` matmul tile jobs for the
+  original MNIST CNN `fc2` quantized hardware-facing view and checks expected
+  label;
+- next step is mapping the original MNIST CNN `fc1: 9216 -> 128` while keeping
+  conv/maxpool on the CPU/tool side.
+
+### W2: Real MNIST CNN Layer Mapping
+
+Status: `fc2` SoC RTL path implemented; `fc1` planned.
+
+Purpose:
+
+- use a real open-source pretrained CNN and real MNIST images as the model-level
+  workload;
+- preserve the original graph and trained float weights as source of truth;
+- map only layers that current or next-step NPU RTL can verify.
+
+Exit condition:
+
+- `fc2` quantized view passes tool-level tiled simulator and CPU-controlled SoC
+  RTL;
+- `fc1` tiling is specified with job count, SRAM footprint, accumulation policy,
+  and perf grouping;
+- `fc1` passes tool-level tiled simulator against original float-model class
+  prediction;
+- `fc1` then passes CPU-controlled SoC RTL, with conv/maxpool still CPU/tool
+  side until a conv lowering plan is chosen.
 
 ### M0: Phase 0 Core Loop
 

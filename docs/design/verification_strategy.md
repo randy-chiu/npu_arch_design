@@ -105,14 +105,17 @@ small synthetic log.
 
 ## 8. Current Baselines
 
-After A1 matmul array and A2.1 structural data mover:
+After A1 matmul array, A2.1 structural data mover, grayscale digit fixtures,
+and real MNIST CNN `fc2` SoC smoke:
 
 ```text
-make test        PASS, 9 tests
+make test        PASS, 27 tests
 make perf-report PASS
 matmul total cycles: 236
 matmul core matmul cycles: 10
 softmax total cycles: 53
+digits_linear_classifier: 16 jobs, 3776 cycles
+real_mnist_cnn_fc2: 32 jobs, 7552 cycles
 ```
 
 When a change intentionally modifies timing, update docs and explain whether

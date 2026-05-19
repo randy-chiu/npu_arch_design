@@ -167,7 +167,8 @@ instructions to the NPU ISA.
 
 In scope:
 
-- deterministic checked-in PGM digit images and classifier weights;
+- deterministic checked-in PGM digit images, grayscale image variants, and
+  classifier weights;
 - golden classifier reference;
 - graph/input fixture generation;
 - compiler and micro-op simulator tests that predict expected labels;
@@ -190,14 +191,16 @@ Out of scope for V1:
 Implemented files:
 
 - `sw/tools/npu_phase0/digits_classifier.py`: deterministic weights, PGM image
-  loading, graph construction, reference logits, tiled lowering, and `argmax`
-  prediction.
+  loading, grayscale-to-int8 quantization, graph construction, reference
+  logits, tiled lowering, and `argmax` prediction.
 - `test/graphs/digits_classifier.json`: checked-in graph shape for the
   classifier workload.
 - `test/graphs/digits_classifier_rtl_tile.json`: one RTL-compatible tile job.
 - `test/graphs/digits_tiny_mlp.json`: FC1/ReLU/FC2/argmax graph with CPU/NPU
   placement.
 - `test/assets/digits/digit_*.pgm`: checked-in 8x8 grayscale digit images.
+- `test/assets/digits_realistic/digit_*_gray.pgm`: deterministic anti-aliased
+  grayscale 8x8 digit images with multiple int8 activation levels.
 - `test/inputs/digits_classifier_samples.json`: image paths, visible 8x8
   glyphs, expected 10-class logits, and expected predictions.
 - `test/rtl/test_digits_classifier.py`: golden and compiler/simulator tests for
@@ -210,7 +213,7 @@ Current validation:
 ```text
 make digits-demo: PASS, label 2 predicted 2
 make cpu-soc-sim: PASS, includes 16 tiled classifier matmul jobs
-make test: PASS
+make test: PASS, 27 tests
 ```
 
 The emitted program for the first workload is:
@@ -223,13 +226,16 @@ STORE Logits
 HALT
 ```
 
-The linear classifier now runs through CPU-controlled SoC simulation: firmware
-launches 16 current-RTL-shaped `8x8x8` matmul jobs and accumulates partial sums
-in SRAM before checking logits and predicted label.
+The linear classifier now runs through CPU-controlled SoC simulation using a
+checked-in grayscale PGM input: firmware launches 16 current-RTL-shaped
+`8x8x8` matmul jobs and accumulates partial sums in SRAM before checking logits
+and predicted label.
 
-The Tiny MLP currently runs through the tool/compiler/simulator tile path. Its
-firmware path is intentionally deferred until the linear classifier path is
-reviewed.
+The Tiny MLP currently runs through the tool/compiler/simulator tile path for
+both the original binary PGM samples and the deterministic grayscale PGM
+samples. FC2 is a non-identity int8 matrix with diagonal class boost and
+off-diagonal class suppression. Its firmware path is intentionally deferred
+until the linear classifier path is reviewed.
 
 ## Follow-Up Steps
 

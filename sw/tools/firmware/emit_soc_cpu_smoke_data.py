@@ -18,6 +18,21 @@ from npu_phase0.digits_classifier import (  # noqa: E402
     predict_label,
     reference_logits_from_image,
 )
+from npu_phase0.golden import matmul  # noqa: E402
+from npu_phase0.real_mnist_cnn import (  # noqa: E402
+    MODEL_README_PATH,
+    MODEL_WEIGHTS_PATH,
+    TEST_IMAGES_PATH,
+    TEST_LABELS_PATH,
+    fc2_npu_inputs_from_activation,
+    forward_intermediates,
+    load_mnist_images,
+    load_mnist_labels,
+    load_safetensors_f32,
+    lower_fc2_to_rtl_tiles,
+    numpy_available,
+    predict,
+)
 
 
 DATASETS = (
@@ -56,6 +71,7 @@ def main() -> None:
         lines.append("")
 
     _append_digits_classifier_data(lines)
+    _append_real_mnist_cnn_fc2_data(lines)
     lines.append("#endif")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -67,7 +83,7 @@ def _read_hex(path: Path) -> list[int]:
 
 
 def _append_digits_classifier_data(lines: list[str]) -> None:
-    image_path = _REPO_ROOT / "test/assets/digits/digit_2.pgm"
+    image_path = _REPO_ROOT / "test/assets/digits_realistic/digit_2_gray.pgm"
     inputs = classifier_inputs_from_image(image_path)
     jobs = lower_classifier_to_rtl_tiles(inputs)
     logits = reference_logits_from_image(image_path)
@@ -85,6 +101,58 @@ def _append_digits_classifier_data(lines: list[str]) -> None:
     _append_2d_array(lines, "digits_tile_a", [job["inputs"]["A"] for job in jobs], bits=8)
     _append_2d_array(lines, "digits_tile_b", [job["inputs"]["B"] for job in jobs], bits=8)
     _append_flat_array(lines, "digits_expected_logits", _flatten(logits), bits=32)
+
+
+def _append_real_mnist_cnn_fc2_data(lines: list[str]) -> None:
+    required = (
+        numpy_available()
+        and (_REPO_ROOT / MODEL_WEIGHTS_PATH).exists()
+        and (_REPO_ROOT / MODEL_README_PATH).exists()
+        and (_REPO_ROOT / TEST_IMAGES_PATH).exists()
+        and (_REPO_ROOT / TEST_LABELS_PATH).exists()
+    )
+    if not required:
+        lines.append("#define REAL_MNIST_CNN_FC2_ENABLED 0u")
+        lines.append("")
+        return
+
+    weights = load_safetensors_f32(_REPO_ROOT / MODEL_WEIGHTS_PATH)
+    images = load_mnist_images(_REPO_ROOT / TEST_IMAGES_PATH)
+    labels = load_mnist_labels(_REPO_ROOT / TEST_LABELS_PATH)
+    sample_index = 0
+    expected_label = int(labels[sample_index])
+    original_prediction = predict(images[sample_index], weights)
+    if original_prediction != expected_label:
+        raise ValueError(f"MNIST sample {sample_index} predicts {original_prediction}, expected {expected_label}")
+
+    intermediates = forward_intermediates(images[sample_index], weights)
+    npu_inputs = fc2_npu_inputs_from_activation(intermediates["fc1_relu"], weights)
+    jobs = lower_fc2_to_rtl_tiles(npu_inputs)
+    acc = matmul(npu_inputs["A"], npu_inputs["W"])
+    bias_scale = npu_inputs["activation_scale"] * npu_inputs["weight_scale"]
+    bias_scaled = [int(round(float(value) * bias_scale)) for value in npu_inputs["bias"]]
+    scaled_logits = [int(acc[0][idx]) + bias_scaled[idx] for idx in range(REAL_CLASSES)]
+    quantized_prediction = max(range(REAL_CLASSES), key=lambda idx: scaled_logits[idx])
+    if quantized_prediction != expected_label:
+        raise ValueError(
+            f"quantized MNIST fc2 sample {sample_index} predicts {quantized_prediction}, expected {expected_label}"
+        )
+
+    lines.append("#define REAL_MNIST_CNN_FC2_ENABLED 1u")
+    lines.append(f"#define REAL_MNIST_CNN_FC2_SAMPLE_INDEX {sample_index}u")
+    lines.append(f"#define REAL_MNIST_CNN_FC2_TILE_COUNT {len(jobs)}u")
+    lines.append("#define REAL_MNIST_CNN_FC2_TILE_WORDS 64u")
+    lines.append(f"#define REAL_MNIST_CNN_FC2_LOGITS_WORDS {len(acc) * len(acc[0])}u")
+    lines.append(f"#define REAL_MNIST_CNN_FC2_CLASS_COUNT {REAL_CLASSES}u")
+    lines.append(f"#define REAL_MNIST_CNN_FC2_CLASS_COLUMNS {CLASS_COLUMNS}u")
+    lines.append(f"#define REAL_MNIST_CNN_FC2_EXPECTED_LABEL {expected_label}u")
+    lines.append("")
+
+    _append_2d_array(lines, "real_mnist_cnn_fc2_tile_n_offsets", [[job["n_offset"] for job in jobs]], bits=32)
+    _append_2d_array(lines, "real_mnist_cnn_fc2_tile_a", [job["inputs"]["A"] for job in jobs], bits=8)
+    _append_2d_array(lines, "real_mnist_cnn_fc2_tile_b", [job["inputs"]["B"] for job in jobs], bits=8)
+    _append_flat_array(lines, "real_mnist_cnn_fc2_bias_scaled", bias_scaled, bits=32)
+    _append_flat_array(lines, "real_mnist_cnn_fc2_expected_scaled_logits", scaled_logits, bits=32)
 
 
 def _append_2d_array(lines: list[str], symbol: str, values: list, bits: int) -> None:

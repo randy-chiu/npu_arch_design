@@ -2,7 +2,7 @@ module soc_cpu_tb;
     `include "npu_v0_regs.svh"
     `include "soc_v0_addr.svh"
 
-    localparam int CPU_SOC_TIMEOUT_CYCLES = 200000;
+    localparam int CPU_SOC_TIMEOUT_CYCLES = 500000;
     localparam logic [3:0] DESC_READ_STATE = 4'd1;
     localparam logic [3:0] DESC_FETCH_PROGRAM_STATE = 4'd2;
     localparam logic [3:0] DESC_FETCH_INPUT0_STATE = 4'd3;

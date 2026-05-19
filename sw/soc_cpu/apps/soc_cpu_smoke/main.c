@@ -19,6 +19,13 @@ static uint32_t digits_b_tile_sram[DIGITS_TILE_WORDS];
 static uint32_t digits_c_tile_sram[DIGITS_TILE_WORDS];
 static int32_t digits_logits_sram[DIGITS_LOGITS_WORDS];
 
+#if REAL_MNIST_CNN_FC2_ENABLED
+static uint32_t real_mnist_cnn_fc2_a_tile_sram[REAL_MNIST_CNN_FC2_TILE_WORDS];
+static uint32_t real_mnist_cnn_fc2_b_tile_sram[REAL_MNIST_CNN_FC2_TILE_WORDS];
+static uint32_t real_mnist_cnn_fc2_c_tile_sram[REAL_MNIST_CNN_FC2_TILE_WORDS];
+static int32_t real_mnist_cnn_fc2_logits_sram[REAL_MNIST_CNN_FC2_LOGITS_WORDS];
+#endif
+
 static soc_npu_job_desc_t job_desc;
 
 static uint32_t ptr32(const void *ptr)
@@ -139,6 +146,87 @@ static int run_digits_classifier(void)
     return 1;
 }
 
+#if REAL_MNIST_CNN_FC2_ENABLED
+static void clear_real_mnist_cnn_fc2_logits(void)
+{
+    for (uint32_t i = 0; i < REAL_MNIST_CNN_FC2_LOGITS_WORDS; ++i) {
+        real_mnist_cnn_fc2_logits_sram[i] = 0;
+    }
+}
+
+static void run_real_mnist_cnn_fc2_tile(uint32_t tile)
+{
+    copy_words(real_mnist_cnn_fc2_a_tile_sram, real_mnist_cnn_fc2_tile_a[tile], REAL_MNIST_CNN_FC2_TILE_WORDS);
+    copy_words(real_mnist_cnn_fc2_b_tile_sram, real_mnist_cnn_fc2_tile_b[tile], REAL_MNIST_CNN_FC2_TILE_WORDS);
+
+    job_desc.op_type = SOC_NPU_JOB_OP_MATMUL;
+    job_desc.program_addr = ptr32(matmul_program_sram);
+    job_desc.program_words = MATMUL_PROGRAM_LEN;
+    job_desc.input0_addr = ptr32(real_mnist_cnn_fc2_a_tile_sram);
+    job_desc.input0_words = REAL_MNIST_CNN_FC2_TILE_WORDS;
+    job_desc.input1_addr = ptr32(real_mnist_cnn_fc2_b_tile_sram);
+    job_desc.input1_words = REAL_MNIST_CNN_FC2_TILE_WORDS;
+    job_desc.output_addr = ptr32(real_mnist_cnn_fc2_c_tile_sram);
+    job_desc.output_words = REAL_MNIST_CNN_FC2_TILE_WORDS;
+    run_job();
+}
+
+static void accumulate_real_mnist_cnn_fc2_tile(uint32_t tile)
+{
+    uint32_t n_offset = real_mnist_cnn_fc2_tile_n_offsets[0][tile];
+    for (uint32_t row = 0; row < 8u; ++row) {
+        for (uint32_t col = 0; col < 8u; ++col) {
+            uint32_t tile_idx = row * 8u + col;
+            uint32_t logits_idx = row * REAL_MNIST_CNN_FC2_CLASS_COLUMNS + n_offset + col;
+            real_mnist_cnn_fc2_logits_sram[logits_idx] += (int32_t)real_mnist_cnn_fc2_c_tile_sram[tile_idx];
+        }
+    }
+}
+
+static int check_real_mnist_cnn_fc2_scaled_logits(void)
+{
+    for (uint32_t cls = 0; cls < REAL_MNIST_CNN_FC2_CLASS_COUNT; ++cls) {
+        int32_t actual = real_mnist_cnn_fc2_logits_sram[cls] + (int32_t)real_mnist_cnn_fc2_bias_scaled[cls];
+        if (actual != (int32_t)real_mnist_cnn_fc2_expected_scaled_logits[cls]) {
+            test_status_fail_code(0x500u | ((uint32_t)cls & 0xffu));
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static uint32_t predict_real_mnist_cnn_fc2_label(void)
+{
+    uint32_t best = 0u;
+    int32_t best_value = real_mnist_cnn_fc2_logits_sram[0] + (int32_t)real_mnist_cnn_fc2_bias_scaled[0];
+    for (uint32_t cls = 1u; cls < REAL_MNIST_CNN_FC2_CLASS_COUNT; ++cls) {
+        int32_t value = real_mnist_cnn_fc2_logits_sram[cls] + (int32_t)real_mnist_cnn_fc2_bias_scaled[cls];
+        if (value > best_value) {
+            best = cls;
+            best_value = value;
+        }
+    }
+    return best;
+}
+
+static int run_real_mnist_cnn_fc2(void)
+{
+    clear_real_mnist_cnn_fc2_logits();
+    for (uint32_t tile = 0; tile < REAL_MNIST_CNN_FC2_TILE_COUNT; ++tile) {
+        run_real_mnist_cnn_fc2_tile(tile);
+        accumulate_real_mnist_cnn_fc2_tile(tile);
+    }
+    if (!check_real_mnist_cnn_fc2_scaled_logits()) {
+        return 0;
+    }
+    if (predict_real_mnist_cnn_fc2_label() != REAL_MNIST_CNN_FC2_EXPECTED_LABEL) {
+        test_status_fail_code(0x600u | (predict_real_mnist_cnn_fc2_label() & 0xffu));
+        return 0;
+    }
+    return 1;
+}
+#endif
+
 int main(void)
 {
     copy_words(matmul_a_sram, matmul_a, MATMUL_A_LEN);
@@ -181,6 +269,12 @@ int main(void)
     if (!run_digits_classifier()) {
         return 1;
     }
+
+#if REAL_MNIST_CNN_FC2_ENABLED
+    if (!run_real_mnist_cnn_fc2()) {
+        return 1;
+    }
+#endif
 
     test_status_pass();
     return 0;

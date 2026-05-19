@@ -76,6 +76,32 @@ class PerfReportTests(unittest.TestCase):
             self.assertEqual(classifier["movement"]["input0_words"], 16 * 64)
             self.assertEqual(classifier["metadata"]["tile_jobs"], 16)
 
+    def test_perf_log_groups_real_mnist_cnn_fc2_tile_jobs(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "perf.log"
+            lines = [
+                _perf_job_line(1, "matmul", 236),
+                _perf_job_line(2, "softmax", 53, matmul_cycles=0, input1_words=0, output_words=8),
+            ]
+            lines.extend(_perf_job_line(job_id, "matmul", 236) for job_id in range(3, 19))
+            lines.extend(_perf_job_line(job_id, "matmul", 236) for job_id in range(19, 51))
+            log_path.write_text("".join(lines), encoding="utf-8")
+
+            report = parse_perf_log(log_path)
+
+            self.assertEqual(report["summary"]["jobs"], 50)
+            self.assertEqual(report["summary"]["workloads"], 4)
+            fc2 = report["workloads"][3]
+            self.assertEqual(fc2["name"], "real_mnist_cnn_fc2")
+            self.assertEqual(fc2["kind"], "model_layer")
+            self.assertEqual(fc2["jobs"], 32)
+            self.assertEqual(fc2["job_ids"], list(range(19, 51)))
+            self.assertEqual(fc2["total_cycles"], 32 * 236)
+            self.assertEqual(fc2["core_matmul_cycles"], 32 * 10)
+            self.assertEqual(fc2["movement"]["input0_words"], 32 * 64)
+            self.assertEqual(fc2["metadata"]["tile_jobs"], 32)
+
 def _perf_job_line(
     job_id: int,
     name: str,

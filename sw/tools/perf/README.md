@@ -29,7 +29,9 @@ smoke sequence:
 - `operator_smoke_softmax`: the original single softmax job;
 - `digits_linear_classifier`: 16 tiled `8x8x8` matmul jobs that implement the
   linear digit classifier, with CPU firmware accumulating partial sums and
-  checking the predicted label.
+  checking the predicted label;
+- `real_mnist_cnn_fc2`: 32 tiled `8x8x8` matmul jobs for the original
+  pretrained MNIST CNN's quantized `fc2` hardware-facing view.
 
 ## Counter Placement
 
@@ -133,11 +135,12 @@ phase is only 10 cycles, while input/program movement and output writeback are
 hundreds of single-word cycles. This is the main evidence for A2 work on data
 movers, scratchpad banking, and overlap.
 
-Digits classifier model profile:
+Current model profiles:
 
 | Workload | Jobs | Total cycles | Notes |
 | --- | ---: | ---: | --- |
 | `digits_linear_classifier` | 16 matmul tiles | 3776 | `8x64 * 64x16` lowered into 16 current-RTL-compatible `8x8x8` jobs |
+| `real_mnist_cnn_fc2` | 32 matmul tiles | 7552 | Original CNN `fc2: 128 -> 10` quantized view lowered into 32 current-RTL-compatible `8x8x8` jobs |
 
 The model profile currently counts only NPU job intervals. CPU-side work between
 jobs, including copying tile tensors, accumulating partial sums, and argmax, is

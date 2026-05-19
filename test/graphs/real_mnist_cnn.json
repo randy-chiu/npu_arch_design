@@ -1,0 +1,25 @@
+{
+  "description": "Open-source pretrained MNIST CNN from cmaeti/mnist-cnn.",
+  "source": "https://huggingface.co/cmaeti/mnist-cnn",
+  "weights": "test/external/mnist_cnn/mnist-cnn.safetensors",
+  "tensors": {
+    "Image": {"shape": [1, 28, 28], "dtype": "float32"},
+    "Conv1": {"shape": [32, 26, 26], "dtype": "float32"},
+    "Conv2": {"shape": [64, 24, 24], "dtype": "float32"},
+    "Pool": {"shape": [64, 12, 12], "dtype": "float32"},
+    "Fc1": {"shape": [128], "dtype": "float32"},
+    "Logits": {"shape": [10], "dtype": "float32"}
+  },
+  "ops": [
+    {"type": "conv2d", "x": "Image", "weight": "conv1.weight", "bias": "conv1.bias", "out": "Conv1"},
+    {"type": "relu", "x": "Conv1", "out": "Conv1Relu"},
+    {"type": "conv2d", "x": "Conv1Relu", "weight": "conv2.weight", "bias": "conv2.bias", "out": "Conv2"},
+    {"type": "relu", "x": "Conv2", "out": "Conv2Relu"},
+    {"type": "maxpool2d", "x": "Conv2Relu", "kernel": [2, 2], "stride": [2, 2], "out": "Pool"},
+    {"type": "flatten", "x": "Pool", "out": "Flat"},
+    {"type": "linear", "x": "Flat", "weight": "fc1.weight", "bias": "fc1.bias", "out": "Fc1"},
+    {"type": "relu", "x": "Fc1", "out": "Fc1Relu"},
+    {"type": "linear", "x": "Fc1Relu", "weight": "fc2.weight", "bias": "fc2.bias", "out": "Logits"},
+    {"type": "argmax", "x": "Logits", "out": "Predicted"}
+  ]
+}

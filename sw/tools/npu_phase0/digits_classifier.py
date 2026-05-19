@@ -15,6 +15,7 @@ CLASS_COLUMNS = 16
 REAL_CLASSES = 10
 FOREGROUND = 3
 BACKGROUND = -1
+MAX_PIXEL_VALUE = 255
 TILE_M = 8
 TILE_N = 8
 TILE_K = 8
@@ -216,11 +217,7 @@ def activation_batch(label: int) -> list[list[int]]:
 
 
 def activation_batch_from_image(path: Path) -> list[list[int]]:
-    image = [
-        FOREGROUND if pixel == "1" else BACKGROUND
-        for row in image_to_glyph_rows(path)
-        for pixel in row
-    ]
+    image = flatten_quantized_image(path)
     return [image] + [[0 for _ in range(PIXELS)] for _ in range(BATCH_ROWS - 1)]
 
 
@@ -240,7 +237,7 @@ def tiny_mlp_inputs_from_image(path: Path) -> dict[str, list[list[int]]]:
 
 def tiny_mlp_fc2_weights() -> list[list[int]]:
     return [
-        [1 if row == col and col < REAL_CLASSES else 0 for col in range(CLASS_COLUMNS)]
+        [_tiny_mlp_fc2_weight(row, col) for col in range(CLASS_COLUMNS)]
         for row in range(CLASS_COLUMNS)
     ]
 
@@ -261,6 +258,14 @@ def flatten_digit(label: int) -> list[int]:
         for row in _DIGIT_GLYPHS[label]
         for pixel in row
     ]
+
+
+def flatten_quantized_image(path: Path) -> list[int]:
+    return [value for row in quantize_grayscale_image(load_pgm_image(path)) for value in row]
+
+
+def quantize_grayscale_image(pixels: list[list[int]]) -> list[list[int]]:
+    return [[_quantize_pixel(value) for value in row] for row in pixels]
 
 
 def reference_logits(label: int) -> list[list[int]]:
@@ -353,6 +358,21 @@ def predict_label(logits: list[list[int]]) -> int:
     return max(range(REAL_CLASSES), key=lambda idx: class_logits[idx])
 
 
+def _quantize_pixel(value: int) -> int:
+    if value < 0 or value > MAX_PIXEL_VALUE:
+        raise ValueError(f"PGM pixel {value} outside 0..{MAX_PIXEL_VALUE}")
+    levels = FOREGROUND - BACKGROUND
+    return BACKGROUND + ((int(value) * levels + (MAX_PIXEL_VALUE // 2)) // MAX_PIXEL_VALUE)
+
+
+def _tiny_mlp_fc2_weight(row: int, col: int) -> int:
+    if row >= REAL_CLASSES or col >= REAL_CLASSES:
+        return 0
+    if row == col:
+        return 4
+    return -1
+
+
 def _pgm_tokens(data: bytes) -> list[str]:
     tokens: list[str] = []
     for raw_line in data.decode("ascii").splitlines():
@@ -375,12 +395,14 @@ __all__ = [
     "classifier_inputs_from_image",
     "classifier_weights",
     "flatten_digit",
+    "flatten_quantized_image",
     "glyph_rows",
     "image_to_glyph_rows",
     "load_pgm_image",
     "lower_classifier_to_rtl_tiles",
     "lower_matmul_to_rtl_tiles",
     "predict_label",
+    "quantize_grayscale_image",
     "reference_logits",
     "reference_logits_from_image",
     "relu",

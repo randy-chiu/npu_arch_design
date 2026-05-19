@@ -65,7 +65,7 @@ workflow.
 make cpu-soc-sim: PASS
 make soc-sim: PASS
 make digits-demo: PASS
-make test: PASS, 16 tests
+make test: PASS, 27 tests
 ```
 
 新增 cycle 级性能报告入口：
@@ -94,10 +94,11 @@ sw/tools/perf/README.md
 docs/target_architecture.md
 ```
 
-当前新增真实 workload 记录在：
+当前真实 workload 记录在：
 
 ```text
 docs/digits_classifier_workload.md
+docs/real_mnist_cnn_workload.md
 ```
 
 它已经跑通两个 workload 阶段：
@@ -109,8 +110,82 @@ docs/digits_classifier_workload.md
    `matmul -> relu_requantize -> matmul -> argmax`，两个 matmul 都 lower 到
    current-RTL-compatible tile jobs，CPU/tool 侧负责 activation 和 argmax。
 
-明天继续前，优先决定 Tiny MLP 是否搬进 firmware；Tiny CNN 设计要等 MLP
-firmware path 稳定后再展开。
+最新补充：
+
+- 图片输入路径已从阈值二值化升级为灰度 PGM 到 int8 的多级量化；原二值 PGM
+  仍保持兼容。
+- 新增 `test/assets/digits_realistic/digit_*_gray.pgm`，用于覆盖带抗锯齿和灰度
+  变化的离线确定性测试图片。
+- Tiny MLP 的 FC2 已从 identity 改为非平凡 int8 权重：对角类增强、非对角类
+  抑制；工具层 tiled 测试覆盖所有灰度样本。
+- CPU firmware smoke 的 linear classifier 数据生成改为使用灰度 `digit_2_gray.pgm`。
+- 临时 MNIST tiny CNN prototype 已删除，改为接入真实开源预训练 CNN：
+  `docs/real_mnist_cnn_workload.md`。模型来自
+  `https://huggingface.co/cmaeti/mnist-cnn`，使用 Apache-2.0 safetensors
+  权重。当前已跑通非 RTL golden 流程：读取真实 MNIST IDX gzip 测试图片，
+  执行 `conv1 -> relu -> conv2 -> relu -> maxpool -> fc1 -> relu -> fc2 ->
+  argmax`，并校验权重 shape、前 10 张预测和前 100 张 accuracy smoke。
+  新增 `fc2` 的当前 NPU tile 映射测试：CPU/tool 按原始 float 模型跑到
+  `fc1_relu`，用原始 `fc2.weight/bias` 生成 int8 hardware-facing view，
+  lower 成 32 个 `8x8x8` tile jobs，通过 micro-op simulator 与原始模型
+  argmax 对齐。该真实 CNN 的 `fc2` hardware-facing view 已接入完整
+  CPU-controlled SoC RTL：firmware 对 MNIST test sample 0 发起 32 个 NPU
+  descriptor jobs，NPU RTL 执行 tile matmul，firmware 累加 partial sums、
+  加 scaled 原始 `fc2.bias` 并校验 expected label 7。`make perf-report`
+  当前识别 50 个 job / 4 个 workload，其中 `real_mnist_cnn_fc2` 为 32 jobs。
+
+### Resume Snapshot: 2026-05-19
+
+今天完成的关键工作：
+
+1. 删除临时 MNIST tiny CNN prototype，避免把本地派生权重误认为真实模型。
+2. 接入真实开源预训练 MNIST CNN：
+   - 来源：`https://huggingface.co/cmaeti/mnist-cnn`
+   - license：Apache-2.0
+   - 权重：`test/external/mnist_cnn/mnist-cnn.safetensors`
+   - 数据：MNIST IDX gzip 测试集，位于 `test/external/mnist/`
+   - `test/external/` 已在 `.gitignore` 中忽略，缺外部文件时相关测试 skip。
+3. 新增 `sw/tools/npu_phase0/real_mnist_cnn.py`：
+   - 最小 safetensors F32 reader；
+   - 原始 float CNN forward；
+   - `fc2` 的 hardware-facing int8 quantized view；
+   - `fc2` lower 到 32 个 current-RTL-compatible `8x8x8` tile jobs。
+4. 保持原始 CNN graph 和 float 权重为 source of truth：
+   - 不改模型拓扑；
+   - 不替换训练权重；
+   - 当前只为 NPU RTL 验证派生量化视图。
+5. `fc2` 已接入 CPU-controlled SoC RTL：
+   - data generator 按原始 float 模型跑 MNIST test sample 0 到 `fc1_relu`；
+   - firmware stage quantized `fc1_relu` 和 quantized 原始 `fc2.weight`；
+   - PicoRV32 发 32 个 descriptor；
+   - wrapper/NPU RTL 执行 32 个 `8x8x8` matmul tile；
+   - firmware 累加 partial sums，加 scaled 原始 `fc2.bias`，校验 scaled logits
+     和 expected label 7。
+6. `perf-report` 识别新增 workload：
+   - total jobs: 50
+   - workloads: 4
+   - `real_mnist_cnn_fc2`: 32 jobs, 7552 cycles
+
+今天验证命令和结果：
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_real_mnist_cnn -v: PASS
+make cpu-soc-sim: PASS
+make test: PASS, 27 tests
+make perf-report: PASS
+```
+
+明天最直接的下一步：
+
+1. 不再优先推进旧 Tiny MLP firmware path；当前主线切到真实 MNIST CNN。
+2. 把真实 CNN 的 `fc1: 9216 -> 128` 作为下一层 NPU 映射目标：
+   - 先在工具层定义 tiling/accumulation 方案；
+   - 评估 9216 K 维、128 N 维对当前 8x8x8 tile path 的 job 数、SRAM
+     footprint、firmware runtime 和 perf report 的压力；
+   - 可能需要 grouped workload metadata 或更紧凑的 data staging，避免直接
+     在 firmware 中堆大量静态 tile arrays。
+3. `fc1` 之前的 conv/maxpool 暂时保持 CPU/tool 侧原始 float 逻辑；等
+   `fc1/fc2` 都稳定后，再决定 conv 是 direct op 还是 `im2col -> matmul`。
 
 本地 RISC-V GCC 曾使用：
 

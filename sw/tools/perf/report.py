@@ -213,7 +213,7 @@ def infer_workloads(jobs: list[dict]) -> list[dict]:
 
     cursor = 2
     classifier_tile_count = 16
-    while cursor + classifier_tile_count <= len(jobs):
+    if cursor + classifier_tile_count <= len(jobs):
         candidate = jobs[cursor : cursor + classifier_tile_count]
         if all(job.get("name") == "matmul" for job in candidate):
             workloads.append(
@@ -222,18 +222,35 @@ def infer_workloads(jobs: list[dict]) -> list[dict]:
                     candidate,
                     "model",
                     metadata={
-                        "input": "test/assets/digits/digit_2.pgm",
+                        "input": "test/assets/digits_realistic/digit_2_gray.pgm",
                         "graph": "test/graphs/digits_classifier.json",
                         "tile_graph": "test/graphs/digits_classifier_rtl_tile.json",
                         "tile_jobs": classifier_tile_count,
-                        "description": "8x8 digit image, 16 matmul tiles, CPU-side partial-sum accumulation and argmax",
+                        "description": "8x8 grayscale digit image, 16 matmul tiles, CPU-side partial-sum accumulation and argmax",
                     },
                 )
             )
             cursor += classifier_tile_count
-        else:
-            workloads.append(_workload_summary(f"unclassified_jobs_{cursor + 1}", candidate, "unknown"))
-            cursor += classifier_tile_count
+
+    real_mnist_fc2_tile_count = 32
+    if cursor + real_mnist_fc2_tile_count <= len(jobs):
+        candidate = jobs[cursor : cursor + real_mnist_fc2_tile_count]
+        if all(job.get("name") == "matmul" for job in candidate):
+            workloads.append(
+                _workload_summary(
+                    "real_mnist_cnn_fc2",
+                    candidate,
+                    "model_layer",
+                    metadata={
+                        "input": "test/external/mnist/t10k-images-idx3-ubyte.gz sample 0",
+                        "graph": "test/graphs/real_mnist_cnn.json",
+                        "weights": "test/external/mnist_cnn/mnist-cnn.safetensors",
+                        "tile_jobs": real_mnist_fc2_tile_count,
+                        "description": "Original CNN conv/fc1 path precomputed on CPU/tool side; fc2 quantized into 32 current-RTL-compatible matmul tiles",
+                    },
+                )
+            )
+            cursor += real_mnist_fc2_tile_count
 
     if cursor < len(jobs):
         workloads.append(_workload_summary(f"unclassified_jobs_{cursor + 1}", jobs[cursor:], "unknown"))

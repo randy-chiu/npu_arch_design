@@ -12,6 +12,7 @@ from npu_phase0.digits_classifier import (
     classifier_graph,
     classifier_inputs,
     classifier_inputs_from_image,
+    flatten_quantized_image,
     glyph_rows,
     image_to_glyph_rows,
     lower_classifier_to_rtl_tiles,
@@ -30,6 +31,7 @@ from npu_phase0.simulator import MicroOpFunctionalSimulator
 
 ARCH_PATH = "arch/configs/npu_v0.jsonc"
 SAMPLES_PATH = Path("test/inputs/digits_classifier_samples.json")
+REALISTIC_DIGITS_DIR = Path("test/assets/digits_realistic")
 
 
 class DigitsClassifierWorkloadTests(unittest.TestCase):
@@ -65,6 +67,15 @@ class DigitsClassifierWorkloadTests(unittest.TestCase):
                 logits = reference_logits_from_image(image_path)
                 self.assertEqual(logits[0][:REAL_CLASSES], sample["expected_logits_0_to_9"])
                 self.assertEqual(predict_label(logits), sample["expected_prediction"])
+
+    def test_realistic_grayscale_pgm_images_exercise_quantized_input(self):
+        for label in range(REAL_CLASSES):
+            image_path = REALISTIC_DIGITS_DIR / f"digit_{label}_gray.pgm"
+            with self.subTest(label=label):
+                quantized = flatten_quantized_image(image_path)
+                self.assertGreater(len(set(quantized)), 2)
+                self.assertTrue(all(-1 <= value <= 3 for value in quantized))
+                self.assertEqual(predict_label(reference_logits_from_image(image_path)), label)
 
     def test_compiler_simulator_classifier_predicts_each_digit(self):
         arch = load_arch(ARCH_PATH)
@@ -120,6 +131,8 @@ class DigitsClassifierWorkloadTests(unittest.TestCase):
         self.assertEqual([op["placement"] for op in graph["ops"]], ["npu", "cpu", "npu", "cpu"])
         self.assertEqual(graph["tensors"]["W1"]["shape"], [64, 16])
         self.assertEqual(graph["tensors"]["W2"]["shape"], [16, 16])
+        inputs = tiny_mlp_inputs_from_image(REALISTIC_DIGITS_DIR / "digit_2_gray.pgm")
+        self.assertEqual(inputs["W2"][2][:4], [-1, -1, 4, -1])
 
     def test_tiny_mlp_tiled_path_predicts_each_digit(self):
         arch = load_arch(ARCH_PATH)
@@ -135,6 +148,21 @@ class DigitsClassifierWorkloadTests(unittest.TestCase):
                 hidden = _run_tiled_matmul(simulator, tile_artifact, inputs["A"], inputs["W1"])
                 hidden_int8 = relu_requantize(hidden)
                 self.assertTrue(all(0 <= value <= 127 for row in hidden_int8 for value in row))
+                logits = _run_tiled_matmul(simulator, tile_artifact, hidden_int8, inputs["W2"])
+                self.assertEqual(logits, tiny_mlp_reference_logits_from_image(image_path))
+                self.assertEqual(predict_label(logits), label)
+
+    def test_tiny_mlp_tiled_path_predicts_realistic_grayscale_images(self):
+        arch = load_arch(ARCH_PATH)
+        tile_artifact = compile_graph(rtl_tile_graph(), arch)
+        simulator = MicroOpFunctionalSimulator(arch)
+
+        for label in range(REAL_CLASSES):
+            image_path = REALISTIC_DIGITS_DIR / f"digit_{label}_gray.pgm"
+            with self.subTest(label=label):
+                inputs = tiny_mlp_inputs_from_image(image_path)
+                hidden = _run_tiled_matmul(simulator, tile_artifact, inputs["A"], inputs["W1"])
+                hidden_int8 = relu_requantize(hidden)
                 logits = _run_tiled_matmul(simulator, tile_artifact, hidden_int8, inputs["W2"])
                 self.assertEqual(logits, tiny_mlp_reference_logits_from_image(image_path))
                 self.assertEqual(predict_label(logits), label)

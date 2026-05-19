@@ -9,3 +9,4 @@ build/
 *.egg-info/
 .local/
 /thirdparty/
+/test/external/
