@@ -145,26 +145,6 @@ def rtl_tile_graph() -> dict[str, Any]:
     }
 
 
-def tiny_mlp_graph() -> dict[str, Any]:
-    return {
-        "description": "Tiny MLP graph. Matmul ops are NPU-visible; relu and argmax are CPU/tool-side for now.",
-        "tensors": {
-            "A": {"shape": [BATCH_ROWS, PIXELS], "dtype": "int8"},
-            "W1": {"shape": [PIXELS, CLASS_COLUMNS], "dtype": "int8"},
-            "Hidden": {"shape": [BATCH_ROWS, CLASS_COLUMNS], "dtype": "int32"},
-            "HiddenRelu": {"shape": [BATCH_ROWS, CLASS_COLUMNS], "dtype": "int32"},
-            "W2": {"shape": [CLASS_COLUMNS, CLASS_COLUMNS], "dtype": "int8"},
-            "Logits": {"shape": [BATCH_ROWS, CLASS_COLUMNS], "dtype": "int32"},
-        },
-        "ops": [
-            {"type": "matmul", "a": "A", "b": "W1", "out": "Hidden", "placement": "npu"},
-            {"type": "relu_requantize", "x": "Hidden", "out": "HiddenInt8", "placement": "cpu"},
-            {"type": "matmul", "a": "HiddenInt8", "b": "W2", "out": "Logits", "placement": "npu"},
-            {"type": "argmax", "x": "Logits", "classes": REAL_CLASSES, "out": "Predicted", "placement": "cpu"},
-        ],
-    }
-
-
 def classifier_inputs(label: int) -> dict[str, list[list[int]]]:
     return {
         "A": activation_batch(label),
@@ -227,29 +207,6 @@ def classifier_weights() -> list[list[int]]:
     return [[columns[col][row] for col in range(CLASS_COLUMNS)] for row in range(PIXELS)]
 
 
-def tiny_mlp_inputs_from_image(path: Path) -> dict[str, list[list[int]]]:
-    return {
-        "A": activation_batch_from_image(path),
-        "W1": classifier_weights(),
-        "W2": tiny_mlp_fc2_weights(),
-    }
-
-
-def tiny_mlp_fc2_weights() -> list[list[int]]:
-    return [
-        [_tiny_mlp_fc2_weight(row, col) for col in range(CLASS_COLUMNS)]
-        for row in range(CLASS_COLUMNS)
-    ]
-
-
-def relu(x: list[list[int]]) -> list[list[int]]:
-    return [[max(0, int(value)) for value in row] for row in x]
-
-
-def relu_requantize(x: list[list[int]], scale_shift: int = 2) -> list[list[int]]:
-    return [[min(127, max(0, int(value) >> scale_shift)) for value in row] for row in x]
-
-
 def flatten_digit(label: int) -> list[int]:
     if label not in _DIGIT_GLYPHS:
         raise ValueError(f"unsupported digit label: {label}")
@@ -276,13 +233,6 @@ def reference_logits(label: int) -> list[list[int]]:
 def reference_logits_from_image(path: Path) -> list[list[int]]:
     inputs = classifier_inputs_from_image(path)
     return matmul(inputs["A"], inputs["W"])
-
-
-def tiny_mlp_reference_logits_from_image(path: Path) -> list[list[int]]:
-    inputs = tiny_mlp_inputs_from_image(path)
-    hidden = matmul(inputs["A"], inputs["W1"])
-    hidden_int8 = relu_requantize(hidden)
-    return matmul(hidden_int8, inputs["W2"])
 
 
 def lower_classifier_to_rtl_tiles(inputs: dict[str, list[list[int]]]) -> list[dict[str, Any]]:
@@ -365,14 +315,6 @@ def _quantize_pixel(value: int) -> int:
     return BACKGROUND + ((int(value) * levels + (MAX_PIXEL_VALUE // 2)) // MAX_PIXEL_VALUE)
 
 
-def _tiny_mlp_fc2_weight(row: int, col: int) -> int:
-    if row >= REAL_CLASSES or col >= REAL_CLASSES:
-        return 0
-    if row == col:
-        return 4
-    return -1
-
-
 def _pgm_tokens(data: bytes) -> list[str]:
     tokens: list[str] = []
     for raw_line in data.decode("ascii").splitlines():
@@ -405,11 +347,5 @@ __all__ = [
     "quantize_grayscale_image",
     "reference_logits",
     "reference_logits_from_image",
-    "relu",
-    "relu_requantize",
     "rtl_tile_graph",
-    "tiny_mlp_fc2_weights",
-    "tiny_mlp_graph",
-    "tiny_mlp_inputs_from_image",
-    "tiny_mlp_reference_logits_from_image",
 ]

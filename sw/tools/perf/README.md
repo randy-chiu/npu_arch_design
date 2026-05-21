@@ -57,6 +57,50 @@ not software-readable hardware counters. When the phase definitions stabilize,
 the same taxonomy should be moved into an optional RTL perf-counter block or
 debug CSR window.
 
+## How One Job Is Timed
+
+The current measurement is a cycle counter around one firmware-launched NPU
+descriptor job:
+
+```text
+CPU MMIO write CTRL.start
+-> wrapper descriptor/program/input/output FSM
+-> wrapper reaches DESC_DONE
+-> testbench prints PERF_JOB
+```
+
+The testbench starts counting when it sees the CPU bus write
+`NPU_OPSCHED_CTRL` with the start bit set. From that point onward, every clock
+while `perf_active` is true contributes one `total_cycles` count. The same
+clock can also contribute to more specific counters:
+
+| Counter | How it is counted |
+| --- | --- |
+| `wrapper.*` | one bucket selected by `u_npu_wrapper.desc_state` |
+| `core.*` | selected by `u_npu_wrapper.u_npu.state` while wrapper is starting/waiting for the core |
+| `movement.sram_read_cycles` | wrapper `sram_req && !sram_we` |
+| `movement.sram_write_cycles` | wrapper `sram_req && sram_we` |
+| `movement.desc/program/input/output_words` | SRAM requests classified by current wrapper state |
+| `movement.core_host_write_cycles` | wrapper writes the NPU core host window |
+| `movement.core_host_read_cycles` | inferred during wrapper output writeback |
+
+There are no explicit timestamp packets in the RTL today. The testbench samples
+hierarchical signals once per clock and prints a JSON summary when the wrapper
+enters `DESC_DONE`.
+
+The report then reconstructs lanes from counters:
+
+- wrapper spans are laid out in the wrapper FSM order;
+- core spans are offset to the wrapper `wait_core` position;
+- the data-mover lane is currently copied from wrapper program/input/output
+  movement phases;
+- the CPU lane is synthetic: one cycle for `MMIO start`, then poll/wait until
+  the job ends.
+
+This means the report measures launch-to-wrapper-done time for NPU jobs. It
+does not yet measure CPU staging before `CTRL.start`, CPU accumulation between
+tile jobs, or CPU result checking after wrapper completion.
+
 ## Current Status
 
 The first report is tied to the CPU-controlled SoC smoke simulation. It measures

@@ -134,35 +134,6 @@ There are two lowering views:
 
 The tiled path is the intended bridge to firmware/SoC execution.
 
-## Tiny MLP Step
-
-The second workload step introduces a more realistic multi-layer graph while
-still using only matmul on the NPU-visible path:
-
-```text
-image[8x8]
--> quantize/flatten
--> FC1: matmul A[8x64] * W1[64x16] -> Hidden[8x16]
--> CPU/tool relu_requantize Hidden -> HiddenInt8[8x16]
--> FC2: matmul HiddenInt8[8x16] * W2[16x16] -> Logits[8x16]
--> CPU/tool argmax Logits[0][0:10]
-```
-
-Graph JSON lives in:
-
-```text
-test/graphs/digits_tiny_mlp.json
-```
-
-This graph deliberately marks placement:
-
-- FC1 and FC2 are `placement: npu`;
-- `relu_requantize` and `argmax` are `placement: cpu`.
-
-Both FC matmuls are lowered into current-RTL-compatible `8x8x8` tile jobs in
-the tool tests. This is the preferred bridge before adding activation or top-k
-instructions to the NPU ISA.
-
 ## Scope For V1
 
 In scope:
@@ -174,7 +145,6 @@ In scope:
 - compiler and micro-op simulator tests that predict expected labels;
 - RTL-compatible tile-job lowering in tools;
 - CPU-controlled SoC execution of the linear classifier tiled workload;
-- Tiny MLP graph and tiled tool execution;
 - documentation of the current RTL/firmware gap.
 
 Out of scope for V1:
@@ -184,7 +154,8 @@ Out of scope for V1:
 - downloading datasets during tests;
 - new NPU ISA operations;
 - RTL support for `8x64 * 64x16` storage and tiled execution;
-- firmware execution of the Tiny MLP.
+- synthetic multi-layer classifier variants. The active multi-layer workload is
+  the real open-source MNIST CNN in `docs/real_mnist_cnn_workload.md`.
 
 ## Implemented V1 State
 
@@ -196,8 +167,6 @@ Implemented files:
 - `test/graphs/digits_classifier.json`: checked-in graph shape for the
   classifier workload.
 - `test/graphs/digits_classifier_rtl_tile.json`: one RTL-compatible tile job.
-- `test/graphs/digits_tiny_mlp.json`: FC1/ReLU/FC2/argmax graph with CPU/NPU
-  placement.
 - `test/assets/digits/digit_*.pgm`: checked-in 8x8 grayscale digit images.
 - `test/assets/digits_realistic/digit_*_gray.pgm`: deterministic anti-aliased
   grayscale 8x8 digit images with multiple int8 activation levels.
@@ -213,7 +182,7 @@ Current validation:
 ```text
 make digits-demo: PASS, label 2 predicted 2
 make cpu-soc-sim: PASS, includes 16 tiled classifier matmul jobs
-make test: PASS, 27 tests
+make test: PASS
 ```
 
 The emitted program for the first workload is:
@@ -231,22 +200,13 @@ checked-in grayscale PGM input: firmware launches 16 current-RTL-shaped
 `8x8x8` matmul jobs and accumulates partial sums in SRAM before checking logits
 and predicted label.
 
-The Tiny MLP currently runs through the tool/compiler/simulator tile path for
-both the original binary PGM samples and the deterministic grayscale PGM
-samples. FC2 is a non-identity int8 matrix with diagonal class boost and
-off-diagonal class suppression. Its firmware path is intentionally deferred
-until the linear classifier path is reviewed.
-
 ## Follow-Up Steps
 
-Tomorrow's likely third step:
+Current follow-up:
 
 1. Review the linear classifier firmware path and decide whether to keep it in
    the smoke app or split it into a dedicated model app.
-2. Move Tiny MLP orchestration into firmware if the linear path looks clean.
-3. Start the Tiny CNN design note only after the MLP firmware path is stable:
-   choose input size, decide whether convolution lowers through `im2col` into
-   matmul tiles, and define which CPU-side ops are allowed before adding NPU
-   ISA support.
-4. Extend performance reporting from operator jobs to model-level workloads so
-   the 16-job classifier and later MLP/CNN appear as grouped model runs.
+2. Keep this workload as a small deterministic regression while the real MNIST
+   CNN becomes the main model-level path.
+3. Extend performance reporting from operator jobs to model-level workloads so
+   the 16-job classifier and real CNN layers appear as grouped model runs.

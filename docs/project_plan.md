@@ -49,9 +49,9 @@ complexity.
 
 ### W1: Digits Classifier Workload
 
-Status: linear classifier SoC path implemented; Tiny MLP tool path implemented;
-real MNIST CNN `fc2` SoC path implemented. Tiny MLP SoC path is no longer the
-active priority.
+Status: linear classifier SoC path implemented; real MNIST CNN `fc2` SoC path
+implemented. The earlier Tiny MLP branch has been removed because the active
+model-level path is the real MNIST CNN.
 
 Purpose:
 
@@ -67,7 +67,6 @@ Exit condition:
 - compiler and micro-op simulator run the classifier graph end to end;
 - CPU firmware launches 16 RTL-compatible `8x8x8` matmul tile jobs and checks
   classifier logits/predicted label;
-- Tiny MLP graph exists with CPU/NPU placement and tiled matmul tests;
 - real open-source MNIST CNN is documented in `docs/real_mnist_cnn_workload.md`;
 - CPU firmware launches 32 RTL-compatible `8x8x8` matmul tile jobs for the
   original MNIST CNN `fc2` quantized hardware-facing view and checks expected

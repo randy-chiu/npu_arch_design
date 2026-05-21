@@ -75,6 +75,41 @@ build/perf/perf.json
 build/perf/perf_report.html
 ```
 
+### Current Code Walkthrough
+
+`make perf-report` does not run a separate profiler. It rebuilds the
+CPU-controlled SoC simulation, redirects the simulator stdout to
+`build/perf/cpu_soc_perf.log`, then runs `sw/tools/perf/report.py`.
+
+Inside `hw/soc/tb/soc_cpu_tb.sv`, the profiling block is an `always` block on
+`posedge clk`. It behaves like this:
+
+1. When the CPU bus writes `NPU_OPSCHED_CTRL` with `wdata[0] == 1`, the
+   testbench starts a new perf job, increments `perf_job_id`, and clears all
+   counters.
+2. While `perf_active` is true, `perf_total_cycles` increments once per clock.
+3. The testbench samples `dut.u_npu_wrapper.desc_state` and increments exactly
+   one wrapper phase counter for the current state.
+4. While the wrapper is launching or waiting for the core, the testbench samples
+   `dut.u_npu_wrapper.u_npu.state` and increments the core phase counters.
+5. Wrapper SRAM requests are counted from `sram_req/sram_we`; the same request
+   is classified into descriptor/program/input/output word counters by the
+   current wrapper state.
+6. Core host-window writes are counted from `desc_host_we`; host-window reads
+   are inferred during `DESC_WRITE_OUTPUT`.
+7. When `desc_state == DESC_DONE`, the testbench prints one `PERF_JOB` JSON
+   record and closes the active job.
+
+`report.py` is post-processing only. It parses lines beginning with
+`PERF_JOB `, adds analytical estimates, reconstructs timeline spans from the
+phase counters, infers known multi-job workloads by job order, and writes JSON
+and HTML reports.
+
+Important consequence: the current numbers are cycle counts observed by the
+simulation testbench, not timestamp events emitted by synthesizable RTL logic.
+They are valid for bring-up and bottleneck classification, but they are not yet
+CPU-readable hardware counters.
+
 ## 5. Current JSON Shape
 
 Each job has:

@@ -109,7 +109,7 @@ After A1 matmul array, A2.1 structural data mover, grayscale digit fixtures,
 and real MNIST CNN `fc2` SoC smoke:
 
 ```text
-make test        PASS, 27 tests
+make test        PASS, 24 tests
 make perf-report PASS
 matmul total cycles: 236
 matmul core matmul cycles: 10

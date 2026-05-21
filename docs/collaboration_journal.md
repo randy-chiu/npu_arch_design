@@ -13,7 +13,7 @@ workflow.
 1. 本章节；
 2. `README.md`；
 3. `docs/architecture.md`；
-4. `docs/code_structure_review.md`；
+4. `docs/design/README.md`；
 5. `docs/bugfix_list.md`。
 
 ### 当前目标
@@ -34,7 +34,6 @@ workflow.
 
 - 顶层目录已按 SoC/NPU wrapper/NPU core/CPU/software/tools/test/docs 方向整理。
 - `docs/architecture.md` 是当前架构入口。
-- `docs/code_structure_review.md` 记录 RTL 和软件路径走读。
 - `arch/configs/soc_v0.jsonc` 是 SoC memory map、CPU reset/stack、boot image、
   CPU/NPU descriptor ABI 的 source of truth。
 - `arch/configs/npu_wrapper_v0.jsonc` 是 NPU wrapper register map 的 source of
@@ -65,7 +64,7 @@ workflow.
 make cpu-soc-sim: PASS
 make soc-sim: PASS
 make digits-demo: PASS
-make test: PASS, 27 tests
+make test: PASS, 24 tests
 ```
 
 新增 cycle 级性能报告入口：
@@ -101,14 +100,14 @@ docs/digits_classifier_workload.md
 docs/real_mnist_cnn_workload.md
 ```
 
-它已经跑通两个 workload 阶段：
+它已经跑通两个 active workload 阶段：
 
 1. Linear classifier 已进入 CPU-controlled SoC：firmware 对 digit_2 PGM 输入
    发起 16 个 `8x8x8` matmul tile job，在 SRAM 中累加 logits，并校验 expected
    logits / predicted label。
-2. Tiny MLP 已在工具层跑通：graph 为
-   `matmul -> relu_requantize -> matmul -> argmax`，两个 matmul 都 lower 到
-   current-RTL-compatible tile jobs，CPU/tool 侧负责 activation 和 argmax。
+2. 真实 MNIST CNN 的 `fc2` 已进入 CPU-controlled SoC：firmware 对真实
+   MNIST sample 0 的 `fc1_relu` activation 发起 32 个 `8x8x8` matmul tile
+   job，并校验 expected logits / predicted label。
 
 最新补充：
 
@@ -116,8 +115,6 @@ docs/real_mnist_cnn_workload.md
   仍保持兼容。
 - 新增 `test/assets/digits_realistic/digit_*_gray.pgm`，用于覆盖带抗锯齿和灰度
   变化的离线确定性测试图片。
-- Tiny MLP 的 FC2 已从 identity 改为非平凡 int8 权重：对角类增强、非对角类
-  抑制；工具层 tiled 测试覆盖所有灰度样本。
 - CPU firmware smoke 的 linear classifier 数据生成改为使用灰度 `digit_2_gray.pgm`。
 - 临时 MNIST tiny CNN prototype 已删除，改为接入真实开源预训练 CNN：
   `docs/real_mnist_cnn_workload.md`。模型来自
@@ -171,13 +168,13 @@ docs/real_mnist_cnn_workload.md
 ```text
 PYTHONPATH=sw/tools python -m unittest test.rtl.test_real_mnist_cnn -v: PASS
 make cpu-soc-sim: PASS
-make test: PASS, 27 tests
+make test: PASS, 24 tests
 make perf-report: PASS
 ```
 
 明天最直接的下一步：
 
-1. 不再优先推进旧 Tiny MLP firmware path；当前主线切到真实 MNIST CNN。
+1. 旧 Tiny MLP 分支已从 active code/docs 中移除；当前主线切到真实 MNIST CNN。
 2. 把真实 CNN 的 `fc1: 9216 -> 128` 作为下一层 NPU 映射目标：
    - 先在工具层定义 tiling/accumulation 方案；
    - 评估 9216 K 维、128 N 维对当前 8x8x8 tile path 的 job 数、SRAM

@@ -16,15 +16,10 @@ from npu_phase0.digits_classifier import (
     glyph_rows,
     image_to_glyph_rows,
     lower_classifier_to_rtl_tiles,
-    lower_matmul_to_rtl_tiles,
     predict_label,
     reference_logits,
     reference_logits_from_image,
-    relu_requantize,
     rtl_tile_graph,
-    tiny_mlp_graph,
-    tiny_mlp_inputs_from_image,
-    tiny_mlp_reference_logits_from_image,
 )
 from npu_phase0.simulator import MicroOpFunctionalSimulator
 
@@ -124,56 +119,6 @@ class DigitsClassifierWorkloadTests(unittest.TestCase):
                 self.assertEqual(logits, reference_logits_from_image(image_path))
                 self.assertEqual(logits[0][:REAL_CLASSES], sample["expected_logits_0_to_9"])
                 self.assertEqual(predict_label(logits), label)
-
-    def test_tiny_mlp_graph_exposes_cpu_and_npu_placement(self):
-        graph = tiny_mlp_graph()
-        self.assertEqual([op["type"] for op in graph["ops"]], ["matmul", "relu_requantize", "matmul", "argmax"])
-        self.assertEqual([op["placement"] for op in graph["ops"]], ["npu", "cpu", "npu", "cpu"])
-        self.assertEqual(graph["tensors"]["W1"]["shape"], [64, 16])
-        self.assertEqual(graph["tensors"]["W2"]["shape"], [16, 16])
-        inputs = tiny_mlp_inputs_from_image(REALISTIC_DIGITS_DIR / "digit_2_gray.pgm")
-        self.assertEqual(inputs["W2"][2][:4], [-1, -1, 4, -1])
-
-    def test_tiny_mlp_tiled_path_predicts_each_digit(self):
-        arch = load_arch(ARCH_PATH)
-        tile_artifact = compile_graph(rtl_tile_graph(), arch)
-        simulator = MicroOpFunctionalSimulator(arch)
-        samples = json.loads(SAMPLES_PATH.read_text(encoding="utf-8"))["samples"]
-
-        for sample in samples:
-            label = sample["label"]
-            image_path = Path(sample["image_path"])
-            with self.subTest(label=label):
-                inputs = tiny_mlp_inputs_from_image(image_path)
-                hidden = _run_tiled_matmul(simulator, tile_artifact, inputs["A"], inputs["W1"])
-                hidden_int8 = relu_requantize(hidden)
-                self.assertTrue(all(0 <= value <= 127 for row in hidden_int8 for value in row))
-                logits = _run_tiled_matmul(simulator, tile_artifact, hidden_int8, inputs["W2"])
-                self.assertEqual(logits, tiny_mlp_reference_logits_from_image(image_path))
-                self.assertEqual(predict_label(logits), label)
-
-    def test_tiny_mlp_tiled_path_predicts_realistic_grayscale_images(self):
-        arch = load_arch(ARCH_PATH)
-        tile_artifact = compile_graph(rtl_tile_graph(), arch)
-        simulator = MicroOpFunctionalSimulator(arch)
-
-        for label in range(REAL_CLASSES):
-            image_path = REALISTIC_DIGITS_DIR / f"digit_{label}_gray.pgm"
-            with self.subTest(label=label):
-                inputs = tiny_mlp_inputs_from_image(image_path)
-                hidden = _run_tiled_matmul(simulator, tile_artifact, inputs["A"], inputs["W1"])
-                hidden_int8 = relu_requantize(hidden)
-                logits = _run_tiled_matmul(simulator, tile_artifact, hidden_int8, inputs["W2"])
-                self.assertEqual(logits, tiny_mlp_reference_logits_from_image(image_path))
-                self.assertEqual(predict_label(logits), label)
-
-
-def _run_tiled_matmul(simulator, tile_artifact, a, b):
-    out = [[0 for _ in range(len(b[0]))] for _ in range(len(a))]
-    for job in lower_matmul_to_rtl_tiles(a, b):
-        result = simulator.run(tile_artifact, job["inputs"])
-        accumulate_tile_output(out, result["dram"]["C"], job["n_offset"])
-    return out
 
 
 if __name__ == "__main__":
