@@ -9,6 +9,7 @@ RISCV_OBJCOPY ?= $(patsubst %-gcc,%-objcopy,$(RISCV_GCC))
 RISCV_OBJDUMP ?= $(patsubst %-gcc,%-objdump,$(RISCV_GCC))
 RISCV_CFLAGS := -march=rv32i -mabi=ilp32 -mcmodel=medlow -msmall-data-limit=0 -ffreestanding -fno-pic -nostdlib -nostartfiles -Os -Wall -Wextra
 RISCV_INCLUDES := -I build/soc -I build/npu_wrapper -I build/firmware -I sw/soc_cpu/runtime
+FIRMWARE_ROM_WORDS ?= 524288
 
 validate-arch:
 	PYTHONPATH=$(PYTHONPATH) python -m npu_phase0.cli validate-arch --arch $(ARCH)
@@ -43,7 +44,7 @@ firmware-smoke-c: rtl-fixtures soc-spec npu-wrapper-spec firmware-data
 		sw/soc_cpu/apps/soc_cpu_smoke/main.c
 	$(RISCV_OBJCOPY) -O binary build/firmware/soc_cpu_smoke.elf build/firmware/soc_cpu_smoke.bin
 	$(RISCV_OBJDUMP) -d build/firmware/soc_cpu_smoke.elf > build/firmware/soc_cpu_smoke.dump
-	python sw/tools/firmware/bin_to_readmemh.py --in build/firmware/soc_cpu_smoke.bin --out build/firmware/soc_cpu_smoke.hex --words 8192
+	python sw/tools/firmware/bin_to_readmemh.py --in build/firmware/soc_cpu_smoke.bin --out build/firmware/soc_cpu_smoke.hex --words $(FIRMWARE_ROM_WORDS)
 
 ifneq ($(RISCV_GCC),)
 firmware-smoke: firmware-smoke-c

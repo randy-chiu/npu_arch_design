@@ -30,6 +30,13 @@ smoke sequence:
 - `digits_linear_classifier`: 16 tiled `8x8x8` matmul jobs that implement the
   linear digit classifier, with CPU firmware accumulating partial sums and
   checking the predicted label;
+- `real_mnist_cnn_fc1_tile0`: 1 tiled `8x8x8` matmul job for the first nonzero
+  quantized `fc1` hardware-facing tile from MNIST sample 0;
+- `real_mnist_cnn_fc1_k_stream_smoke`: 1 multi-chunk K-streaming matmul job for
+  selected real `fc1` chunks, validating accumulator residency within one NPU
+  descriptor;
+- `real_mnist_cnn_fc1_full_k_stream_tile0`: 1 full single-N-tile K-streaming
+  matmul job for real `fc1`, with `k_chunks=1152`;
 - `real_mnist_cnn_fc2`: 32 tiled `8x8x8` matmul jobs for the original
   pretrained MNIST CNN's quantized `fc2` hardware-facing view.
 
@@ -174,17 +181,20 @@ A2.0 movement profile:
 | `matmul` | 153 | 64 | 144 | 64 |
 | `softmax` | 33 | 8 | 24 | 8 |
 
-For matmul, data movement now dominates the 236-cycle job. The core matmul
-phase is only 10 cycles, while input/program movement and output writeback are
-hundreds of single-word cycles. This is the main evidence for A2 work on data
-movers, scratchpad banking, and overlap.
+For matmul, data movement still dominates the 81-cycle job. The core matmul
+phase is only 10 cycles, while input/program movement and output writeback now
+use the `WORDS_PER_CYCLE=4` NPU-side path. This remains the main evidence for
+later A2 work on data mover counters, scratchpad banking, and overlap.
 
 Current model profiles:
 
 | Workload | Jobs | Total cycles | Notes |
 | --- | ---: | ---: | --- |
-| `digits_linear_classifier` | 16 matmul tiles | 3776 | `8x64 * 64x16` lowered into 16 current-RTL-compatible `8x8x8` jobs |
-| `real_mnist_cnn_fc2` | 32 matmul tiles | 7552 | Original CNN `fc2: 128 -> 10` quantized view lowered into 32 current-RTL-compatible `8x8x8` jobs |
+| `digits_linear_classifier` | 16 matmul tiles | 1296 | `8x64 * 64x16` lowered into 16 current-RTL-compatible `8x8x8` jobs |
+| `real_mnist_cnn_fc1_tile0` | 1 matmul tile | 81 | First nonzero original CNN `fc1` quantized tile, `K=56`, `N=0`; SoC tile checkpoint, not full layer |
+| `real_mnist_cnn_fc1_k_stream_smoke` | 1 K-stream job | 236 | Four selected real `fc1` K chunks accumulated inside one descriptor; validates K streaming, not full layer |
+| `real_mnist_cnn_fc1_full_k_stream_tile0` | 1 K-stream job | 58784 | Full first `fc1` output N tile, `k_chunks=1152`, A/B streams staged in enlarged simulation SRAM |
+| `real_mnist_cnn_fc2` | 32 matmul tiles | 2592 | Original CNN `fc2: 128 -> 10` quantized view lowered into 32 current-RTL-compatible `8x8x8` jobs |
 
 The model profile currently counts only NPU job intervals. CPU-side work between
 jobs, including copying tile tensors, accumulating partial sums, and argmax, is

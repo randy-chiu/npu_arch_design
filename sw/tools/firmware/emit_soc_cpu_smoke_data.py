@@ -19,11 +19,13 @@ from npu_phase0.digits_classifier import (  # noqa: E402
     reference_logits_from_image,
 )
 from npu_phase0.golden import matmul  # noqa: E402
+from npu_compiler.k_stream import plan_matmul_k_stream  # noqa: E402
 from npu_phase0.real_mnist_cnn import (  # noqa: E402
     MODEL_README_PATH,
     MODEL_WEIGHTS_PATH,
     TEST_IMAGES_PATH,
     TEST_LABELS_PATH,
+    fc1_npu_inputs_from_flat,
     fc2_npu_inputs_from_activation,
     forward_intermediates,
     load_mnist_images,
@@ -71,6 +73,9 @@ def main() -> None:
         lines.append("")
 
     _append_digits_classifier_data(lines)
+    _append_real_mnist_cnn_fc1_tile_data(lines)
+    _append_real_mnist_cnn_fc1_k_stream_data(lines)
+    _append_real_mnist_cnn_fc1_full_k_stream_data(lines)
     _append_real_mnist_cnn_fc2_data(lines)
     lines.append("#endif")
 
@@ -103,15 +108,131 @@ def _append_digits_classifier_data(lines: list[str]) -> None:
     _append_flat_array(lines, "digits_expected_logits", _flatten(logits), bits=32)
 
 
-def _append_real_mnist_cnn_fc2_data(lines: list[str]) -> None:
-    required = (
+def _real_mnist_external_available() -> bool:
+    return (
         numpy_available()
         and (_REPO_ROOT / MODEL_WEIGHTS_PATH).exists()
         and (_REPO_ROOT / MODEL_README_PATH).exists()
         and (_REPO_ROOT / TEST_IMAGES_PATH).exists()
         and (_REPO_ROOT / TEST_LABELS_PATH).exists()
     )
-    if not required:
+
+
+def _append_real_mnist_cnn_fc1_tile_data(lines: list[str]) -> None:
+    if not _real_mnist_external_available():
+        lines.append("#define REAL_MNIST_CNN_FC1_TILE_ENABLED 0u")
+        lines.append("")
+        return
+
+    weights = load_safetensors_f32(_REPO_ROOT / MODEL_WEIGHTS_PATH)
+    images = load_mnist_images(_REPO_ROOT / TEST_IMAGES_PATH)
+    labels = load_mnist_labels(_REPO_ROOT / TEST_LABELS_PATH)
+    sample_index = 0
+    expected_label = int(labels[sample_index])
+    original_prediction = predict(images[sample_index], weights)
+    if original_prediction != expected_label:
+        raise ValueError(f"MNIST sample {sample_index} predicts {original_prediction}, expected {expected_label}")
+
+    intermediates = forward_intermediates(images[sample_index], weights)
+    npu_inputs = fc1_npu_inputs_from_flat(intermediates["flat"], weights)
+    plan = plan_matmul_k_stream(
+        npu_inputs["A"],
+        npu_inputs["W"],
+        n_offset=0,
+        max_chunks=1,
+        require_nonzero=True,
+    )
+    chunk = plan["chunks"][0]
+
+    lines.append("#define REAL_MNIST_CNN_FC1_TILE_ENABLED 1u")
+    lines.append(f"#define REAL_MNIST_CNN_FC1_TILE_SAMPLE_INDEX {sample_index}u")
+    lines.append("#define REAL_MNIST_CNN_FC1_TILE_WORDS 64u")
+    lines.append(f"#define REAL_MNIST_CNN_FC1_TILE_K_OFFSET {chunk['k_offset']}u")
+    lines.append(f"#define REAL_MNIST_CNN_FC1_TILE_N_OFFSET {plan['n_offset']}u")
+    lines.append("")
+
+    _append_flat_array(lines, "real_mnist_cnn_fc1_tile_a", _flatten(chunk["a_tile"]), bits=8)
+    _append_flat_array(lines, "real_mnist_cnn_fc1_tile_b", _flatten(chunk["b_tile"]), bits=8)
+    _append_flat_array(lines, "real_mnist_cnn_fc1_tile_expected_c", _flatten(chunk["expected_tile"]), bits=32)
+
+
+def _append_real_mnist_cnn_fc1_k_stream_data(lines: list[str]) -> None:
+    if not _real_mnist_external_available():
+        lines.append("#define REAL_MNIST_CNN_FC1_K_STREAM_ENABLED 0u")
+        lines.append("")
+        return
+
+    weights = load_safetensors_f32(_REPO_ROOT / MODEL_WEIGHTS_PATH)
+    images = load_mnist_images(_REPO_ROOT / TEST_IMAGES_PATH)
+    labels = load_mnist_labels(_REPO_ROOT / TEST_LABELS_PATH)
+    sample_index = 0
+    expected_label = int(labels[sample_index])
+    original_prediction = predict(images[sample_index], weights)
+    if original_prediction != expected_label:
+        raise ValueError(f"MNIST sample {sample_index} predicts {original_prediction}, expected {expected_label}")
+
+    intermediates = forward_intermediates(images[sample_index], weights)
+    npu_inputs = fc1_npu_inputs_from_flat(intermediates["flat"], weights)
+    plan = plan_matmul_k_stream(
+        npu_inputs["A"],
+        npu_inputs["W"],
+        n_offset=0,
+        max_chunks=4,
+        require_nonzero=True,
+    )
+
+    lines.append("#define REAL_MNIST_CNN_FC1_K_STREAM_ENABLED 1u")
+    lines.append(f"#define REAL_MNIST_CNN_FC1_K_STREAM_SAMPLE_INDEX {sample_index}u")
+    lines.append(f"#define REAL_MNIST_CNN_FC1_K_STREAM_CHUNKS {plan['k_chunks']}u")
+    lines.append("#define REAL_MNIST_CNN_FC1_K_STREAM_TILE_WORDS 64u")
+    lines.append(f"#define REAL_MNIST_CNN_FC1_K_STREAM_N_OFFSET {plan['n_offset']}u")
+    lines.append("")
+
+    _append_flat_array(lines, "real_mnist_cnn_fc1_k_stream_k_offsets", plan["k_offsets"], bits=32)
+    _append_2d_array(lines, "real_mnist_cnn_fc1_k_stream_a", plan["a_stream"], bits=8)
+    _append_2d_array(lines, "real_mnist_cnn_fc1_k_stream_b", plan["b_stream"], bits=8)
+    _append_flat_array(lines, "real_mnist_cnn_fc1_k_stream_expected_c", _flatten(plan["expected_c"]), bits=32)
+
+
+def _append_real_mnist_cnn_fc1_full_k_stream_data(lines: list[str]) -> None:
+    if not _real_mnist_external_available():
+        lines.append("#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_ENABLED 0u")
+        lines.append("")
+        return
+
+    weights = load_safetensors_f32(_REPO_ROOT / MODEL_WEIGHTS_PATH)
+    images = load_mnist_images(_REPO_ROOT / TEST_IMAGES_PATH)
+    labels = load_mnist_labels(_REPO_ROOT / TEST_LABELS_PATH)
+    sample_index = 0
+    expected_label = int(labels[sample_index])
+    original_prediction = predict(images[sample_index], weights)
+    if original_prediction != expected_label:
+        raise ValueError(f"MNIST sample {sample_index} predicts {original_prediction}, expected {expected_label}")
+
+    intermediates = forward_intermediates(images[sample_index], weights)
+    npu_inputs = fc1_npu_inputs_from_flat(intermediates["flat"], weights)
+    plan = plan_matmul_k_stream(npu_inputs["A"], npu_inputs["W"], n_offset=0)
+
+    lines.append("#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_ENABLED 1u")
+    lines.append(f"#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_SAMPLE_INDEX {sample_index}u")
+    lines.append(f"#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_CHUNKS {plan['k_chunks']}u")
+    lines.append("#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS 64u")
+    lines.append(f"#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_N_OFFSET {plan['n_offset']}u")
+    lines.append("")
+
+    _append_flat_array(lines, "real_mnist_cnn_fc1_full_k_stream_k_offsets", plan["k_offsets"], bits=32)
+    _append_2d_array(lines, "real_mnist_cnn_fc1_full_k_stream_a", plan["a_stream"], bits=8)
+    _append_2d_array(lines, "real_mnist_cnn_fc1_full_k_stream_b", plan["b_stream"], bits=8)
+    _append_flat_array(
+        lines,
+        "real_mnist_cnn_fc1_full_k_stream_expected_c",
+        _flatten(plan["expected_c"]),
+        bits=32,
+    )
+
+
+def _append_real_mnist_cnn_fc2_data(lines: list[str]) -> None:
+    if not _real_mnist_external_available():
         lines.append("#define REAL_MNIST_CNN_FC2_ENABLED 0u")
         lines.append("")
         return

@@ -20,10 +20,10 @@ module soc_cpu_top (
     logic        rom_ready;
 
     logic        sram_req;
-    logic        sram_we;
+    logic [SOC_SRAM_CPU_LANES-1:0] sram_we;
     logic [31:0] sram_addr;
-    logic [31:0] sram_wdata;
-    logic [31:0] sram_rdata;
+    logic [SOC_SRAM_CPU_DATA_WIDTH_BITS-1:0] sram_wdata;
+    logic [SOC_SRAM_CPU_DATA_WIDTH_BITS-1:0] sram_rdata;
     logic        sram_ready;
 
     logic        npu_wrapper_req;
@@ -34,10 +34,10 @@ module soc_cpu_top (
     logic        npu_wrapper_ready;
 
     logic        npu_sram_req;
-    logic        npu_sram_we;
+    logic [SOC_NPU_SRAM_LANES-1:0] npu_sram_we;
     logic [31:0] npu_sram_addr;
-    logic [31:0] npu_sram_wdata;
-    logic [31:0] npu_sram_rdata;
+    logic [(SOC_NPU_SRAM_LANES*32)-1:0] npu_sram_wdata;
+    logic [(SOC_NPU_SRAM_LANES*32)-1:0] npu_sram_rdata;
     logic        npu_sram_ready;
 
     logic        test_req;
@@ -59,7 +59,9 @@ module soc_cpu_top (
         .trap(cpu_trap)
     );
 
-    simple_bus u_bus (
+    simple_bus #(
+        .SRAM_CPU_LANES(SOC_SRAM_CPU_LANES)
+    ) u_bus (
         .m_req(cpu_req),
         .m_we(cpu_we),
         .m_addr(cpu_addr),
@@ -93,6 +95,7 @@ module soc_cpu_top (
     );
 
     boot_rom #(
+        .WORDS(SOC_BOOT_ROM_SIZE_BYTES / 4),
         .INIT_HEX("build/firmware/soc_cpu_smoke.hex")
     ) u_boot_rom (
         .clk(clk),
@@ -104,7 +107,11 @@ module soc_cpu_top (
         .ready(rom_ready)
     );
 
-    simple_sram u_sram (
+    simple_sram #(
+        .WORDS(SOC_SRAM_SIZE_BYTES / 4),
+        .CPU_LANES(SOC_SRAM_CPU_LANES),
+        .NPU_LANES(SOC_NPU_SRAM_LANES)
+    ) u_sram (
         .clk(clk),
         .rst_n(rst_n),
         .req(sram_req),
@@ -121,7 +128,9 @@ module soc_cpu_top (
         .npu_ready(npu_sram_ready)
     );
 
-    npu_v0_opsched u_npu_wrapper (
+    npu_v0_opsched #(
+        .CORE_HOST_LANES(SOC_NPU_CORE_HOST_LANES)
+    ) u_npu_wrapper (
         .clk(clk),
         .rst_n(rst_n),
         .bus_req(npu_wrapper_req),

@@ -2,24 +2,106 @@
   "description": "Open-source pretrained MNIST CNN from cmaeti/mnist-cnn.",
   "source": "https://huggingface.co/cmaeti/mnist-cnn",
   "weights": "test/external/mnist_cnn/mnist-cnn.safetensors",
+  "parameters": {
+    "conv1.weight": {"shape": [32, 1, 3, 3], "dtype": "float32"},
+    "conv1.bias": {"shape": [32], "dtype": "float32"},
+    "conv2.weight": {"shape": [64, 32, 3, 3], "dtype": "float32"},
+    "conv2.bias": {"shape": [64], "dtype": "float32"},
+    "fc1.weight": {"shape": [128, 9216], "dtype": "float32"},
+    "fc1.bias": {"shape": [128], "dtype": "float32"},
+    "fc2.weight": {"shape": [10, 128], "dtype": "float32"},
+    "fc2.bias": {"shape": [10], "dtype": "float32"}
+  },
   "tensors": {
     "Image": {"shape": [1, 28, 28], "dtype": "float32"},
     "Conv1": {"shape": [32, 26, 26], "dtype": "float32"},
+    "Conv1Relu": {"shape": [32, 26, 26], "dtype": "float32"},
     "Conv2": {"shape": [64, 24, 24], "dtype": "float32"},
+    "Conv2Relu": {"shape": [64, 24, 24], "dtype": "float32"},
     "Pool": {"shape": [64, 12, 12], "dtype": "float32"},
+    "Flat": {"shape": [9216], "dtype": "float32"},
     "Fc1": {"shape": [128], "dtype": "float32"},
-    "Logits": {"shape": [10], "dtype": "float32"}
+    "Fc1Relu": {"shape": [128], "dtype": "float32"},
+    "Logits": {"shape": [10], "dtype": "float32"},
+    "Predicted": {"shape": [], "dtype": "int64"}
   },
   "ops": [
-    {"type": "conv2d", "x": "Image", "weight": "conv1.weight", "bias": "conv1.bias", "out": "Conv1"},
-    {"type": "relu", "x": "Conv1", "out": "Conv1Relu"},
-    {"type": "conv2d", "x": "Conv1Relu", "weight": "conv2.weight", "bias": "conv2.bias", "out": "Conv2"},
-    {"type": "relu", "x": "Conv2", "out": "Conv2Relu"},
-    {"type": "maxpool2d", "x": "Conv2Relu", "kernel": [2, 2], "stride": [2, 2], "out": "Pool"},
-    {"type": "flatten", "x": "Pool", "out": "Flat"},
-    {"type": "linear", "x": "Flat", "weight": "fc1.weight", "bias": "fc1.bias", "out": "Fc1"},
-    {"type": "relu", "x": "Fc1", "out": "Fc1Relu"},
-    {"type": "linear", "x": "Fc1Relu", "weight": "fc2.weight", "bias": "fc2.bias", "out": "Logits"},
-    {"type": "argmax", "x": "Logits", "out": "Predicted"}
-  ]
+    {
+      "type": "conv2d",
+      "x": "Image",
+      "weight": "conv1.weight",
+      "bias": "conv1.bias",
+      "out": "Conv1",
+      "input_shape": [1, 28, 28],
+      "weight_shape": [32, 1, 3, 3],
+      "bias_shape": [32],
+      "output_shape": [32, 26, 26],
+      "kernel_shape": [3, 3],
+      "strides": [1, 1],
+      "pads": [0, 0, 0, 0]
+    },
+    {"type": "relu", "x": "Conv1", "out": "Conv1Relu", "input_shape": [32, 26, 26], "output_shape": [32, 26, 26]},
+    {
+      "type": "conv2d",
+      "x": "Conv1Relu",
+      "weight": "conv2.weight",
+      "bias": "conv2.bias",
+      "out": "Conv2",
+      "input_shape": [32, 26, 26],
+      "weight_shape": [64, 32, 3, 3],
+      "bias_shape": [64],
+      "output_shape": [64, 24, 24],
+      "kernel_shape": [3, 3],
+      "strides": [1, 1],
+      "pads": [0, 0, 0, 0]
+    },
+    {"type": "relu", "x": "Conv2", "out": "Conv2Relu", "input_shape": [64, 24, 24], "output_shape": [64, 24, 24]},
+    {
+      "type": "maxpool2d",
+      "x": "Conv2Relu",
+      "kernel": [2, 2],
+      "stride": [2, 2],
+      "input_shape": [64, 24, 24],
+      "output_shape": [64, 12, 12],
+      "out": "Pool"
+    },
+    {"type": "flatten", "x": "Pool", "input_shape": [64, 12, 12], "output_shape": [9216], "out": "Flat"},
+    {
+      "type": "linear",
+      "x": "Flat",
+      "weight": "fc1.weight",
+      "bias": "fc1.bias",
+      "out": "Fc1",
+      "input_shape": [9216],
+      "weight_shape": [128, 9216],
+      "bias_shape": [128],
+      "output_shape": [128],
+      "in_features": 9216,
+      "out_features": 128
+    },
+    {"type": "relu", "x": "Fc1", "out": "Fc1Relu", "input_shape": [128], "output_shape": [128]},
+    {
+      "type": "linear",
+      "x": "Fc1Relu",
+      "weight": "fc2.weight",
+      "bias": "fc2.bias",
+      "out": "Logits",
+      "input_shape": [128],
+      "weight_shape": [10, 128],
+      "bias_shape": [10],
+      "output_shape": [10],
+      "in_features": 128,
+      "out_features": 10
+    },
+    {"type": "argmax", "x": "Logits", "out": "Predicted", "input_shape": [10], "output_shape": []}
+  ],
+  "quantization": {
+    "phase0_default": {
+      "boundary": "selected float tensor and float layer weights are converted to signed int8 before Phase 0 matmul",
+      "activation": {"scheme": "symmetric", "granularity": "per-tensor", "dtype": "int8"},
+      "weight": {"scheme": "symmetric", "granularity": "per-tensor", "dtype": "int8"},
+      "accumulator": {"dtype": "int32"},
+      "bias": {"domain": "dequantized-float"}
+    }
+  }
 }

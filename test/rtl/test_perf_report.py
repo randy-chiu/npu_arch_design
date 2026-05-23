@@ -102,11 +102,114 @@ class PerfReportTests(unittest.TestCase):
             self.assertEqual(fc2["movement"]["input0_words"], 32 * 64)
             self.assertEqual(fc2["metadata"]["tile_jobs"], 32)
 
+    def test_perf_log_groups_real_mnist_cnn_fc1_tile_before_fc2(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "perf.log"
+            lines = [
+                _perf_job_line(1, "matmul", 236),
+                _perf_job_line(2, "softmax", 53, matmul_cycles=0, input1_words=0, output_words=8),
+            ]
+            lines.extend(_perf_job_line(job_id, "matmul", 236) for job_id in range(3, 19))
+            lines.append(_perf_job_line(19, "matmul", 236))
+            lines.extend(_perf_job_line(job_id, "matmul", 236) for job_id in range(20, 52))
+            log_path.write_text("".join(lines), encoding="utf-8")
+
+            report = parse_perf_log(log_path)
+
+            self.assertEqual(report["summary"]["jobs"], 51)
+            self.assertEqual(report["summary"]["workloads"], 5)
+            fc1 = report["workloads"][3]
+            fc2 = report["workloads"][4]
+            self.assertEqual(fc1["name"], "real_mnist_cnn_fc1_tile0")
+            self.assertEqual(fc1["kind"], "model_layer_tile")
+            self.assertEqual(fc1["jobs"], 1)
+            self.assertEqual(fc1["job_ids"], [19])
+            self.assertEqual(fc1["metadata"]["tile_jobs"], 1)
+            self.assertEqual(fc2["name"], "real_mnist_cnn_fc2")
+            self.assertEqual(fc2["job_ids"], list(range(20, 52)))
+
+    def test_perf_log_groups_real_mnist_cnn_fc1_k_stream_before_fc2(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "perf.log"
+            lines = [
+                _perf_job_line(1, "matmul", 236),
+                _perf_job_line(2, "softmax", 53, matmul_cycles=0, input1_words=0, output_words=8),
+            ]
+            lines.extend(_perf_job_line(job_id, "matmul", 236) for job_id in range(3, 19))
+            lines.append(_perf_job_line(19, "matmul", 236))
+            lines.append(_perf_job_line(20, "matmul_k_stream", 727, matmul_cycles=40, input0_words=256, input1_words=256))
+            lines.extend(_perf_job_line(job_id, "matmul", 236) for job_id in range(21, 53))
+            log_path.write_text("".join(lines), encoding="utf-8")
+
+            report = parse_perf_log(log_path)
+
+            self.assertEqual(report["summary"]["jobs"], 52)
+            self.assertEqual(report["summary"]["workloads"], 6)
+            fc1_tile = report["workloads"][3]
+            fc1_stream = report["workloads"][4]
+            fc2 = report["workloads"][5]
+            self.assertEqual(fc1_tile["name"], "real_mnist_cnn_fc1_tile0")
+            self.assertEqual(fc1_stream["name"], "real_mnist_cnn_fc1_k_stream_smoke")
+            self.assertEqual(fc1_stream["kind"], "model_layer_tile")
+            self.assertEqual(fc1_stream["jobs"], 1)
+            self.assertEqual(fc1_stream["job_ids"], [20])
+            self.assertEqual(fc1_stream["movement"]["input0_words"], 256)
+            self.assertEqual(fc1_stream["movement"]["input1_words"], 256)
+            self.assertEqual(fc2["name"], "real_mnist_cnn_fc2")
+            self.assertEqual(fc2["job_ids"], list(range(21, 53)))
+
+    def test_perf_log_groups_real_mnist_cnn_fc1_full_k_stream_before_fc2(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "perf.log"
+            lines = [
+                _perf_job_line(1, "matmul", 236),
+                _perf_job_line(2, "softmax", 53, matmul_cycles=0, input1_words=0, output_words=8),
+            ]
+            lines.extend(_perf_job_line(job_id, "matmul", 236) for job_id in range(3, 19))
+            lines.append(_perf_job_line(19, "matmul", 236))
+            lines.append(_perf_job_line(20, "matmul_k_stream", 727, matmul_cycles=40, input0_words=256, input1_words=256))
+            lines.append(
+                _perf_job_line(
+                    21,
+                    "matmul_k_stream",
+                    170000,
+                    matmul_cycles=11520,
+                    input0_words=73728,
+                    input1_words=73728,
+                )
+            )
+            lines.extend(_perf_job_line(job_id, "matmul", 236) for job_id in range(22, 54))
+            log_path.write_text("".join(lines), encoding="utf-8")
+
+            report = parse_perf_log(log_path)
+
+            self.assertEqual(report["summary"]["jobs"], 53)
+            self.assertEqual(report["summary"]["workloads"], 7)
+            fc1_tile = report["workloads"][3]
+            fc1_smoke = report["workloads"][4]
+            fc1_full = report["workloads"][5]
+            fc2 = report["workloads"][6]
+            self.assertEqual(fc1_tile["name"], "real_mnist_cnn_fc1_tile0")
+            self.assertEqual(fc1_smoke["name"], "real_mnist_cnn_fc1_k_stream_smoke")
+            self.assertEqual(fc1_full["name"], "real_mnist_cnn_fc1_full_k_stream_tile0")
+            self.assertEqual(fc1_full["kind"], "model_layer_tile")
+            self.assertEqual(fc1_full["jobs"], 1)
+            self.assertEqual(fc1_full["job_ids"], [21])
+            self.assertEqual(fc1_full["metadata"]["k_chunks"], 1152)
+            self.assertEqual(fc1_full["movement"]["input0_words"], 73728)
+            self.assertEqual(fc1_full["movement"]["input1_words"], 73728)
+            self.assertEqual(fc2["name"], "real_mnist_cnn_fc2")
+            self.assertEqual(fc2["job_ids"], list(range(22, 54)))
+
 def _perf_job_line(
     job_id: int,
     name: str,
     total_cycles: int,
     matmul_cycles: int = 10,
+    input0_words: int = 64,
     input1_words: int = 64,
     output_words: int = 64,
 ) -> str:
@@ -117,7 +220,7 @@ def _perf_job_line(
         f'"core":{{"total":18,"fetch":5,"matmul":{matmul_cycles},"done":1}},'
         '"movement":{"sram_read_cycles":153,"sram_write_cycles":64,'
         '"core_host_write_cycles":144,"core_host_read_cycles":64,'
-        f'"desc_words":9,"program_words":16,"input0_words":64,'
+        f'"desc_words":9,"program_words":16,"input0_words":{input0_words},'
         f'"input1_words":{input1_words},"output_words":{output_words}}}}}\n'
     )
 

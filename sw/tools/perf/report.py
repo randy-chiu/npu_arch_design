@@ -232,7 +232,68 @@ def infer_workloads(jobs: list[dict]) -> list[dict]:
             )
             cursor += classifier_tile_count
 
+    real_mnist_fc1_tile_count = 1
+    real_mnist_fc1_k_stream_count = 1
+    real_mnist_fc1_full_k_stream_count = 1
     real_mnist_fc2_tile_count = 32
+    if cursor + real_mnist_fc1_tile_count + real_mnist_fc2_tile_count <= len(jobs):
+        candidate = jobs[cursor : cursor + real_mnist_fc1_tile_count]
+        if all(job.get("name") == "matmul" for job in candidate):
+            workloads.append(
+                _workload_summary(
+                    "real_mnist_cnn_fc1_tile0",
+                    candidate,
+                    "model_layer_tile",
+                    metadata={
+                        "input": "test/external/mnist/t10k-images-idx3-ubyte.gz sample 0",
+                        "graph": "test/graphs/real_mnist_cnn.json",
+                        "weights": "test/external/mnist_cnn/mnist-cnn.safetensors",
+                        "tile_jobs": real_mnist_fc1_tile_count,
+                        "description": "First quantized fc1 8x8x8 tile from the original CNN sample 0 path; validates SoC RTL staging/arithmetic, not full fc1 layer execution",
+                    },
+                )
+            )
+            cursor += real_mnist_fc1_tile_count
+
+    if cursor + real_mnist_fc1_k_stream_count + real_mnist_fc2_tile_count <= len(jobs):
+        candidate = jobs[cursor : cursor + real_mnist_fc1_k_stream_count]
+        if all(job.get("name") == "matmul_k_stream" for job in candidate):
+            workloads.append(
+                _workload_summary(
+                    "real_mnist_cnn_fc1_k_stream_smoke",
+                    candidate,
+                    "model_layer_tile",
+                    metadata={
+                        "input": "test/external/mnist/t10k-images-idx3-ubyte.gz sample 0",
+                        "graph": "test/graphs/real_mnist_cnn.json",
+                        "weights": "test/external/mnist_cnn/mnist-cnn.safetensors",
+                        "tile_jobs": real_mnist_fc1_k_stream_count,
+                        "description": "Multi-chunk quantized fc1 K-streaming descriptor smoke; validates accumulator residency within one NPU job, not full fc1 layer execution",
+                    },
+                )
+            )
+            cursor += real_mnist_fc1_k_stream_count
+
+    if cursor + real_mnist_fc1_full_k_stream_count + real_mnist_fc2_tile_count <= len(jobs):
+        candidate = jobs[cursor : cursor + real_mnist_fc1_full_k_stream_count]
+        if all(job.get("name") == "matmul_k_stream" for job in candidate):
+            workloads.append(
+                _workload_summary(
+                    "real_mnist_cnn_fc1_full_k_stream_tile0",
+                    candidate,
+                    "model_layer_tile",
+                    metadata={
+                        "input": "test/external/mnist/t10k-images-idx3-ubyte.gz sample 0",
+                        "graph": "test/graphs/real_mnist_cnn.json",
+                        "weights": "test/external/mnist_cnn/mnist-cnn.safetensors",
+                        "tile_jobs": real_mnist_fc1_full_k_stream_count,
+                        "k_chunks": 1152,
+                        "description": "Full quantized fc1 single N-tile K-streaming descriptor; validates 1152 K chunks accumulated inside one NPU job",
+                    },
+                )
+            )
+            cursor += real_mnist_fc1_full_k_stream_count
+
     if cursor + real_mnist_fc2_tile_count <= len(jobs):
         candidate = jobs[cursor : cursor + real_mnist_fc2_tile_count]
         if all(job.get("name") == "matmul" for job in candidate):

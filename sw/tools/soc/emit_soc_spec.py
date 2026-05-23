@@ -24,6 +24,10 @@ def main() -> None:
         ("SOC_CPU_RESET_VECTOR", spec["cpu"]["reset_vector"]),
         ("SOC_CPU_STACK_POINTER", spec["cpu"]["stack_pointer"]),
     ]
+    bus_entries = _bus_entries(spec.get("bus", {}))
+    entries.extend(bus_entries)
+    mover_entries = _npu_data_mover_entries(spec.get("npu_data_mover", {}))
+    entries.extend(mover_entries)
     for name in ("boot_rom", "sram", "npu_wrapper", "uart", "test_status"):
         region = memory_map[name]
         prefix = f"SOC_{name.upper()}"
@@ -101,6 +105,57 @@ def _validate_npu_job_desc(fields: list[dict[str, Any]]) -> None:
     expected = list(range(len(fields)))
     if words != expected:
         raise ValueError(f"npu_job_desc words must be contiguous from 0: got {words}")
+
+
+def _bus_entries(bus: dict[str, Any]) -> list[tuple[str, int]]:
+    addr_width = int(bus.get("addr_width_bits", 32))
+    data_width = int(bus.get("data_width_bits", 32))
+    sram_cpu_lanes = int(bus.get("sram_cpu_lanes", 1))
+    sram_cpu_data_width = int(bus.get("sram_cpu_data_width_bits", sram_cpu_lanes * data_width))
+    if addr_width != 32:
+        raise ValueError(f"only 32-bit SoC addresses are supported today: {addr_width}")
+    if data_width != 32:
+        raise ValueError(f"the PicoRV32 CPU bus must remain 32-bit today: {data_width}")
+    if sram_cpu_lanes <= 0:
+        raise ValueError(f"sram_cpu_lanes must be positive: {sram_cpu_lanes}")
+    if sram_cpu_data_width != sram_cpu_lanes * 32:
+        raise ValueError(
+            "sram_cpu_data_width_bits must equal sram_cpu_lanes * 32: "
+            f"{sram_cpu_data_width} != {sram_cpu_lanes * 32}"
+        )
+    return [
+        ("SOC_BUS_ADDR_WIDTH_BITS", addr_width),
+        ("SOC_BUS_DATA_WIDTH_BITS", data_width),
+        ("SOC_SRAM_CPU_LANES", sram_cpu_lanes),
+        ("SOC_SRAM_CPU_DATA_WIDTH_BITS", sram_cpu_data_width),
+    ]
+
+
+def _npu_data_mover_entries(mover: dict[str, Any]) -> list[tuple[str, int]]:
+    if not mover:
+        return []
+    core_host_lanes = int(mover["core_host_lanes"])
+    sram_npu_lanes = int(mover["sram_npu_lanes"])
+    words_per_cycle = int(mover["words_per_cycle"])
+    setup_cycles = int(mover.get("setup_cycles", 0))
+    if core_host_lanes <= 0 or sram_npu_lanes <= 0:
+        raise ValueError("npu_data_mover lanes must be positive")
+    if core_host_lanes != sram_npu_lanes:
+        raise ValueError("current RTL requires core_host_lanes == sram_npu_lanes")
+    max_words = min(core_host_lanes, sram_npu_lanes)
+    if words_per_cycle <= 0 or words_per_cycle > max_words:
+        raise ValueError(
+            "npu_data_mover.words_per_cycle must be in "
+            f"1..min(core_host_lanes, sram_npu_lanes), got {words_per_cycle}"
+        )
+    if setup_cycles < 0:
+        raise ValueError(f"npu_data_mover.setup_cycles must be non-negative: {setup_cycles}")
+    return [
+        ("SOC_NPU_CORE_HOST_LANES", core_host_lanes),
+        ("SOC_NPU_SRAM_LANES", sram_npu_lanes),
+        ("SOC_NPU_DATA_MOVER_WORDS_PER_CYCLE", words_per_cycle),
+        ("SOC_NPU_DATA_MOVER_SETUP_CYCLES", setup_cycles),
+    ]
 
 
 def _emit_linker_script(memory_map: dict[str, Any]) -> str:

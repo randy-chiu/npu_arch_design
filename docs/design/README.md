@@ -10,6 +10,8 @@ development work.
 | `npu_wrapper.md` | NPU wrapper, descriptor FSM, host windows, A2 data mover |
 | `npu_core.md` | NPU core memories, uop execution, matmul array, softmax path |
 | `software_hardware_flow.md` | compiler, assembler, firmware, descriptor ABI, CPU/NPU flow |
+| `quantization_strategy.md` | selected-layer quantization boundary, scale policy, bias handling |
+| `fc1_k_streaming_matmul.md` | K-axis streaming matmul contract for real MNIST CNN `fc1` |
 | `performance_instrumentation.md` | cycle counters, PERF_JOB schema, report lanes, perf-counter strategy |
 | `verification_strategy.md` | verification layers, current baselines, gaps, and test update rules |
 

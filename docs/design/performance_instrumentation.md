@@ -105,6 +105,36 @@ Inside `hw/soc/tb/soc_cpu_tb.sv`, the profiling block is an `always` block on
 phase counters, infers known multi-job workloads by job order, and writes JSON
 and HTML reports.
 
+Current workload inference recognizes 53 jobs / 7 workloads when the real MNIST
+external fixtures are present:
+
+```text
+operator_smoke_matmul: 1 job
+operator_smoke_softmax: 1 job
+digits_linear_classifier: 16 jobs
+real_mnist_cnn_fc1_tile0: 1 job
+real_mnist_cnn_fc1_k_stream_smoke: 1 job
+real_mnist_cnn_fc1_full_k_stream_tile0: 1 job
+real_mnist_cnn_fc2: 32 jobs
+```
+
+The full `fc1` K-stream tile is a single descriptor with `k_chunks=1152`.
+Current measured wrapper counters for that job are still dominated by movement,
+but the NPU-side SRAM/data-mover/core-host path now moves four words per cycle:
+
+```text
+total_cycles: 58784
+input0_words: 73728
+input1_words: 73728
+fetch_input0 cycles: 18432
+fetch_input1 cycles: 18432
+core matmul cycles: 11520
+```
+
+完整 `fc1` K-stream tile 是一个 `k_chunks=1152` 的 descriptor。当前测得的 wrapper
+计数仍主要由搬运主导，但 NPU 侧 SRAM/data-mover/core-host 路径已经从每拍 1 word
+变为每拍 4 word。
+
 Important consequence: the current numbers are cycle counts observed by the
 simulation testbench, not timestamp events emitted by synthesizable RTL logic.
 They are valid for bring-up and bottleneck classification, but they are not yet
@@ -161,7 +191,7 @@ is whether phases overlap or block each other.
 
 ## 8. Movement Model
 
-The current movement model estimates a future burst data mover:
+The current movement model estimates a burst data mover:
 
 ```text
 ideal_burst_cycles = ceil(total_words / 4)
@@ -169,8 +199,22 @@ conservative_burst_cycles =
   sum(ceil(segment_words / 4)) + active_segments * 1 setup cycle
 ```
 
-For matmul, current measured SRAM movement is 217 cycles and conservative burst
-estimate is about 60 cycles. This is a target model, not current RTL behavior.
+For the current `WORDS_PER_CYCLE=4`, `SETUP_CYCLES=0` RTL path, the measured
+matmul movement phases are:
+
+```text
+fetch_program: 4 cycles
+fetch_input0: 16 cycles
+fetch_input1: 16 cycles
+write_output: 16 cycles
+```
+
+This means the 4-word grouping is now real RTL behavior. Nonzero setup cycles,
+stall cycles, and overlap are still future work.
+
+当前 `WORDS_PER_CYCLE=4`、`SETUP_CYCLES=0` 的 RTL 路径中，普通 matmul 的搬运
+phase 已经是 4 word/cycle。也就是说，4-word grouping 已经是真实 RTL 行为；非零
+setup cycle、stall cycle 和搬运/计算 overlap 仍是后续工作。
 
 ## 9. Known Limitations
 

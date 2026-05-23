@@ -62,9 +62,8 @@ workflow.
 
 ```text
 make cpu-soc-sim: PASS
-make soc-sim: PASS
-make digits-demo: PASS
-make test: PASS, 24 tests
+make test: PASS, 27 tests
+make perf-report: PASS
 ```
 
 新增 cycle 级性能报告入口：
@@ -100,7 +99,7 @@ docs/digits_classifier_workload.md
 docs/real_mnist_cnn_workload.md
 ```
 
-它已经跑通两个 active workload 阶段：
+它已经跑通三个 active workload 阶段：
 
 1. Linear classifier 已进入 CPU-controlled SoC：firmware 对 digit_2 PGM 输入
    发起 16 个 `8x8x8` matmul tile job，在 SRAM 中累加 logits，并校验 expected
@@ -108,6 +107,14 @@ docs/real_mnist_cnn_workload.md
 2. 真实 MNIST CNN 的 `fc2` 已进入 CPU-controlled SoC：firmware 对真实
    MNIST sample 0 的 `fc1_relu` activation 发起 32 个 `8x8x8` matmul tile
    job，并校验 expected logits / predicted label。
+3. 真实 MNIST CNN 的 `fc1` 已进入第一个 CPU-controlled SoC tile checkpoint：
+   firmware 对真实 MNIST sample 0 的 quantized `flat`/`fc1.weight` 在
+   `K=56, N=0` 发起 1 个 `8x8x8` matmul tile job，并校验 RTL output tile。
+   这不是 full `fc1` layer。
+4. 真实 MNIST CNN 的 `fc1` 已进入 K-streaming SoC smoke：新增
+   `SOC_NPU_JOB_OP_MATMUL_K_STREAM`，firmware 对真实 MNIST sample 0 的 4 个
+   selected nonzero K chunks 发起 1 个 descriptor，wrapper 在 descriptor 内
+   循环搬运 A/B tile，core 在同一个 `acc_buf` 中累加并最终写回一次。
 
 最新补充：
 
@@ -128,8 +135,12 @@ docs/real_mnist_cnn_workload.md
   argmax 对齐。该真实 CNN 的 `fc2` hardware-facing view 已接入完整
   CPU-controlled SoC RTL：firmware 对 MNIST test sample 0 发起 32 个 NPU
   descriptor jobs，NPU RTL 执行 tile matmul，firmware 累加 partial sums、
-  加 scaled 原始 `fc2.bias` 并校验 expected label 7。`make perf-report`
-  当前识别 50 个 job / 4 个 workload，其中 `real_mnist_cnn_fc2` 为 32 jobs。
+  加 scaled 原始 `fc2.bias` 并校验 expected label 7。当前还新增了
+  `fc1` 的 first nonzero tile SoC checkpoint 和 K-streaming smoke。
+  `make perf-report` 当前识别 52 个 job / 6 个 workload，其中
+  `real_mnist_cnn_fc1_tile0` 为 1 job，
+  `real_mnist_cnn_fc1_k_stream_smoke` 为 1 job，
+  `real_mnist_cnn_fc2` 为 32 jobs。
 
 ### Resume Snapshot: 2026-05-19
 
@@ -192,6 +203,69 @@ thirdparty/xpack-riscv-none-elf-gcc-15.2.0-1/bin/riscv-none-elf-gcc
 
 如果 shell 没有继承 `.bashrc`，运行 CPU firmware 相关目标前需要确保该工具链在
 `PATH` 中。
+
+### Resume Snapshot: 2026-05-21
+
+今天完成的关键工作：
+
+1. 清理旧 Tiny MLP 分支：
+   - 删除 `test/graphs/digits_tiny_mlp.json`；
+   - 删除 `sw/tools/npu_phase0/digits_classifier.py` 中 Tiny MLP graph、input、
+     FC2 权重、reference logits 和不再使用的 `relu/relu_requantize`；
+   - 删除 `test/rtl/test_digits_classifier.py` 中 3 个 Tiny MLP 测试；
+   - 更新 `docs/digits_classifier_workload.md`、`docs/project_plan.md`、
+     `docs/design/verification_strategy.md`，把 active workload 收敛为
+     linear digits classifier + real MNIST CNN。
+2. 修正恢复入口：
+   - `docs/collaboration_journal.md` 不再要求读取已删除的
+     `docs/code_structure_review.md`；
+   - 恢复入口改为 `docs/design/README.md`。
+3. 补充 perf 采集机制说明：
+   - `docs/design/performance_instrumentation.md` 新增 current code walkthrough；
+   - `sw/tools/perf/README.md` 新增 “How One Job Is Timed”；
+   - 明确当前 perf 是 testbench-side profiling，不是 CPU-readable hardware
+     perf counter，也不是 RTL 内部 timestamp packet。
+4. 补充真实 MNIST CNN 文档：
+   - `docs/real_mnist_cnn_workload.md` 明确 safetensors 只包含权重，不包含可自动
+     解析的网络程序；
+   - topology 由 `real_mnist_cnn_graph()` 和 `test/graphs/real_mnist_cnn.json`
+     显式表达；
+   - 当前不是 whole-CNN graph lowering，而是 selected layer hardware-facing
+     view lowering；
+   - 量化只是当前 int8 RTL 的 hardware-facing view，source of truth 仍是原始
+     float graph + safetensors 权重。
+5. 讨论并记录 `fc1` 方案：
+   - Step 1 先做 CPU-side micro-op simulation：
+     float CNN forward 到 `pool/flat`，构建 `fc1` int8 view，编译 logical
+     `MATMUL 8x128x9216`，用 `MicroOpFunctionalSimulator` 验证 `fc1 -> relu ->
+     fc2` 预测与原始 float 模型一致；
+   - Step 2 不采用 CPU firmware 对 18432 个 `8x8x8` tile job 做 partial-sum
+     累加；
+   - 硬件方向应让 K-axis partial sum 留在 NPU 内部 accumulator；
+   - 对 `fc1`，M/N 可以切，但 K=9216 仍是主要问题。推荐语义是按 N tile 发
+     job，NPU 内部按 K chunk stream/accumulate，最后只写回一次 output tile。
+
+今天验证命令和结果：
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_digits_classifier -v: PASS, 8 tests
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_real_mnist_cnn -v: PASS, 5 tests
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report -v: PASS, 3 tests
+make test: PASS, 24 tests
+```
+
+明天最直接的下一步：
+
+1. 实现 `fc1` Step 1 工具层闭环：
+   - 在 `sw/tools/npu_phase0/real_mnist_cnn.py` 增加 `fc1` hardware-facing
+     quantized view；
+   - 构造 logical matmul graph/input：`A[8x9216] * W[9216x128] -> C[8x128]`；
+   - 用 `compile_graph()` + `MicroOpFunctionalSimulator` 跑 logical micro-op；
+   - 加 scaled `fc1.bias` 和 ReLU；
+   - 接现有 `fc2` mapping，校验 sample 0 和前若干 sample 的 predicted label。
+2. 扩展 `test/rtl/test_real_mnist_cnn.py`，加入 `fc1 -> fc2` tool-level test。
+3. 暂时不要改 RTL/firmware，等 Step 1 确认数值闭环后，再设计
+   `fc1` NPU-side K streaming / accumulator residency / data mover contract。
 
 ### 当前设计约束
 
@@ -1717,3 +1791,626 @@ Updated `docs/work_rules.md` with a design-before-implementation rule:
 
 This keeps future contributors from relying on stale chat context or scattered
 historical notes.
+
+## Session 39: Complete Real CNN Graph Metadata And FC1 Quantized Tool Loop
+
+User review found two issues in the real MNIST CNN workload:
+
+- `test/graphs/real_mnist_cnn.json` did not fully describe operator attributes,
+  especially convolution kernel shapes, stride/padding, parameter shapes, and
+  linear layer feature counts.
+- The `fc1` quantization boundary and policy needed an explicit design
+  document before implementation.
+
+Implemented changes:
+
+- Expanded `test/graphs/real_mnist_cnn.json` so it now records:
+  - all parameter shapes for `conv1`, `conv2`, `fc1`, and `fc2`;
+  - all active tensor shapes, including ReLU outputs, `Flat`, and `Predicted`;
+  - conv2d `input_shape`, `weight_shape`, `bias_shape`, `output_shape`,
+    `kernel_shape`, `strides`, and `pads`;
+  - maxpool/flatten shape attributes;
+  - linear `in_features`, `out_features`, `weight_shape`, `bias_shape`, and
+    `output_shape`;
+  - the Phase 0 default quantization metadata.
+- Added `docs/design/quantization_strategy.md`:
+  - current policy is symmetric signed-int8 activation and weight quantization;
+  - activation/weight are per-tensor for the first tool loop;
+  - accumulators are int32;
+  - bias/ReLU stay in dequantized float for the tool-level `fc1` test;
+  - asymmetric quantization is deferred because zero-point correction requires
+    new hardware/software contract fields and arithmetic.
+- Updated `docs/real_mnist_cnn_workload.md`, `docs/README.md`, and
+  `docs/design/README.md` to point at the complete graph and quantization
+  strategy.
+- Added graph helper/validation code in `sw/tools/npu_phase0/real_mnist_cnn.py`:
+  - `real_mnist_cnn_op()`;
+  - `validate_real_mnist_cnn_graph()`;
+  - shape consistency checks against graph metadata and safetensors weights.
+- Updated `fc2` mapping to derive its feature count and real class count from
+  the graph, padding only to the Phase 0 tile width.
+- Added `fc1` tool-level mapping helpers:
+  - `fc1_npu_inputs_from_flat()`;
+  - `fc1_logical_matmul_graph()`;
+  - `fc1_relu_from_int32()`.
+- Extended `test/rtl/test_real_mnist_cnn.py` with a `fc1 -> fc2` logical
+  micro-op test. It runs `8x9216 * 9216x128` through
+  `MicroOpFunctionalSimulator`, applies bias/ReLU, feeds that result into the
+  existing tiled `fc2` path, and verifies the class prediction for the first
+  three MNIST test samples.
+
+Validation:
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_real_mnist_cnn -v: PASS, 6 tests
+make test: PASS, 25 tests
+make perf-report: PASS
+```
+
+Remaining boundary:
+
+- This is still a tool-level `fc1` numerical closure. It does not claim the
+  current RTL can execute a resident `8x9216 * 9216x128` matmul.
+- The next hardware design step remains NPU-side K streaming / accumulator
+  residency for `fc1`; do not implement `fc1` as 18432 CPU-launched
+  `8x8x8` descriptor jobs.
+
+## Session 40: Add FC1 SoC RTL Tile Checkpoint
+
+User follow-up:
+
+1. Record linear digits classifier retirement as a separate future cleanup task.
+2. Make quantization verification explicit in the quantization design doc.
+3. Start moving real MNIST CNN `fc1` into SoC RTL verification.
+
+Decisions:
+
+- The 8x8 linear digits classifier should not be deleted piecemeal. It remains
+  the checked-in no-external-fixture smoke workload for now. Retirement is now
+  tracked in `docs/project_plan.md` as its own task after real MNIST CNN
+  `fc1/fc2` SoC coverage is stable.
+- Quantization validation is now documented in
+  `docs/design/quantization_strategy.md`, including tool-level numerical tests,
+  SoC RTL checks, and regression gates.
+- Full `fc1` should still not be implemented as 18432 CPU-launched
+  `8x8x8` descriptor jobs. The first SoC RTL step is a real `fc1` tile
+  checkpoint using current hardware, while full-layer execution waits for
+  NPU-side K streaming and accumulator residency.
+
+Implemented:
+
+- `sw/tools/firmware/emit_soc_cpu_smoke_data.py` now emits
+  `REAL_MNIST_CNN_FC1_TILE_*` data when real MNIST external fixtures are
+  available:
+  - sample: MNIST test sample 0;
+  - K offset: 56;
+  - N offset: 0;
+  - shape: one current RTL-compatible `8x8x8` tile;
+  - expected output: generated by the existing Python golden matmul over the
+    quantized `fc1` activation/weight tile.
+- `sw/soc_cpu/apps/soc_cpu_smoke/main.c` stages that tile in SRAM, launches one
+  normal matmul descriptor through the NPU wrapper, and checks the RTL output
+  against the generated expected tile.
+- `sw/tools/perf/report.py` now groups the extra job as
+  `real_mnist_cnn_fc1_tile0` before the existing 32-job
+  `real_mnist_cnn_fc2` workload.
+- `test/rtl/test_perf_report.py` covers both the previous 50-job report shape
+  and the new 51-job shape with the FC1 tile checkpoint.
+- Docs updated:
+  - `docs/project_plan.md`;
+  - `docs/real_mnist_cnn_workload.md`;
+  - `docs/design/quantization_strategy.md`;
+  - `docs/design/verification_strategy.md`;
+  - `docs/design/performance_instrumentation.md`.
+
+Validation:
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report -v: PASS, 4 tests
+make cpu-soc-sim: PASS, 51 PERF_JOB records
+make test: PASS, 26 tests
+make perf-report: PASS
+build/perf/perf.json summary: jobs=51, workloads=5, total_cycles=11853
+```
+
+Remaining boundary:
+
+- `real_mnist_cnn_fc1_tile0` verifies real `fc1` tile staging, current RTL
+  arithmetic, wrapper writeback, and firmware comparison.
+- It is not full `fc1` layer execution. The next architecture step is a new
+  wrapper/core contract that streams K chunks and preserves accumulators inside
+  the NPU side so full `fc1` can be represented as approximately 16 output-tile
+  jobs instead of 18432 micro-tile jobs.
+
+## Session 41: Implement MATMUL_K_STREAM Smoke
+
+User asked to proceed with the K-axis streaming direction: keep the physical
+`8x8x8` MAC tile, but expose a larger K matmul job where the wrapper streams K
+chunks and the core accumulates partial sums internally.
+
+Design document added:
+
+```text
+docs/design/fc1_k_streaming_matmul.md
+```
+
+Key design decisions:
+
+- Do not enlarge the core buffer to `8x9216`.
+- Keep the physical tile at `M=8, N=8, K_STEP=8`.
+- Add `SOC_NPU_JOB_OP_MATMUL_K_STREAM`.
+- Add descriptor field `k_chunks`.
+- First version uses packed A/B streams rather than natural-stride tensor
+  layout to avoid adding a full address generator before the data mover grows.
+- Add a core host control register at `0x500`:
+  - bit 0: matmul accumulate enable;
+  - bit 1: clear accumulator pulse.
+- Wrapper behavior for K-stream jobs:
+  - configure accumulator clear/accumulate;
+  - loop over `k_chunks`;
+  - fetch one A tile and one B tile per chunk;
+  - start the core once per chunk;
+  - write output once at the end;
+  - disable accumulate mode.
+
+Implemented:
+
+- `arch/configs/soc_v0.jsonc` descriptor ABI now has `k_chunks` and
+  `matmul_k_stream`.
+- `hw/npu_core/rtl/npu_v0_top.sv` supports accumulate mode:
+  `acc_buf += matmul_result` when enabled, otherwise normal overwrite behavior.
+- `hw/npu_wrapper/rtl/npu_v0_opsched.sv` supports descriptor-internal K-loop
+  execution for `MATMUL_K_STREAM`.
+- `sw/tools/firmware/emit_soc_cpu_smoke_data.py` emits a real MNIST CNN
+  `fc1` K-stream smoke:
+  - sample 0;
+  - 4 selected nonzero K chunks;
+  - packed A/B streams;
+  - expected C tile accumulated by the Python golden matmul.
+- `sw/soc_cpu/apps/soc_cpu_smoke/main.c` stages the packed streams, launches
+  one `MATMUL_K_STREAM` descriptor, and checks the single output tile.
+- `hw/soc/tb/soc_cpu_tb.sv` emits `PERF_JOB` name `matmul_k_stream`.
+- `sw/tools/perf/report.py` groups the new job as
+  `real_mnist_cnn_fc1_k_stream_smoke`.
+- `test/rtl/test_perf_report.py` covers the 52-job report shape.
+
+Validation:
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report -v: PASS, 5 tests
+make cpu-soc-sim: PASS, 52 PERF_JOB records
+make perf-report: PASS
+make test: PASS, 27 tests
+```
+
+Current perf summary with real MNIST external fixtures:
+
+```text
+jobs: 52
+workloads: 6
+total_cycles: 12584
+operator_smoke_matmul: 237 cycles
+operator_smoke_softmax: 54 cycles
+digits_linear_classifier: 16 jobs, 3792 cycles
+real_mnist_cnn_fc1_tile0: 1 job, 237 cycles
+real_mnist_cnn_fc1_k_stream_smoke: 1 job, 680 cycles
+real_mnist_cnn_fc2: 32 jobs, 7584 cycles
+```
+
+Important limitation:
+
+- The new K-streaming hardware contract is real, but the smoke uses 4 selected
+  real FC1 chunks, not all 1152 chunks.
+- Full `fc1` N-tile execution needs compact staging or an external load path.
+  A full packed stream for one N tile would exceed the current small boot
+  ROM/SRAM budget.
+
+## Session 42: Clarify Core Parallelism And Bilingual Design Docs
+
+User asked to further clarify:
+
+1. how many MACs the current NPU core performs per cycle;
+2. how internal SRAM/buffers are partitioned for A, B, accumulator, and output;
+3. that future design documents should be bilingual.
+
+Documentation updates:
+
+- Rewrote `docs/design/fc1_k_streaming_matmul.md` as a bilingual English/Chinese
+  design document.
+- Added the current compute parallelism:
+  - physical tile remains `M=8, N=8, K=8`;
+  - each active matmul cycle updates all `M*N=64` output elements in parallel;
+  - each active cycle performs 64 signed int8-by-int8 MACs into int32;
+  - `k_idx` advances across cycles, so one `8x8x8` tile needs 8 active MAC
+    cycles, observed as about 10 core matmul cycles with start/done/commit
+    overhead.
+- Added the current core storage map:
+  - `dram_a`: 64 int8 host preload entries for A tile;
+  - `dram_b`: 64 int8 host preload entries for B tile;
+  - `spad_a`: 64 int8 scratchpad entries loaded by `LOAD A`;
+  - `spad_b`: 64 int8 scratchpad entries loaded by `LOAD B`;
+  - `acc_buf`: 64 int32 resident accumulator/output staging entries;
+  - `dram_c`: 64 int32 host-readable output entries;
+  - plus `instr_mem`, `dram_x`, `vec_buf`, and `dram_y`.
+- Clarified that K-streaming does not add `8x9216` or `9216x8` buffers inside
+  the core. A/B tile buffers are overwritten for each K chunk while `acc_buf`
+  stays resident.
+- Updated `docs/design/npu_core.md` with the same core parallelism and buffer
+  partition details.
+- Added a bilingual design documentation rule to `docs/work_rules.md`:
+  new or substantially updated design docs should include both English and
+  Chinese explanations in the same file.
+
+No RTL or software behavior changed in this session; this was documentation
+clarification only.
+
+Follow-up clarification:
+
+- Added a cycle-by-cycle `8x8 * 8x8` example to
+  `docs/design/fc1_k_streaming_matmul.md`.
+- The example shows that each cycle fixes one `k_idx` and performs an outer
+  product:
+  `C[i,j] += A[i,k_idx] * B[k_idx,j]` for all 64 output coordinates in
+  parallel.
+- It explicitly lists cycle 0 through cycle 7 and the partial terms accumulated
+  in every `C[i,j]`.
+
+## Session 43: Extract K-Stream Planner
+
+User asked to continue coding from the documented K-streaming direction.
+
+Design update:
+
+- Extended `docs/design/fc1_k_streaming_matmul.md` with a bilingual planner
+  section.
+- Documented that compiler-side planning now produces `k_chunks`, `k_offsets`,
+  packed `a_stream`/`b_stream`, and one accumulated `expected_c`.
+- Documented the full real MNIST CNN `fc1` single-N-tile artifact:
+  `A[8,9216] * B[9216,8] -> C[8,8]`, implemented as 1152 physical
+  `8x8x8` chunks.
+- Kept the SoC boundary explicit: the current boot ROM/SRAM path still runs the
+  4-chunk smoke; the full 1152-chunk artifact is generated and checked in tool
+  tests until a host-preload or compact tensor-stride staging path exists.
+
+Implemented:
+
+- Added `sw/tools/npu_compiler/k_stream.py` with `plan_matmul_k_stream()`.
+- Exported the planner from `sw/tools/npu_compiler/__init__.py`.
+- Refactored `sw/tools/firmware/emit_soc_cpu_smoke_data.py` so both the
+  single-tile FC1 checkpoint and the 4-chunk K-stream smoke consume the shared
+  planner instead of local ad hoc chunk-selection helpers.
+- Added `test/rtl/test_k_stream_planner.py` for small matrix planner behavior.
+- Extended `test/rtl/test_real_mnist_cnn.py` to build the full 1152-chunk FC1
+  single-N-tile plan and compare it against direct logical matmul.
+
+Validation:
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_k_stream_planner -v: PASS, 2 tests
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_real_mnist_cnn -v: PASS, 7 tests
+make test: PASS, 30 tests
+make cpu-soc-sim: PASS, 52 PERF_JOB records
+make perf-report: PASS
+build/perf/perf.json summary: jobs=52, workloads=6, total_cycles=12584
+```
+
+## Session 44: Full FC1 Single N-Tile SoC K-Stream
+
+User asked to implement the first host/SRAM preload-style checkpoint by keeping
+the data expansion simple in `main.c` and enlarging SRAM as needed, with the
+focus on NPU architecture iteration rather than CPU-side elegance.
+
+Implemented:
+
+- Enlarged the simulation memory map in `arch/configs/soc_v0.jsonc`:
+  - boot ROM: 2 MiB;
+  - SRAM: 2 MiB at `0x0020_0000`;
+  - stack pointer moved to the top of the enlarged SRAM.
+- Parameterized `hw/soc/rtl/soc_cpu_top.sv` so `boot_rom` and `simple_sram`
+  word counts come from generated SoC size constants.
+- Increased `hw/soc/tb/soc_cpu_tb.sv` timeout to cover CPU staging plus the
+  full K-stream job.
+- Increased `Makefile` firmware ROM padding to `524288` words.
+- Extended `sw/tools/firmware/emit_soc_cpu_smoke_data.py` to emit a full
+  `REAL_MNIST_CNN_FC1_FULL_K_STREAM_*` data set:
+  - sample 0;
+  - `k_chunks=1152`;
+  - packed A stream: `1152 * 64` words;
+  - packed B stream: `1152 * 64` words;
+  - expected accumulated `C[8,8]`.
+- Extended `sw/soc_cpu/apps/soc_cpu_smoke/main.c` with enlarged SRAM arrays,
+  CPU-side copy loops, one `SOC_NPU_JOB_OP_MATMUL_K_STREAM` descriptor, and
+  output comparison for the full single-N-tile result.
+- Extended `sw/tools/perf/report.py` and `test/rtl/test_perf_report.py` to
+  recognize `real_mnist_cnn_fc1_full_k_stream_tile0`.
+- Updated `docs/design/fc1_k_streaming_matmul.md`,
+  `docs/design/performance_instrumentation.md`, and
+  `docs/design/verification_strategy.md`.
+
+Validation:
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report -v: PASS, 6 tests
+make firmware-smoke-c: PASS
+make cpu-soc-sim: PASS, 53 PERF_JOB records
+make test: PASS, 31 tests
+make perf-report: PASS
+build/perf/perf.json summary: jobs=53, workloads=7, total_cycles=182020
+```
+
+Key measured result:
+
+```text
+real_mnist_cnn_fc1_full_k_stream_tile0:
+  jobs: 1
+  total_cycles: 169436
+  k_chunks: 1152
+  input0_words: 73728
+  input1_words: 73728
+  core matmul cycles: 11520
+```
+
+Boundary:
+
+- This verifies one full `fc1` output N tile, not all 128 `fc1` output
+  channels.
+- The data path is intentionally simple: large C firmware data is copied into
+  enlarged SRAM by CPU code. This is acceptable for the current architecture
+  checkpoint, but should later be replaced by host preload, loader support, or
+  stride-based compact staging.
+
+## Session 45: Start Data-Movement Improvement Plan
+
+User asked to write the four-step data-movement improvement plan into docs and
+then execute each step in order with design, coding, and verification.
+
+Design update:
+
+- Added the full FC1 data-movement improvement roadmap to
+  `docs/design/npu_wrapper.md`:
+  1. keep the physical `8x8x8` MAC tile unchanged;
+  2. replace the debug-style wrapper-to-core host-window preload path with a
+     real movement path;
+  3. parameterize and widen movement bandwidth with `WORDS_PER_CYCLE` and
+     `SETUP_CYCLES`;
+  4. add double buffering so fetch of chunk `i+1` can overlap compute of
+     chunk `i`.
+- Updated `docs/design/fc1_k_streaming_matmul.md` follow-up work with the same
+  ordered plan.
+
+Step 1 implementation:
+
+- Added `WORDS_PER_CYCLE` and `SETUP_CYCLES` parameters to
+  `hw/npu_wrapper/rtl/npu_v0_data_mover.sv`.
+- Preserved the current verified default behavior:
+  `WORDS_PER_CYCLE=1`, `SETUP_CYCLES=0`.
+- Added a guard so `WORDS_PER_CYCLE > 1` is not accidentally enabled before the
+  core preload/readback interface is widened; the current core host-window
+  interface can only accept one word per cycle.
+- Explicitly bound those defaults in `hw/npu_wrapper/rtl/npu_v0_opsched.sv`.
+
+Validation:
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report -v: PASS, 6 tests
+make cpu-soc-sim: PASS, 53 PERF_JOB records
+make test: PASS, 31 tests
+make perf-report: PASS
+build/perf/perf.json summary: jobs=53, workloads=7, total_cycles=182020
+```
+
+Measured full FC1 single-N-tile job remains unchanged, as intended for Step 1:
+
+```text
+real_mnist_cnn_fc1_full_k_stream_tile0:
+  total_cycles: 169436
+  k_chunks: 1152
+  input0_words: 73728
+  input1_words: 73728
+  core matmul cycles: 11520
+```
+
+Next step:
+
+- Design and implement a widened core preload/readback interface so
+  `WORDS_PER_CYCLE > 1` can become functionally correct instead of only a
+  future parameter.
+
+## Session 46: Widen Core Host Preload Interface Shape
+
+User confirmed the plan to keep CPU staging unchanged for now and continue with
+the NPU-side data path. This session implemented Step 2 of the documented
+movement roadmap.
+
+Design update:
+
+- Updated `docs/design/npu_wrapper.md` with the Step 2 contract:
+  - `CORE_HOST_LANES=4`;
+  - `host_we[3:0]`;
+  - one base `host_addr`;
+  - packed `host_wdata[127:0]`;
+  - packed `host_rdata[127:0]`;
+  - lane `i` maps to host word address `host_addr + i`.
+- Updated `docs/design/npu_core.md` with the same widened preload/readback
+  interface.
+- Kept the coding boundary explicit: wrapper still drives lane 0 only in this
+  checkpoint, so behavior and timing remain equivalent.
+
+Implemented:
+
+- `hw/npu_core/rtl/npu_v0_top.sv` now has parameterized
+  `CORE_HOST_LANES=4` host write/read lanes.
+- Core preload writes now iterate over active lanes and write consecutive A/B/X
+  or program host-window addresses.
+- Core readback now returns consecutive C/Y words across the packed lanes.
+- `hw/npu_wrapper/rtl/npu_v0_opsched.sv` instantiates the core with four lanes
+  but maps the existing scalar wrapper/data-mover path to lane 0 only.
+- `hw/npu_core/tb/npu_v0_tb.sv` was updated for the packed interface and now
+  includes a direct 4-lane host-window smoke check.
+
+Validation:
+
+```text
+make npu-core-sim: PASS
+make soc-sim: PASS
+make cpu-soc-sim: PASS, 53 PERF_JOB records
+make test: PASS, 31 tests
+make perf-report: PASS
+build/perf/perf.json summary: jobs=53, workloads=7, total_cycles=182020
+```
+
+The full FC1 single-N-tile job remains unchanged, as intended:
+
+```text
+real_mnist_cnn_fc1_full_k_stream_tile0:
+  total_cycles: 169436
+  k_chunks: 1152
+  input0_words: 73728
+  input1_words: 73728
+  core matmul cycles: 11520
+```
+
+Next step:
+
+- Connect the 4-lane core preload/readback interface to a multi-lane data mover
+  and SRAM model so `WORDS_PER_CYCLE=4` can become real instead of lane-0
+  compatibility mode.
+
+## Session 47: Enable WORDS_PER_CYCLE=4 Movement
+
+User confirmed the movement bandwidth target: set `WORDS_PER_CYCLE=4`.
+
+Design update:
+
+- Updated `docs/design/npu_wrapper.md` to mark Step 3 as real RTL behavior:
+  - `DATA_MOVER_WORDS_PER_CYCLE=4`;
+  - `CORE_HOST_LANES=4`;
+  - SRAM NPU port is 4 lanes / 128-bit packed data;
+  - CPU SRAM port remains scalar 32-bit;
+  - lane `i` transfers word `base + i`;
+  - partial tails use per-lane masks.
+- Updated performance and verification docs with the new measured baselines.
+
+Implemented:
+
+- `simple_sram` now exposes a 4-lane NPU port while preserving the scalar CPU
+  port.
+- `npu_v0_data_mover` now supports `WORDS_PER_CYCLE` up to the configured lane
+  count and drives packed SRAM/core-host data.
+- `npu_v0_opsched` instantiates the data mover with
+  `DATA_MOVER_WORDS_PER_CYCLE=4` and connects the packed movement path to the
+  4-lane core preload/readback interface.
+- SoC integration and perf counters were updated for vector SRAM write masks
+  and multi-word movement counts.
+
+Validation:
+
+```text
+make npu-core-sim: PASS
+make soc-sim: PASS
+make cpu-soc-sim: PASS, 53 PERF_JOB records
+make test: PASS, 31 tests
+make perf-report: PASS
+build/perf/perf.json summary: jobs=53, workloads=7, total_cycles=63100
+```
+
+Measured workload cycles after Step 3:
+
+```text
+operator_smoke_matmul: 81 cycles
+operator_smoke_softmax: 30 cycles
+digits_linear_classifier: 16 jobs, 1296 cycles
+real_mnist_cnn_fc1_tile0: 1 job, 81 cycles
+real_mnist_cnn_fc1_k_stream_smoke: 1 job, 236 cycles
+real_mnist_cnn_fc1_full_k_stream_tile0: 1 job, 58784 cycles
+real_mnist_cnn_fc2: 32 jobs, 2592 cycles
+```
+
+Full FC1 single-N-tile detail:
+
+```text
+total_cycles: 58784
+k_chunks: 1152
+input0_words: 73728
+input1_words: 73728
+fetch_input0 cycles: 18432
+fetch_input1 cycles: 18432
+core matmul cycles: 11520
+```
+
+Next step:
+
+- Add explicit data mover counters to `PERF_JOB`, then drive the report
+  `Data mover` lane from real data mover state/counters instead of only wrapper
+  phase reconstruction.
+
+## Session 48: Move Bandwidth Knobs Into SoC Spec And Widen CPU SRAM Port Shape
+
+User asked to put the `WORDS_PER_CYCLE`/lane parameters into spec and then start
+modifying the CPU bus access width.
+
+Design boundary:
+
+- PicoRV32 remains an RV32 core and still issues one 32-bit load/store per CPU
+  request.
+- The SoC SRAM CPU port is now structurally widened to 4 lanes / 128-bit packed
+  data.
+- `simple_bus` maps each scalar PicoRV32 SRAM access onto one lane of that wide
+  SRAM CPU port.
+- This does not accelerate CPU staging by itself; it prepares the SRAM-side
+  interface for a later preload/copy engine that can drive multiple lanes per
+  cycle.
+
+Spec update:
+
+- Added to `arch/configs/soc_v0.jsonc`:
+  - `bus.sram_cpu_lanes = 4`;
+  - `bus.sram_cpu_data_width_bits = 128`;
+  - `npu_data_mover.core_host_lanes = 4`;
+  - `npu_data_mover.sram_npu_lanes = 4`;
+  - `npu_data_mover.words_per_cycle = 4`;
+  - `npu_data_mover.setup_cycles = 0`.
+- `sw/tools/soc/emit_soc_spec.py` now emits generated constants for these
+  fields and validates:
+  - PicoRV32 bus width is still 32-bit;
+  - SRAM CPU data width equals `sram_cpu_lanes * 32`;
+  - current RTL requires `core_host_lanes == sram_npu_lanes`;
+  - `words_per_cycle` is in range.
+
+Implemented:
+
+- `simple_sram` now has parameterized CPU and NPU lane counts.
+- `simple_bus` now exposes a packed multi-lane SRAM CPU port and performs
+  scalar lane select/readback for PicoRV32 requests.
+- `soc_cpu_top` and `soc_top` instantiate bus/SRAM/NPU wrapper with generated
+  SoC lane constants.
+- `npu_v0_opsched` now takes `DATA_MOVER_WORDS_PER_CYCLE` and
+  `DATA_MOVER_SETUP_CYCLES` from generated SoC constants rather than a local
+  hard-coded value.
+- `soc_cpu_tb` lane counting now uses `SOC_NPU_SRAM_LANES`.
+
+Validation so far:
+
+```text
+make soc-spec: PASS
+make npu-core-sim: PASS
+make soc-sim: PASS
+make cpu-soc-sim: PASS, 53 PERF_JOB records
+make test: PASS, 31 tests
+make perf-report: PASS
+build/perf/perf.json summary: jobs=53, workloads=7, total_cycles=63100
+```
+
+Observed timing remains the same as expected because PicoRV32 still drives one
+32-bit lane per request:
+
+```text
+operator_smoke_matmul: 81 cycles
+real_mnist_cnn_fc1_full_k_stream_tile0: 58784 cycles
+```
+
+Next step:
+
+- Add a preload/copy engine or loader path that can drive all SRAM CPU lanes per
+  cycle for ROM/flash-to-SRAM staging. That is the step expected to reduce CPU
+  staging simulation time.

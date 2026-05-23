@@ -11,24 +11,34 @@
   "cpu": {
     "core": "picorv32",
     "reset_vector": 0,
-    "stack_pointer": 262128
+    "stack_pointer": 4194288
   },
 
   "bus": {
     "addr_width_bits": 32,
-    "data_width_bits": 32
+    "data_width_bits": 32,
+    "sram_cpu_lanes": 4,
+    "sram_cpu_data_width_bits": 128
+  },
+
+  "npu_data_mover": {
+    "core_host_lanes": 4,
+    "sram_npu_lanes": 4,
+    "words_per_cycle": 4,
+    "setup_cycles": 0,
+    "description": "NPU-side SRAM/data-mover/core-host movement shape. words_per_cycle must be in 1..min(core_host_lanes, sram_npu_lanes). Lane i maps to word address base + i."
   },
 
   "memory_map": {
     "boot_rom": {
       "base": 0,
-      "size_bytes": 32768,
-      "description": "Simulation boot ROM. Current bring-up stores the full firmware image here, including start code, driver, main, and generated test data. Watch size growth; a later flash/loader flow should avoid requiring all software to fit in ROM."
+      "size_bytes": 2097152,
+      "description": "Simulation boot ROM. Current bring-up stores the full firmware image here, including start code, driver, main, and generated test data. This is intentionally oversized for full FC1 K-stream bring-up; a later flash/loader flow should avoid requiring all software to fit in ROM."
     },
     "sram": {
-      "base": 131072,
-      "size_bytes": 131072,
-      "description": "CPU writable data memory for stack, locals, and future runtime buffers/descriptors. Current smoke keeps static firmware/test data in boot ROM; future NPU data/program buffers should be staged here for NPU fetch."
+      "base": 2097152,
+      "size_bytes": 2097152,
+      "description": "CPU writable data memory for stack, locals, descriptors, and staged NPU buffers. This is intentionally oversized for full FC1 single-N-tile K-stream bring-up."
     },
     "npu_wrapper": {
       "base": 268435456,
@@ -63,11 +73,13 @@
         {"name": "input1_addr", "word": 5},
         {"name": "input1_words", "word": 6},
         {"name": "output_addr", "word": 7},
-        {"name": "output_words", "word": 8}
+        {"name": "output_words", "word": 8},
+        {"name": "k_chunks", "word": 9}
       ],
       "op_types": {
         "matmul": 1,
-        "softmax": 2
+        "softmax": 2,
+        "matmul_k_stream": 3
       }
     }
   }

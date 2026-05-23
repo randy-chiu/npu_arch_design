@@ -208,3 +208,27 @@ After implementation, update the same document with what actually changed,
 the observed test/perf result, and any gap between the plan and the result.
 If the work changes a public entry point, update `README.md` and
 `docs/README.md` as well.
+
+## 9. Bilingual Design Documentation Rule
+
+New or substantially updated design documents should be understandable in both
+English and Chinese. Prefer one bilingual document over two separate files so
+the contract cannot diverge.
+
+新增或大幅更新的设计文档应同时提供英文和中文说明。优先使用同一份双语文档，
+不要拆成两份文件，避免合同内容漂移。
+
+Minimum expectation:
+
+- section titles should include both English and Chinese when practical;
+- key problem statements, interface contracts, timing behavior, memory/buffer
+  maps, verification plans, limitations, and follow-up work should be bilingual;
+- code symbols, filenames, commands, and register names stay in their original
+  spelling.
+
+最低要求：
+
+- 章节标题尽量同时包含英文和中文；
+- 问题定义、接口合同、时序行为、memory/buffer 划分、验证计划、限制和后续工作
+  需要双语说明；
+- 代码符号、文件名、命令、寄存器名保持原始拼写。

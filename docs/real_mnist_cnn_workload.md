@@ -66,18 +66,39 @@ sw/tools/npu_phase0/real_mnist_cnn.py
 
 It includes a minimal safetensors F32 reader and a numpy forward path.
 
-The graph and downloaded float weights are treated as the source of truth. RTL
-mapping work must not rewrite the model topology or replace trained weights.
-When a layer is mapped to the current int8 NPU matmul path, the test creates a
-hardware-facing quantized view from the original float activation/weight
-tensors and compares that view back to the original model's predicted class.
+The graph and downloaded float weights are treated as the source of truth. The
+JSON graph records tensor shapes, parameter shapes, convolution kernel/stride/
+padding attributes, maxpool attributes, flatten shape, and linear layer
+`in_features`/`out_features`. RTL mapping work must not rewrite the model
+topology or replace trained weights. When a layer is mapped to the current int8
+NPU matmul path, the test creates a hardware-facing quantized view from the
+original float activation/weight tensors and compares that view back to the
+original model's predicted class.
 
 ## Graph And Lowering Path
 
 The downloaded `mnist-cnn.safetensors` file contains tensor weights only. It is
 not parsed as a full neural-network program. The model topology is represented
 explicitly in `real_mnist_cnn_graph()` and checked against
-`test/graphs/real_mnist_cnn.json`.
+`test/graphs/real_mnist_cnn.json`. `validate_real_mnist_cnn_graph()` checks
+that graph tensor shapes, op attributes, and safetensors parameter shapes are
+consistent.
+
+The main shape derivation is:
+
+```text
+Image: 1x28x28
+conv1: weight 32x1x3x3, valid stride 1 -> 32x26x26
+conv2: weight 64x32x3x3, valid stride 1 -> 64x24x24
+maxpool: 2x2 stride 2 -> 64x12x12
+flatten: 64 * 12 * 12 = 9216
+fc1.weight: 128x9216 -> fc1 output 128
+fc2.weight: 10x128 -> logits output 10
+```
+
+For the current NPU matmul view, the single image is placed in row 0 of an
+8-row matrix because the Phase 0 tile has `M=8`. `fc2` pads its 10 output
+classes to 16 columns because the Phase 0 tile has `N=8`.
 
 Current flow:
 
@@ -118,6 +139,12 @@ of truth remains the float graph and float safetensors weights. The quantized
 view is a verification bridge for the current int8 RTL. If the NPU later grows
 a float or mixed-precision datapath, this boundary can change.
 
+The current policy is defined in:
+
+```text
+docs/design/quantization_strategy.md
+```
+
 ## Current Validation
 
 Current test:
@@ -129,6 +156,8 @@ PYTHONPATH=sw/tools python -m unittest test.rtl.test_real_mnist_cnn -v
 It verifies:
 
 - graph fixture matches the tool graph;
+- graph op attributes and safetensors parameter shapes are internally
+  consistent;
 - downloaded safetensors tensor shapes match the expected CNN;
 - first 10 MNIST test images predict the expected labels;
 - first 100 MNIST test images meet the smoke accuracy threshold.
@@ -136,6 +165,21 @@ It verifies:
   `fc2.weight/bias`, builds a current-NPU-compatible int8 matmul view, lowers it
   into 32 `8x8x8` tile jobs, and checks that the tiled result preserves the
   original float model prediction for the first 10 MNIST test images;
+- tool-level `fc1 -> fc2` mapping uses a logical `8x9216 * 9216x128` matmul
+  micro-op simulation for `fc1`, applies bias/ReLU, requantizes into the
+  existing `fc2` tile path, and checks that the class prediction is preserved
+  for the first few MNIST test images;
+- CPU-controlled SoC RTL smoke includes the first nonzero real `fc1`
+  hardware-facing `8x8x8` tile for MNIST test sample 0. Firmware stages the
+  quantized `flat` activation tile at `K=56` and the matching quantized
+  `fc1.weight` tile at `N=0`, launches one normal matmul descriptor, and checks
+  the RTL output tile against the tool-generated expected tile. This is a
+  tile-level SoC data-layout/arithmetic check, not full `fc1` layer execution;
+- CPU-controlled SoC RTL smoke also includes one full `fc1` output N tile:
+  `A[8,9216] * B[9216,8] -> C[8,8]`, represented as one
+  `MATMUL_K_STREAM` descriptor with `k_chunks=1152`. Firmware copies the packed
+  stream into enlarged simulation SRAM, the wrapper streams all K chunks, and
+  the core keeps the partial sum resident in `acc_buf` until the final writeback;
 - CPU-controlled SoC RTL smoke runs the same `fc2` hardware-facing view for
   MNIST test sample 0:
   - firmware stages the precomputed quantized `fc1_relu` activation and
@@ -148,24 +192,28 @@ It verifies:
 `make perf-report` now reports:
 
 ```text
-jobs: 50
-workloads: 4
-real_mnist_cnn_fc2: 32 jobs, 7552 cycles
+jobs: 53
+workloads: 7
+total_cycles: 63100
+real_mnist_cnn_fc1_tile0: 1 job, 81 cycles
+real_mnist_cnn_fc1_k_stream_smoke: 1 job, 236 cycles
+real_mnist_cnn_fc1_full_k_stream_tile0: 1 job, 58784 cycles
+real_mnist_cnn_fc2: 32 jobs, 2592 cycles
 ```
 
 Next steps:
 
-1. map `fc1: 9216 -> 128`, likely requiring broader tiling and storage support
-   than current Phase 0:
-   - define job count and accumulation policy before changing firmware;
-   - avoid blindly emitting huge static tile arrays if a compact feature/weight
-     staging scheme is needed;
-   - update perf grouping so `fc1` and `fc2` appear as separate real CNN model
-     layers.
+1. extend the full `fc1` checkpoint from one N tile to all 16 output N tiles;
+2. add bias/ReLU handling after the `fc1` K-stream output tiles;
+3. replace the current oversized C/boot-ROM staging with a host preload,
+   loader, or stride-based compact staging path.
 2. only after `fc1/fc2` are stable, decide whether convolution should be a
    direct NPU op or lowered through `im2col -> matmul` tiles.
 3. move more of the original model's runtime preprocessing into firmware when
    the data movement and SRAM footprint are understood.
+4. after real MNIST CNN `fc1/fc2` SoC coverage is stable, retire the temporary
+   8x8 linear digits classifier as a separate cleanup task instead of deleting
+   only its image assets.
 
 ## FC1 Mapping Plan
 
@@ -231,6 +279,38 @@ jobs instead of 18432 current micro-tile jobs.
 This does require a larger internal K path or a streaming K loop inside the
 NPU. The important boundary is that partial sums should remain in the NPU
 accumulator, not in CPU firmware.
+
+Current SoC RTL checkpoint:
+
+```text
+real_mnist_cnn_fc1_tile0
+  sample: MNIST test sample 0
+  K offset: 56
+  N offset: 0
+  shape: 8x8x8
+```
+
+This checkpoint proves that a real `fc1` quantized tile can be staged by
+firmware, executed by the current RTL matmul path, written back through the
+wrapper, and checked in firmware. It deliberately stops short of full-layer
+execution because exposing all `fc1` K chunks as CPU-launched descriptor jobs
+would recreate the 18432-job anti-pattern.
+
+Current K-streaming SoC RTL smoke:
+
+```text
+real_mnist_cnn_fc1_k_stream_smoke
+  sample: MNIST test sample 0
+  chunks: 4 selected nonzero K chunks
+  shape per chunk: 8x8x8
+```
+
+This smoke uses the new `SOC_NPU_JOB_OP_MATMUL_K_STREAM` descriptor type. The
+wrapper fetches four packed A/B tile chunks inside one descriptor, starts the
+core once per chunk, the core accumulates into the same `acc_buf`, and the
+wrapper writes output once. It verifies K-axis streaming and accumulator
+residency, but it is still not full `fc1`; full `fc1` needs a compact staging
+or external loading path for 1152 chunks per N tile.
 
 Two hardware options are under consideration:
 

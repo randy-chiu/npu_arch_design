@@ -105,18 +105,34 @@ small synthetic log.
 
 ## 8. Current Baselines
 
-After A1 matmul array, A2.1 structural data mover, grayscale digit fixtures,
-and real MNIST CNN `fc2` SoC smoke:
+After A1 matmul array, A2 structural data mover, 4-lane core host interface,
+`WORDS_PER_CYCLE=4` NPU-side SRAM/data-mover/core-host movement, grayscale
+digit fixtures, real MNIST CNN `fc2` SoC smoke, the first real `fc1` SoC tile
+smoke, and one full `fc1` single-N-tile K-stream SoC smoke:
 
 ```text
-make test        PASS, 24 tests
+make test        PASS, 31 tests
 make perf-report PASS
-matmul total cycles: 236
+matmul total cycles: 81
 matmul core matmul cycles: 10
-softmax total cycles: 53
-digits_linear_classifier: 16 jobs, 3776 cycles
-real_mnist_cnn_fc2: 32 jobs, 7552 cycles
+softmax total cycles: 30
+digits_linear_classifier: 16 jobs, 1296 cycles
+real_mnist_cnn_fc1_tile0: 1 job, 81 cycles
+real_mnist_cnn_fc1_k_stream_smoke: 1 job, 236 cycles
+real_mnist_cnn_fc1_full_k_stream_tile0: 1 job, 58784 cycles
+real_mnist_cnn_fc2: 32 jobs, 2592 cycles
+perf summary: 53 jobs, 7 workloads, 63100 total cycles
 ```
+
+The full `fc1` K-stream smoke verifies one complete output N tile:
+
+```text
+A[8,9216] * B[9216,8] -> C[8,8]
+k_chunks = 1152
+```
+
+完整 `fc1` K-stream smoke 验证的是一个完整 output N tile，而不是完整 128 输出通道的
+`fc1` layer。完整 layer 仍需要 16 个 output N-tile jobs 以及 bias/ReLU 处理。
 
 When a change intentionally modifies timing, update docs and explain whether
 the change is functional RTL behavior or report/model accounting.

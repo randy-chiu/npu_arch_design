@@ -87,6 +87,43 @@ target logic. There is no bus arbitration because PicoRV32 is the only bus
 master. The NPU wrapper uses a separate SRAM port, so wrapper movement does not
 arbitrate with CPU on `simple_bus` in this model.
 
+The SoC spec now separates the RV32 CPU transaction width from the physical
+SRAM CPU port shape:
+
+```text
+SOC_BUS_DATA_WIDTH_BITS      = 32
+SOC_SRAM_CPU_LANES           = 4
+SOC_SRAM_CPU_DATA_WIDTH_BITS = 128
+```
+
+PicoRV32 still issues one 32-bit load/store per request. `simple_bus` maps that
+request onto one lane of the wider SRAM CPU port:
+
+```text
+sram_lane = (sram_local_addr >> 2) % SOC_SRAM_CPU_LANES
+sram_addr = aligned group base address
+sram_we[sram_lane] = CPU write enable
+sram_wdata[32*sram_lane +: 32] = CPU write data
+CPU read data = sram_rdata[32*sram_lane +: 32]
+```
+
+This is a structural staging step. It makes the SRAM CPU side compatible with a
+future preload/copy engine that can drive multiple lanes per cycle, but it does
+not make scalar PicoRV32 stores faster by itself.
+
+SoC spec 现在把 RV32 CPU 事务宽度和 SRAM CPU 物理端口形态分开：
+
+```text
+SOC_BUS_DATA_WIDTH_BITS      = 32
+SOC_SRAM_CPU_LANES           = 4
+SOC_SRAM_CPU_DATA_WIDTH_BITS = 128
+```
+
+PicoRV32 仍然每次只发起一个 32-bit load/store。`simple_bus` 会根据地址把这个
+请求映射到 SRAM CPU 宽口的某一个 lane。这个改动是结构准备：它让 SRAM CPU 侧
+可以被未来的 preload/copy engine 多 lane 驱动，但不会单独加速 PicoRV32 标量
+store。
+
 Current limitations:
 
 - no burst transactions;
@@ -115,10 +152,10 @@ external storage into SRAM/DRAM.
 
 | Port | User | Current purpose |
 | --- | --- | --- |
-| CPU port | `simple_bus` | stack, globals, descriptor construction, tensor/program staging |
-| NPU port | `npu_v0_opsched` | descriptor/program/input reads and output writes |
+| CPU port | `simple_bus` | stack, globals, descriptor construction, tensor/program staging; physically `SOC_SRAM_CPU_LANES` lanes but PicoRV32 currently uses one lane per request |
+| NPU port | `npu_v0_opsched` | descriptor/program/input reads and output writes; `SOC_NPU_SRAM_LANES` lanes |
 
-Both ports are simple one-word accesses in the current model. There is no bank
+Both ports are still single-cycle ready in the current model. There is no bank
 conflict model yet. A2 work should gradually replace this with a bandwidth and
 bank-aware memory model.
 
@@ -165,6 +202,9 @@ driven by firmware, not by direct testbench pokes into the NPU.
 - ROM is simulation firmware storage, not a real boot flow.
 - SRAM has no realistic latency, arbitration, or banking.
 - NPU SRAM port bypasses the CPU bus and does not model contention.
+- PicoRV32 itself remains a 32-bit scalar bus master; the wider SRAM CPU port is
+  only useful for scalar lane mapping today and for a future preload/copy
+  engine.
 - UART is reserved but not implemented.
 - Interrupts are provisioned in wrapper registers but firmware still polls.
 - Performance counters are testbench-side, not CPU-visible CSRs.
@@ -174,6 +214,8 @@ driven by firmware, not by direct testbench pokes into the NPU.
 Near-term SoC work should support A2 without overbuilding:
 
 - add explicit data mover counters and optional debug registers;
+- add a preload/copy engine that drives multiple SRAM CPU lanes per cycle for
+  ROM/flash-to-SRAM staging;
 - model SRAM bandwidth and later bank conflicts;
 - keep descriptor ABI stable while the internal data mover changes;
 - decide when IRQ replaces polling in the firmware loop.

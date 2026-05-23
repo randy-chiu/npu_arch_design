@@ -141,11 +141,20 @@ Interface summary:
 
 Current behavior:
 
-- one word per cycle;
+- up to `WORDS_PER_CYCLE` words per cycle, currently configured as 4 in the
+  wrapper;
 - no setup latency;
-- no burst grouping;
+- lane grouping is contiguous from the base word address;
 - no stalls from `sram_ready`;
 - no independent counters inside the module yet.
+
+当前行为：
+
+- 每拍最多搬运 `WORDS_PER_CYCLE` 个 word，当前 wrapper 配置为 4；
+- 没有 setup latency；
+- lane 分组从 base word 地址开始连续映射；
+- 还没有 `sram_ready` stall 处理；
+- data mover 内部还没有独立计数器。
 
 The wrapper drives the data mover during:
 
@@ -159,28 +168,174 @@ wrapper job registers.
 
 ## 7. Timing Semantics
 
-Current transfer timing is intentionally equivalent to the old wrapper loops:
-
-```text
-cycles ~= words
-```
-
-Therefore the A2.1 structural patch should not change functional output or
-cycle baselines. The verified baseline is:
-
-```text
-matmul total cycles: 236
-softmax total cycles: 53
-```
-
-Next A2 step will add `WORDS_PER_CYCLE` and `SETUP_CYCLES`. At that point,
-transfer timing becomes:
+Current transfer timing is:
 
 ```text
 cycles ~= setup_cycles + ceil(words / words_per_cycle)
 ```
 
-## 8. Status Bits
+With `WORDS_PER_CYCLE=4` and `SETUP_CYCLES=0`, the verified launch-to-done
+baseline is:
+
+```text
+matmul total cycles: 81
+softmax total cycles: 30
+```
+
+当前传输时序为：
+
+```text
+cycles ~= setup_cycles + ceil(words / words_per_cycle)
+```
+
+对于 `WORDS_PER_CYCLE=4`、`SETUP_CYCLES=0`，当前验证过的 NPU job 基线为：
+
+```text
+matmul total cycles: 81
+softmax total cycles: 30
+```
+
+## 8. Full FC1 Data-Movement Improvement Plan / 完整 FC1 数据搬运改进计划
+
+The full FC1 single-N-tile SoC checkpoint shows that the current bottleneck is
+not the `8x8x8` MAC array. The bottleneck is movement from SRAM through the
+wrapper into the core preload windows.
+
+完整 FC1 single-N-tile 的 SoC checkpoint 表明，当前瓶颈不是 `8x8x8` MAC array，
+而是从 SRAM 经 wrapper 到 core preload window 的数据搬运。
+
+The implementation roadmap is:
+
+实施路线如下：
+
+1. Keep the physical MAC tile unchanged.
+   The core remains `M=8, N=8, K=8`, and K-streaming continues to accumulate
+   many physical chunks in `acc_buf`.
+2. Replace the debug-style wrapper-to-core preload path with a real movement
+   path.
+   The wrapper should configure movement; the movement path should fill core
+   local storage without acting like a CPU writing one host-window word at a
+   time.
+3. Parameterize and then widen movement bandwidth.
+   Add explicit `WORDS_PER_CYCLE` and `SETUP_CYCLES` knobs first, then back
+   those knobs with a wider core preload interface and a wider SRAM/DMEM read
+   model.
+4. Add double buffering and overlap.
+   While the core computes K chunk `i`, the movement path should prefetch K
+   chunk `i+1` into the inactive buffer.
+
+1. 保持物理 MAC tile 不变。
+   core 仍然是 `M=8, N=8, K=8`，K-streaming 继续在 `acc_buf` 中累加多个物理
+   chunks。
+2. 把 debug 风格的 wrapper-to-core preload 路径替换成真正的数据搬运路径。
+   wrapper 应该只配置搬运；搬运路径应直接填充 core local storage，而不是像 CPU
+   一样逐 word 写 host window。
+3. 先参数化再加宽搬运带宽。
+   先加入显式 `WORDS_PER_CYCLE` 和 `SETUP_CYCLES` 参数，再用更宽的 core preload
+   interface 和更宽的 SRAM/DMEM read model 支撑这些参数。
+4. 增加双缓冲和重叠。
+   core 计算 K chunk `i` 时，搬运路径预取 K chunk `i+1` 到另一个 buffer。
+
+Step 1 status:
+
+第 1 步状态：
+
+- `npu_v0_data_mover` exposes `WORDS_PER_CYCLE` and `SETUP_CYCLES` parameters;
+- default values preserve the current verified behavior:
+  `WORDS_PER_CYCLE=1`, `SETUP_CYCLES=0`;
+- Step 1 originally kept `WORDS_PER_CYCLE=1` until the host interface was
+  widened; this is now superseded by Step 3.
+
+- `npu_v0_data_mover` 暴露 `WORDS_PER_CYCLE` 和 `SETUP_CYCLES` 参数；
+- 默认值保持当前已验证行为：`WORDS_PER_CYCLE=1`、`SETUP_CYCLES=0`；
+- 第 1 步最初保持 `WORDS_PER_CYCLE=1`，直到 host interface 加宽；该限制已被第
+  3 步取代。
+
+Step 2 widens the wrapper-to-core preload/readback interface shape without yet
+changing SRAM layout or CPU staging.
+
+第 2 步会先加宽 wrapper-to-core preload/readback 接口形态，但暂时不改变 SRAM 布局
+或 CPU staging。
+
+Contract:
+
+合同：
+
+```text
+CORE_HOST_LANES = 4
+host_we[3:0]
+host_addr       // base word address
+host_wdata[4*32-1:0]
+host_rdata[4*32-1:0]
+```
+
+Lane `i` maps to host window word address `host_addr + i`.
+
+lane `i` 映射到 host window word 地址 `host_addr + i`。
+
+Step 2 widened the interface shape first. In that checkpoint, the wrapper still
+drove only lane 0:
+
+第 2 步先加宽接口形态。在该 checkpoint 中，wrapper 仍然只驱动 lane 0：
+
+```text
+host_we = 4'b0001 when a scalar preload/write is active
+host_wdata[31:0] carries the existing word
+host_rdata[31:0] is consumed by the existing scalar readback path
+```
+
+This kept functionality and timing unchanged while moving the core boundary
+away from a scalar-only debug host port.
+
+这保持了功能和时序不变，同时先把 core 边界从只能标量访问的 debug host port 迁出。
+
+Step 3 connects that 4-lane shape to actual movement:
+
+第 3 步已经把 4-lane 接口接到真实搬运路径：
+
+```text
+DATA_MOVER_WORDS_PER_CYCLE = 4
+CORE_HOST_LANES            = 4
+SRAM NPU port              = 4 lanes, 128-bit packed data
+CPU SRAM port              = 4 lanes, PicoRV32 drives one 32-bit lane/request
+```
+
+For SRAM-to-core transfers, the mover reads up to four consecutive SRAM words
+and writes them to four consecutive core host-window words in the same cycle.
+For core-to-SRAM transfers, it reads up to four consecutive core output words
+and writes them back to consecutive SRAM words. Partial tails are handled with
+per-lane write masks.
+
+SRAM 到 core 的搬运中，data mover 每拍最多读取 4 个连续 SRAM word，并写入 4 个连续
+core host-window word。core 到 SRAM 的搬运中，data mover 每拍最多读取 4 个连续
+core output word，并写回连续 SRAM word。尾部不足 4 word 的 segment 通过 per-lane
+write mask 处理。
+
+These values now come from `arch/configs/soc_v0.jsonc` through generated SoC
+constants:
+
+```text
+SOC_NPU_CORE_HOST_LANES
+SOC_NPU_SRAM_LANES
+SOC_NPU_DATA_MOVER_WORDS_PER_CYCLE
+SOC_NPU_DATA_MOVER_SETUP_CYCLES
+```
+
+Current RTL requires `SOC_NPU_CORE_HOST_LANES == SOC_NPU_SRAM_LANES`, and
+`WORDS_PER_CYCLE` must be in `1..lanes`.
+
+These are actual RTL parameters, not only report-model knobs. CPU firmware
+staging remains scalar at the PicoRV32 transaction level. The SRAM CPU port has
+been widened structurally, but the current CPU still drives one lane per
+request, so CPU copy time before each NPU job is not accelerated by this step.
+
+这些值现在来自 `arch/configs/soc_v0.jsonc`，并通过生成的 SoC 常量进入 RTL。当前
+RTL 要求 `SOC_NPU_CORE_HOST_LANES == SOC_NPU_SRAM_LANES`，且 `WORDS_PER_CYCLE`
+必须落在 `1..lanes`。这些是实际 RTL 参数，不只是 report-model knob。CPU firmware
+在 PicoRV32 事务层面仍然是标量访问；SRAM CPU port 已经做成宽口形态，但当前 CPU
+每次仍只驱动一个 lane，所以这一步不会加速每个 NPU job 之前的 CPU copy 时间。
+
+## 9. Status Bits
 
 `STATUS` currently returns:
 
@@ -193,7 +348,7 @@ bit 2: !busy
 Firmware currently polls `done_latched`. IRQ registers exist but are not wired
 into a CPU interrupt flow yet.
 
-## 9. Error Handling
+## 10. Error Handling
 
 Current wrapper error handling is minimal:
 
@@ -205,13 +360,12 @@ Current wrapper error handling is minimal:
 
 These should be added before larger programs or untrusted descriptors are used.
 
-## 10. Next Work
+## 11. Next Work
 
 Immediate next work:
 
-1. Add data mover parameters `WORDS_PER_CYCLE` and `SETUP_CYCLES`.
-2. Preserve `1 word/cycle` default behavior.
-3. Add explicit data mover counters to `PERF_JOB`.
-4. Drive the report `Data mover` lane from real data mover state/counters.
-5. Add burst-profile mode: `4 words/cycle + 1 setup cycle`.
-6. Only then start scratchpad banking and overlap work.
+1. Add explicit data mover counters to `PERF_JOB`.
+2. Drive the report `Data mover` lane from real data mover state/counters.
+3. Consider nonzero setup/stall modeling after the current `4 words/cycle`
+   path is stable.
+4. Add scratchpad banking and overlap work.

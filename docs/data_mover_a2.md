@@ -147,13 +147,13 @@ First RTL step:
 - kept matmul and softmax cycle baselines unchanged;
 - added a report `Data mover` lane reconstructed from current movement phases.
 
-This is a structural change, not the burst implementation yet. The next RTL
-step can add configurable transfer bandwidth or setup latency inside the data
-mover while keeping the wrapper-level state names stable.
+This document records the original A2.1 structural split. The current RTL has
+since enabled a 4-word-per-cycle NPU-side movement path; see
+`docs/design/npu_wrapper.md` for the live design contract.
 
 ## 9. Next Session Checklist
 
-Continue from A2.1, not from A1. The current verified baseline is:
+Historical A2.1 baseline before the 4-lane movement path:
 
 ```text
 make test        PASS
@@ -161,6 +161,9 @@ make perf-report PASS
 matmul total cycles: 236
 softmax total cycles: 53
 ```
+
+Current live baseline after `WORDS_PER_CYCLE=4` is tracked in
+`docs/design/verification_strategy.md`.
 
 Current important files:
 

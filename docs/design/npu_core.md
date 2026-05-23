@@ -31,15 +31,23 @@ The wrapper owns all SoC memory movement today.
 | `start` | input | one-cycle start pulse from wrapper |
 | `op` | input | reserved; execution is currently driven by uops |
 | `done` | output | asserted when program reaches done state |
-| `host_we` | input | write enable for host preload windows |
-| `host_addr` | input | 12-bit host window address |
-| `host_wdata` | input | host write data |
-| `host_rdata` | output | host read data from output windows |
+| `host_we[CORE_HOST_LANES-1:0]` | input | lane write enables for host preload windows |
+| `host_addr` | input | 12-bit base host window word address |
+| `host_wdata[CORE_HOST_LANES*32-1:0]` | input | lane-packed host write data |
+| `host_rdata[CORE_HOST_LANES*32-1:0]` | output | lane-packed host read data from output windows |
+
+For the current checkpoint, `CORE_HOST_LANES=4`, but the wrapper still drives
+only lane 0. Lane `i` maps to `host_addr + i`. This prepares the core boundary
+for a wider data mover while preserving the current scalar preload behavior.
+
+当前 checkpoint 中，`CORE_HOST_LANES=4`，但 wrapper 仍然只驱动 lane 0。lane `i`
+映射到 `host_addr + i`。这为更宽的数据搬运边界做准备，同时保持当前标量 preload
+行为。
 
 Host writes are accepted only while the core is idle:
 
 ```text
-host_we && state == ST_IDLE
+host_we[lane] && state == ST_IDLE
 ```
 
 This prevents the wrapper from changing inputs/program while the core is
@@ -63,6 +71,14 @@ executing.
 Names like `dram_a` are historical. These are internal core arrays in the
 current RTL, not external DRAM.
 
+For K-streaming matmul, `acc_buf` is the resident partial-sum buffer. The A/B
+preload and scratchpad arrays remain one `8x8` tile each; they are overwritten
+for every K chunk while `acc_buf` persists until the final store.
+
+对于 K-streaming matmul，`acc_buf` 是常驻 partial-sum buffer。A/B preload 和
+scratchpad 数组仍然各自只保存一个 `8x8` tile；每个 K chunk 都会覆盖它们，而
+`acc_buf` 会一直保持到最终 store。
+
 ## 4. Host Window Map
 
 | Address range | Access | Storage |
@@ -73,6 +89,7 @@ current RTL, not external DRAM.
 | `0x300` - `0x307` | write | `dram_x` |
 | `0x380` - `0x387` | read | `dram_y` |
 | `0x400` - `0x40f` | write | `instr_mem` |
+| `0x500` | write | matmul accumulate control: bit 0 enable, bit 1 clear pulse |
 
 The core does not validate window overflows beyond these simple address ranges.
 
@@ -125,7 +142,9 @@ C: M x N, signed int32
 Behavior:
 
 - on `start`, clear 64 result accumulators;
-- for each active `k_idx`, update all `M*N` output accumulators in parallel;
+- for each active `k_idx`, update all `M*N = 64` output accumulators in
+  parallel;
+- each active cycle performs 64 signed int8-by-int8 MACs into int32 results;
 - after `K` slices, assert `done`;
 - `npu_v0_top` commits `result_flat` into `acc_buf`.
 
@@ -133,6 +152,30 @@ The nested `for i/j` loops inside the clocked block describe many same-cycle
 register updates, not software-style serial loop execution. Only `k_idx`
 advances across cycles. This is why the measured matmul compute phase moved
 from the old 512-cycle scalar baseline to about 10 cycles.
+
+For a cycle-by-cycle diagram of the current 64-MAC/cycle behavior, see
+`docs/design/fc1_k_streaming_matmul.md`, section
+`2.1 Cycle-By-Cycle Example / 逐拍计算例子`.
+
+K-streaming matmul does not change this physical parallelism. It repeats the
+same `8x8x8` array operation for multiple K chunks and changes the commit
+semantics from:
+
+```text
+acc_buf = tile_result
+```
+
+to:
+
+```text
+acc_buf += tile_result
+```
+
+when `matmul_accumulate_enable` is set through host address `0x500`.
+
+K-streaming matmul 不改变物理并行度。它只是对多个 K chunk 重复执行同一个
+`8x8x8` array operation，并在 `matmul_accumulate_enable` 置位时把提交语义从
+覆盖改为累加。
 
 Detailed A1 explanation is in `docs/matmul_array_a1.md`.
 
@@ -158,13 +201,14 @@ A3 should replace this with:
 
 ## 8. Current Timing Baseline
 
-From `make perf-report` after A1:
+From `make perf-report` after enabling the 4-lane core host interface and
+`WORDS_PER_CYCLE=4` NPU-side movement:
 
 ```text
-matmul total cycles:      236
+matmul total cycles:       81
 core total cycles:         18
 core matmul cycles:        10
-softmax total cycles:      53
+softmax total cycles:      30
 softmax core cycles:       11
 ```
 

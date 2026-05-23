@@ -1,4 +1,6 @@
-module npu_v0_opsched (
+module npu_v0_opsched #(
+    parameter int CORE_HOST_LANES = 4
+) (
     input  logic        clk,
     input  logic        rst_n,
 
@@ -10,10 +12,10 @@ module npu_v0_opsched (
     output logic        bus_ready,
 
     output logic        sram_req,
-    output logic        sram_we,
+    output logic [CORE_HOST_LANES-1:0] sram_we,
     output logic [31:0] sram_addr,
-    output logic [31:0] sram_wdata,
-    input  logic [31:0] sram_rdata,
+    output logic [(CORE_HOST_LANES*32)-1:0] sram_wdata,
+    input  logic [(CORE_HOST_LANES*32)-1:0] sram_rdata,
     input  logic        sram_ready
 );
     `include "npu_v0_regs.svh"
@@ -28,7 +30,9 @@ module npu_v0_opsched (
         DESC_START_CORE,
         DESC_WAIT_CORE,
         DESC_WRITE_OUTPUT,
-        DESC_DONE
+        DESC_DONE,
+        DESC_CONFIG_ACC,
+        DESC_DISABLE_ACC
     } desc_state_t;
 
     logic        start_pulse;
@@ -42,6 +46,7 @@ module npu_v0_opsched (
     desc_state_t desc_state;
     logic [3:0]  desc_idx;
     logic [7:0]  transfer_idx;
+    logic [15:0] stream_chunk_idx;
 
     logic [31:0] job_op_type;
     logic [31:0] job_program_addr;
@@ -52,11 +57,13 @@ module npu_v0_opsched (
     logic [31:0] job_input1_words;
     logic [31:0] job_output_addr;
     logic [31:0] job_output_words;
+    logic [31:0] job_k_chunks;
 
-    logic        npu_host_we;
+    logic [CORE_HOST_LANES-1:0] npu_host_we;
     logic [11:0] npu_host_addr;
-    logic [31:0] npu_host_wdata;
-    logic [31:0] npu_host_rdata;
+    logic [(CORE_HOST_LANES*32)-1:0] npu_host_wdata;
+    logic [(CORE_HOST_LANES*32)-1:0] npu_host_rdata;
+    logic [31:0] npu_host_rdata_lane0;
 
     logic        legacy_host_we;
     logic [11:0] legacy_host_addr;
@@ -72,19 +79,32 @@ module npu_v0_opsched (
     logic        mover_complete;
     logic [7:0]  mover_index;
     logic        mover_sram_req;
-    logic        mover_sram_we;
+    logic [CORE_HOST_LANES-1:0] mover_sram_we;
     logic [31:0] mover_sram_addr;
-    logic [31:0] mover_sram_wdata;
-    logic        mover_host_we;
+    logic [(CORE_HOST_LANES*32)-1:0] mover_sram_wdata;
+    logic [CORE_HOST_LANES-1:0] mover_host_we;
     logic [11:0] mover_host_addr;
-    logic [31:0] mover_host_wdata;
+    logic [(CORE_HOST_LANES*32)-1:0] mover_host_wdata;
+    logic        job_is_k_stream;
+
+    localparam int DATA_MOVER_WORDS_PER_CYCLE = SOC_NPU_DATA_MOVER_WORDS_PER_CYCLE;
+    localparam int DATA_MOVER_SETUP_CYCLES = SOC_NPU_DATA_MOVER_SETUP_CYCLES;
+
+    assign job_is_k_stream = (job_op_type == SOC_NPU_JOB_OP_MATMUL_K_STREAM);
 
     assign bus_ready = bus_req;
     assign npu_host_addr = (desc_state == DESC_IDLE) ? legacy_host_addr : desc_host_addr;
-    assign npu_host_we = (desc_state == DESC_IDLE) ? legacy_host_we : desc_host_we;
-    assign npu_host_wdata = (desc_state == DESC_IDLE) ? bus_wdata : desc_host_wdata;
+    assign npu_host_we = (desc_state == DESC_IDLE) ?
+        {{(CORE_HOST_LANES-1){1'b0}}, legacy_host_we} :
+        (mover_host_we | {{(CORE_HOST_LANES-1){1'b0}}, desc_host_we});
+    assign npu_host_wdata = (desc_state == DESC_IDLE) ?
+        {{((CORE_HOST_LANES-1)*32){1'b0}}, bus_wdata} :
+        (mover_host_wdata | {{((CORE_HOST_LANES-1)*32){1'b0}}, desc_host_wdata});
+    assign npu_host_rdata_lane0 = npu_host_rdata[31:0];
 
-    npu_v0_top u_npu (
+    npu_v0_top #(
+        .CORE_HOST_LANES(CORE_HOST_LANES)
+    ) u_npu (
         .clk(clk),
         .rst_n(rst_n),
         .start(start_pulse),
@@ -96,7 +116,11 @@ module npu_v0_opsched (
         .host_rdata(npu_host_rdata)
     );
 
-    npu_v0_data_mover u_data_mover (
+    npu_v0_data_mover #(
+        .WORDS_PER_CYCLE(DATA_MOVER_WORDS_PER_CYCLE),
+        .SETUP_CYCLES(DATA_MOVER_SETUP_CYCLES),
+        .LANES(CORE_HOST_LANES)
+    ) u_data_mover (
         .clk(clk),
         .rst_n(rst_n),
         .start(mover_start),
@@ -148,9 +172,9 @@ module npu_v0_opsched (
 
     always @* begin
         sram_req = 1'b0;
-        sram_we = 1'b0;
+        sram_we = '0;
         sram_addr = 32'h0000_0000;
-        sram_wdata = 32'h0000_0000;
+        sram_wdata = '0;
         desc_host_we = 1'b0;
         desc_host_addr = 12'h000;
         desc_host_wdata = 32'h0000_0000;
@@ -174,13 +198,17 @@ module npu_v0_opsched (
                 sram_we = mover_sram_we;
                 sram_addr = mover_sram_addr;
                 sram_wdata = mover_sram_wdata;
-                desc_host_we = mover_host_we;
+                desc_host_we = |mover_host_we;
                 desc_host_addr = mover_host_addr;
-                desc_host_wdata = mover_host_wdata;
+                desc_host_wdata = 32'h0000_0000;
             end
             DESC_FETCH_INPUT0: begin
                 mover_start = !mover_busy;
-                mover_sram_base = job_input0_addr;
+                if (job_is_k_stream) begin
+                    mover_sram_base = job_input0_addr + ((stream_chunk_idx * job_input0_words[15:0]) << 2);
+                end else begin
+                    mover_sram_base = job_input0_addr;
+                end
                 mover_words = job_input0_words[7:0];
                 if (job_op_type == SOC_NPU_JOB_OP_SOFTMAX) begin
                     mover_host_base = 12'h300;
@@ -191,22 +219,26 @@ module npu_v0_opsched (
                 sram_we = mover_sram_we;
                 sram_addr = mover_sram_addr;
                 sram_wdata = mover_sram_wdata;
-                desc_host_we = mover_host_we;
+                desc_host_we = |mover_host_we;
                 desc_host_addr = mover_host_addr;
-                desc_host_wdata = mover_host_wdata;
+                desc_host_wdata = 32'h0000_0000;
             end
             DESC_FETCH_INPUT1: begin
                 mover_start = !mover_busy;
-                mover_sram_base = job_input1_addr;
+                if (job_is_k_stream) begin
+                    mover_sram_base = job_input1_addr + ((stream_chunk_idx * job_input1_words[15:0]) << 2);
+                end else begin
+                    mover_sram_base = job_input1_addr;
+                end
                 mover_host_base = 12'h100;
                 mover_words = job_input1_words[7:0];
                 sram_req = mover_sram_req;
                 sram_we = mover_sram_we;
                 sram_addr = mover_sram_addr;
                 sram_wdata = mover_sram_wdata;
-                desc_host_we = mover_host_we;
+                desc_host_we = |mover_host_we;
                 desc_host_addr = mover_host_addr;
-                desc_host_wdata = mover_host_wdata;
+                desc_host_wdata = 32'h0000_0000;
             end
             DESC_WRITE_OUTPUT: begin
                 mover_start = !mover_busy;
@@ -222,9 +254,19 @@ module npu_v0_opsched (
                 sram_we = mover_sram_we;
                 sram_addr = mover_sram_addr;
                 sram_wdata = mover_sram_wdata;
-                desc_host_we = mover_host_we;
+                desc_host_we = |mover_host_we;
                 desc_host_addr = mover_host_addr;
-                desc_host_wdata = mover_host_wdata;
+                desc_host_wdata = 32'h0000_0000;
+            end
+            DESC_CONFIG_ACC: begin
+                desc_host_we = 1'b1;
+                desc_host_addr = 12'h500;
+                desc_host_wdata = 32'h0000_0003;
+            end
+            DESC_DISABLE_ACC: begin
+                desc_host_we = 1'b1;
+                desc_host_addr = 12'h500;
+                desc_host_wdata = 32'h0000_0000;
             end
             default: begin
             end
@@ -256,7 +298,7 @@ module npu_v0_opsched (
                 if (!bus_we &&
                     ((bus_addr >= NPU_OPSCHED_C_BASE && bus_addr < NPU_OPSCHED_C_BASE + 12'h100) ||
                      (bus_addr >= NPU_OPSCHED_Y_BASE && bus_addr < NPU_OPSCHED_Y_BASE + 12'h080))) begin
-                    bus_rdata = npu_host_rdata;
+                    bus_rdata = npu_host_rdata_lane0;
                 end
             end
         endcase
@@ -273,6 +315,7 @@ module npu_v0_opsched (
             desc_state <= DESC_IDLE;
             desc_idx <= 4'h0;
             transfer_idx <= 8'h0;
+            stream_chunk_idx <= 16'h0000;
             job_op_type <= 32'h0000_0000;
             job_program_addr <= 32'h0000_0000;
             job_program_words <= 32'h0000_0000;
@@ -282,6 +325,7 @@ module npu_v0_opsched (
             job_input1_words <= 32'h0000_0000;
             job_output_addr <= 32'h0000_0000;
             job_output_words <= 32'h0000_0000;
+            job_k_chunks <= 32'h0000_0000;
         end else begin
             start_pulse <= 1'b0;
             if (npu_done && desc_state == DESC_IDLE) begin
@@ -295,21 +339,23 @@ module npu_v0_opsched (
                 end
                 DESC_READ: begin
                     case (desc_idx)
-                        SOC_NPU_JOB_DESC_OP_TYPE_WORD: job_op_type <= sram_rdata;
-                        SOC_NPU_JOB_DESC_PROGRAM_ADDR_WORD: job_program_addr <= sram_rdata;
-                        SOC_NPU_JOB_DESC_PROGRAM_WORDS_WORD: job_program_words <= sram_rdata;
-                        SOC_NPU_JOB_DESC_INPUT0_ADDR_WORD: job_input0_addr <= sram_rdata;
-                        SOC_NPU_JOB_DESC_INPUT0_WORDS_WORD: job_input0_words <= sram_rdata;
-                        SOC_NPU_JOB_DESC_INPUT1_ADDR_WORD: job_input1_addr <= sram_rdata;
-                        SOC_NPU_JOB_DESC_INPUT1_WORDS_WORD: job_input1_words <= sram_rdata;
-                        SOC_NPU_JOB_DESC_OUTPUT_ADDR_WORD: job_output_addr <= sram_rdata;
-                        SOC_NPU_JOB_DESC_OUTPUT_WORDS_WORD: job_output_words <= sram_rdata;
+                        SOC_NPU_JOB_DESC_OP_TYPE_WORD: job_op_type <= sram_rdata[31:0];
+                        SOC_NPU_JOB_DESC_PROGRAM_ADDR_WORD: job_program_addr <= sram_rdata[31:0];
+                        SOC_NPU_JOB_DESC_PROGRAM_WORDS_WORD: job_program_words <= sram_rdata[31:0];
+                        SOC_NPU_JOB_DESC_INPUT0_ADDR_WORD: job_input0_addr <= sram_rdata[31:0];
+                        SOC_NPU_JOB_DESC_INPUT0_WORDS_WORD: job_input0_words <= sram_rdata[31:0];
+                        SOC_NPU_JOB_DESC_INPUT1_ADDR_WORD: job_input1_addr <= sram_rdata[31:0];
+                        SOC_NPU_JOB_DESC_INPUT1_WORDS_WORD: job_input1_words <= sram_rdata[31:0];
+                        SOC_NPU_JOB_DESC_OUTPUT_ADDR_WORD: job_output_addr <= sram_rdata[31:0];
+                        SOC_NPU_JOB_DESC_OUTPUT_WORDS_WORD: job_output_words <= sram_rdata[31:0];
+                        SOC_NPU_JOB_DESC_K_CHUNKS_WORD: job_k_chunks <= sram_rdata[31:0];
                         default: begin
                         end
                     endcase
                     if (desc_idx == SOC_NPU_JOB_DESC_WORDS - 1) begin
                         desc_idx <= 4'h0;
                         transfer_idx <= 8'h0;
+                        stream_chunk_idx <= 16'h0000;
                         desc_state <= DESC_FETCH_PROGRAM;
                     end else begin
                         desc_idx <= desc_idx + 1'b1;
@@ -318,13 +364,24 @@ module npu_v0_opsched (
                 DESC_FETCH_PROGRAM: begin
                     if (mover_complete) begin
                         transfer_idx <= 8'h0;
-                        desc_state <= DESC_FETCH_INPUT0;
+                        stream_chunk_idx <= 16'h0000;
+                        if (job_is_k_stream) begin
+                            desc_state <= DESC_CONFIG_ACC;
+                        end else begin
+                            desc_state <= DESC_FETCH_INPUT0;
+                        end
                     end
+                end
+                DESC_CONFIG_ACC: begin
+                    desc_state <= DESC_FETCH_INPUT0;
+                end
+                DESC_DISABLE_ACC: begin
+                    desc_state <= DESC_DONE;
                 end
                 DESC_FETCH_INPUT0: begin
                     if (mover_complete) begin
                         transfer_idx <= 8'h0;
-                        if (job_op_type == SOC_NPU_JOB_OP_MATMUL) begin
+                        if (job_op_type == SOC_NPU_JOB_OP_MATMUL || job_is_k_stream) begin
                             desc_state <= DESC_FETCH_INPUT1;
                         end else begin
                             desc_state <= DESC_START_CORE;
@@ -344,13 +401,22 @@ module npu_v0_opsched (
                 DESC_WAIT_CORE: begin
                     if (npu_done) begin
                         transfer_idx <= 8'h0;
-                        desc_state <= DESC_WRITE_OUTPUT;
+                        if (job_is_k_stream && stream_chunk_idx + 16'h0001 < job_k_chunks[15:0]) begin
+                            stream_chunk_idx <= stream_chunk_idx + 16'h0001;
+                            desc_state <= DESC_FETCH_INPUT0;
+                        end else begin
+                            desc_state <= DESC_WRITE_OUTPUT;
+                        end
                     end
                 end
                 DESC_WRITE_OUTPUT: begin
                     if (mover_complete) begin
                         transfer_idx <= 8'h0;
-                        desc_state <= DESC_DONE;
+                        if (job_is_k_stream) begin
+                            desc_state <= DESC_DISABLE_ACC;
+                        end else begin
+                            desc_state <= DESC_DONE;
+                        end
                     end
                 end
                 DESC_DONE: begin
@@ -376,6 +442,7 @@ module npu_v0_opsched (
                             if (desc_addr != 32'h0000_0000) begin
                                 desc_idx <= 4'h0;
                                 transfer_idx <= 8'h0;
+                                stream_chunk_idx <= 16'h0000;
                                 desc_state <= DESC_READ;
                             end else begin
                                 start_pulse <= 1'b1;

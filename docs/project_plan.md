@@ -76,7 +76,10 @@ Exit condition:
 
 ### W2: Real MNIST CNN Layer Mapping
 
-Status: `fc2` SoC RTL path implemented; `fc1` planned.
+Status: `fc2` SoC RTL path implemented; `fc1` tool-level layer mapping, first
+SoC RTL tile checkpoint, and a multi-chunk K-streaming SoC smoke implemented.
+Full `fc1` SoC layer execution still requires compact staging or an external
+load path for full K streams.
 
 Purpose:
 
@@ -93,8 +96,41 @@ Exit condition:
   and perf grouping;
 - `fc1` passes tool-level tiled simulator against original float-model class
   prediction;
-- `fc1` then passes CPU-controlled SoC RTL, with conv/maxpool still CPU/tool
-  side until a conv lowering plan is chosen.
+- first real `fc1` tile passes CPU-controlled SoC RTL as a data-layout and
+  arithmetic checkpoint;
+- `fc1` K-streaming smoke passes CPU-controlled SoC RTL with multiple K chunks
+  accumulated inside one descriptor;
+- full `fc1` then passes CPU-controlled SoC RTL through an NPU-side K-streaming
+  contract, with conv/maxpool still CPU/tool side until a conv lowering plan is
+  chosen.
+
+### W3: Retire Linear Digits Classifier
+
+Status: planned after real MNIST CNN `fc1/fc2` SoC coverage is stable.
+
+Purpose:
+
+- remove the temporary 8x8 hand-constructed digit workload once the real 28x28
+  MNIST CNN path provides enough always-on model-level coverage;
+- avoid maintaining two classifier workload stories with different image sizes
+  and unrelated model semantics.
+
+Do not delete only the image files. Retirement must remove or replace the whole
+workload surface:
+
+- `test/assets/digits/`;
+- `test/assets/digits_realistic/`;
+- `test/inputs/digits_classifier_samples.json`;
+- `test/rtl/test_digits_classifier.py`;
+- firmware smoke `DIGITS_*` data generation and C runtime path;
+- perf report grouping for `digits_linear_classifier`;
+- `docs/digits_classifier_workload.md` active references.
+
+Precondition:
+
+- real MNIST CNN external fixture setup is reliable enough for the normal test
+  environment, or an equivalent checked-in minimal real-MNIST fixture exists;
+- `fc1/fc2` have stable SoC RTL coverage and perf grouping.
 
 ### M0: Phase 0 Core Loop
 

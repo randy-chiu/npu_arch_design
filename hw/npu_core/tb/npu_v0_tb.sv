@@ -7,10 +7,10 @@ module npu_v0_tb;
     logic start;
     logic op;
     logic done;
-    logic host_we;
+    logic [3:0] host_we;
     logic [11:0] host_addr;
-    logic [31:0] host_wdata;
-    logic [31:0] host_rdata;
+    logic [127:0] host_wdata;
+    logic [127:0] host_rdata;
 
     npu_v0_top dut (
         .clk(clk),
@@ -31,14 +31,15 @@ module npu_v0_tb;
         rst_n = 1'b0;
         start = 1'b0;
         op = 1'b0;
-        host_we = 1'b0;
+        host_we = 4'b0000;
         host_addr = 12'h0;
-        host_wdata = 32'h0;
+        host_wdata = 128'h0;
         repeat (4) @(posedge clk);
         rst_n = 1'b1;
 
         run_matmul_fixture_test();
         run_softmax_fixture_test();
+        run_core_host_lane_smoke();
 
         $display("PASS npu_v0 RTL generated-fixture tests");
         $finish;
@@ -54,10 +55,10 @@ module npu_v0_tb;
         begin
             @(posedge clk);
             host_addr <= addr;
-            host_wdata <= data;
-            host_we <= 1'b1;
+            host_wdata <= {96'h0, data};
+            host_we <= 4'b0001;
             @(posedge clk);
-            host_we <= 1'b0;
+            host_we <= 4'b0000;
         end
     endtask
 
@@ -66,8 +67,48 @@ module npu_v0_tb;
             @(posedge clk);
             host_addr <= addr;
             @(posedge clk);
-            if (host_rdata !== expected) begin
-                $display("FAIL addr=%h actual=%0d expected=%0d", addr, host_rdata, expected);
+            if (host_rdata[31:0] !== expected) begin
+                $display("FAIL addr=%h actual=%0d expected=%0d", addr, host_rdata[31:0], expected);
+                $fatal(1);
+            end
+        end
+    endtask
+
+    task automatic host_write4(
+        input logic [11:0] addr,
+        input logic [31:0] data0,
+        input logic [31:0] data1,
+        input logic [31:0] data2,
+        input logic [31:0] data3
+    );
+        begin
+            @(posedge clk);
+            host_addr <= addr;
+            host_wdata <= {data3, data2, data1, data0};
+            host_we <= 4'b1111;
+            @(posedge clk);
+            host_we <= 4'b0000;
+        end
+    endtask
+
+    task automatic host_read4_check(
+        input logic [11:0] addr,
+        input logic [31:0] expected0,
+        input logic [31:0] expected1,
+        input logic [31:0] expected2,
+        input logic [31:0] expected3
+    );
+        begin
+            @(posedge clk);
+            host_addr <= addr;
+            @(posedge clk);
+            if (host_rdata !== {expected3, expected2, expected1, expected0}) begin
+                $display(
+                    "FAIL wide read addr=%h actual=%h expected=%h",
+                    addr,
+                    host_rdata,
+                    {expected3, expected2, expected1, expected0}
+                );
                 $fatal(1);
             end
         end
@@ -120,6 +161,25 @@ module npu_v0_tb;
                     $fatal(1);
                 end
             end
+        end
+    endtask
+
+    task automatic run_core_host_lane_smoke;
+        begin
+            repeat (2) @(posedge clk);
+            host_write4(12'h000, 32'h0000_0011, 32'h0000_0022, 32'h0000_0033, 32'h0000_0044);
+            @(posedge clk);
+            if (dut.dram_a[0] !== 8'h11 || dut.dram_a[1] !== 8'h22 ||
+                dut.dram_a[2] !== 8'h33 || dut.dram_a[3] !== 8'h44) begin
+                $display("FAIL wide write to A window");
+                $fatal(1);
+            end
+
+            dut.dram_c[0] = 32'h0000_0101;
+            dut.dram_c[1] = 32'h0000_0202;
+            dut.dram_c[2] = 32'h0000_0303;
+            dut.dram_c[3] = 32'h0000_0404;
+            host_read4_check(12'h200, 32'h0000_0101, 32'h0000_0202, 32'h0000_0303, 32'h0000_0404);
         end
     endtask
 endmodule

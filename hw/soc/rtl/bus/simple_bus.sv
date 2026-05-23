@@ -1,4 +1,6 @@
-module simple_bus (
+module simple_bus #(
+    parameter int SRAM_CPU_LANES = 1
+) (
     input  logic        m_req,
     input  logic        m_we,
     input  logic [31:0] m_addr,
@@ -14,10 +16,10 @@ module simple_bus (
     input  logic        rom_ready,
 
     output logic        sram_req,
-    output logic        sram_we,
+    output logic [SRAM_CPU_LANES-1:0] sram_we,
     output logic [31:0] sram_addr,
-    output logic [31:0] sram_wdata,
-    input  logic [31:0] sram_rdata,
+    output logic [(SRAM_CPU_LANES*32)-1:0] sram_wdata,
+    input  logic [(SRAM_CPU_LANES*32)-1:0] sram_rdata,
     input  logic        sram_ready,
 
     output logic        npu_wrapper_req,
@@ -40,6 +42,9 @@ module simple_bus (
     logic sel_sram;
     logic sel_npu_wrapper;
     logic sel_test;
+    logic [31:0] sram_local_addr;
+    logic [31:0] sram_lane;
+    integer sram_pack_lane;
 
     assign sel_rom = ((m_addr & SOC_BOOT_ROM_MASK) == SOC_BOOT_ROM_BASE);
     assign sel_sram = ((m_addr & SOC_SRAM_MASK) == SOC_SRAM_BASE);
@@ -51,10 +56,10 @@ module simple_bus (
     assign rom_addr = m_addr - SOC_BOOT_ROM_BASE;
     assign rom_wdata = m_wdata;
 
+    assign sram_local_addr = m_addr - SOC_SRAM_BASE;
+    assign sram_lane = (sram_local_addr >> 2) % SRAM_CPU_LANES;
     assign sram_req = m_req && sel_sram;
-    assign sram_we = m_we;
-    assign sram_addr = m_addr - SOC_SRAM_BASE;
-    assign sram_wdata = m_wdata;
+    assign sram_addr = sram_local_addr - (sram_lane << 2);
 
     assign npu_wrapper_req = m_req && sel_npu_wrapper;
     assign npu_wrapper_we = m_we;
@@ -67,6 +72,17 @@ module simple_bus (
     assign test_wdata = m_wdata;
 
     always_comb begin
+        sram_we = '0;
+        sram_wdata = '0;
+        for (sram_pack_lane = 0; sram_pack_lane < SRAM_CPU_LANES; sram_pack_lane = sram_pack_lane + 1) begin
+            if (sram_lane == sram_pack_lane[31:0]) begin
+                sram_we[sram_pack_lane] = m_we && sel_sram;
+                sram_wdata[(sram_pack_lane * 32) +: 32] = m_wdata;
+            end
+        end
+    end
+
+    always_comb begin
         m_ready = m_req;
         m_rdata = 32'h0000_0000;
         if (sel_rom) begin
@@ -74,7 +90,7 @@ module simple_bus (
             m_rdata = rom_rdata;
         end else if (sel_sram) begin
             m_ready = sram_ready;
-            m_rdata = sram_rdata;
+            m_rdata = sram_rdata[(sram_lane * 32) +: 32];
         end else if (sel_npu_wrapper) begin
             m_ready = npu_wrapper_ready;
             m_rdata = npu_wrapper_rdata;

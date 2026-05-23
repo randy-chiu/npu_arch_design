@@ -11,6 +11,7 @@ module soc_top (
 
     output logic [31:0] sim_status
 );
+    `include "soc_v0_addr.svh"
     logic        rom_req;
     logic        rom_we;
     logic [31:0] rom_addr;
@@ -19,10 +20,10 @@ module soc_top (
     logic        rom_ready;
 
     logic        sram_req;
-    logic        sram_we;
+    logic [SOC_SRAM_CPU_LANES-1:0] sram_we;
     logic [31:0] sram_addr;
-    logic [31:0] sram_wdata;
-    logic [31:0] sram_rdata;
+    logic [SOC_SRAM_CPU_DATA_WIDTH_BITS-1:0] sram_wdata;
+    logic [SOC_SRAM_CPU_DATA_WIDTH_BITS-1:0] sram_rdata;
     logic        sram_ready;
 
     logic        npu_wrapper_req;
@@ -39,7 +40,9 @@ module soc_top (
     logic [31:0] test_rdata;
     logic        test_ready;
 
-    simple_bus u_bus (
+    simple_bus #(
+        .SRAM_CPU_LANES(SOC_SRAM_CPU_LANES)
+    ) u_bus (
         .m_req(cpu_req),
         .m_we(cpu_we),
         .m_addr(cpu_addr),
@@ -82,7 +85,10 @@ module soc_top (
         .ready(rom_ready)
     );
 
-    simple_sram u_sram (
+    simple_sram #(
+        .CPU_LANES(SOC_SRAM_CPU_LANES),
+        .NPU_LANES(SOC_NPU_SRAM_LANES)
+    ) u_sram (
         .clk(clk),
         .rst_n(rst_n),
         .req(sram_req),
@@ -92,14 +98,16 @@ module soc_top (
         .rdata(sram_rdata),
         .ready(sram_ready),
         .npu_req(1'b0),
-        .npu_we(1'b0),
+        .npu_we('0),
         .npu_addr(32'h0000_0000),
-        .npu_wdata(32'h0000_0000),
+        .npu_wdata('0),
         .npu_rdata(),
         .npu_ready()
     );
 
-    npu_v0_opsched u_npu_wrapper (
+    npu_v0_opsched #(
+        .CORE_HOST_LANES(SOC_NPU_CORE_HOST_LANES)
+    ) u_npu_wrapper (
         .clk(clk),
         .rst_n(rst_n),
         .bus_req(npu_wrapper_req),
@@ -112,7 +120,7 @@ module soc_top (
         .sram_we(),
         .sram_addr(),
         .sram_wdata(),
-        .sram_rdata(32'h0000_0000),
+        .sram_rdata('0),
         .sram_ready(1'b0)
     );
 
