@@ -28,7 +28,7 @@ def main() -> None:
     entries.extend(bus_entries)
     mover_entries = _npu_data_mover_entries(spec.get("npu_data_mover", {}))
     entries.extend(mover_entries)
-    for name in ("boot_rom", "sram", "npu_wrapper", "uart", "test_status"):
+    for name in ("boot_rom", "sram", "npu_wrapper", "dma", "uart", "test_status"):
         region = memory_map[name]
         prefix = f"SOC_{name.upper()}"
         base = region["base"]

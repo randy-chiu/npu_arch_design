@@ -2414,3 +2414,67 @@ Next step:
 - Add a preload/copy engine or loader path that can drive all SRAM CPU lanes per
   cycle for ROM/flash-to-SRAM staging. That is the step expected to reduce CPU
   staging simulation time.
+
+## Session 49: Add ROM-To-SRAM DMA For Firmware Staging
+
+User clarified the CPU-bus-width question and approved adding a DMA. The goal
+was to reduce firmware staging time without changing PicoRV32's 32-bit ISA or
+the NPU job contract.
+
+Design:
+
+- Added `docs/design/soc_dma.md`.
+- DMA is a CPU-configured ROM-to-SRAM copy engine:
+  - CPU writes source ROM address, destination SRAM address, word count, and
+    start;
+  - DMA reads from a second packed boot-ROM read port;
+  - DMA writes up to `SOC_SRAM_CPU_LANES` words per cycle into the SRAM
+    CPU/preload port;
+  - CPU polls done.
+- This optimizes staging before NPU jobs. It does not change NPU wrapper/core
+  cycle counts.
+
+Implemented:
+
+- Added `SOC_DMA_BASE/SIZE/MASK` to `arch/configs/soc_v0.jsonc` and generated
+  headers.
+- Added `hw/soc/rtl/dma/soc_dma.sv`.
+- Extended `simple_bus` with a DMA MMIO target.
+- Extended `boot_rom` with a second packed DMA read port.
+- Reused the widened SRAM CPU/preload port through a mux in `soc_cpu_top`.
+- Added `dma_copy_words()` to firmware runtime and routed the existing
+  `copy_words()` helper through DMA.
+- Added `soc_dma.sv` to RTL simulation builds.
+- Updated SoC/perf docs to state that DMA staging is outside current
+  `PERF_JOB` timing.
+
+Validation:
+
+```text
+make soc-spec: PASS
+make soc-sim: PASS
+make cpu-soc-sim: PASS, 53 PERF_JOB records
+make test: PASS, 31 tests, 45.793s
+make perf-report: PASS
+build/perf/perf.json summary: jobs=53, workloads=7, total_cycles=63100
+```
+
+Observed CPU-controlled simulation finish time:
+
+```text
+before DMA: 39712785000 ps
+after DMA:   3765375000 ps
+```
+
+NPU job timing remains unchanged, as expected:
+
+```text
+real_mnist_cnn_fc1_full_k_stream_tile0: 58784 cycles
+```
+
+Next step:
+
+- Add DMA counters/error bits if we want the performance report to show staging
+  time explicitly.
+- Then return to NPU-side work: explicit data mover counters, overlap, and
+  scratchpad banking.

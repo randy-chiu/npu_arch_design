@@ -7,6 +7,7 @@ development work.
 | Document | Scope |
 | --- | --- |
 | `soc_architecture.md` | SoC top, memory map, bus, ROM/SRAM, NPU attachment |
+| `soc_dma.md` | SoC ROM-to-SRAM DMA/preload engine |
 | `npu_wrapper.md` | NPU wrapper, descriptor FSM, host windows, A2 data mover |
 | `npu_core.md` | NPU core memories, uop execution, matmul array, softmax path |
 | `software_hardware_flow.md` | compiler, assembler, firmware, descriptor ABI, CPU/NPU flow |

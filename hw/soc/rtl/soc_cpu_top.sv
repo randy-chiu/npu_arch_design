@@ -33,6 +33,22 @@ module soc_cpu_top (
     logic [31:0] npu_wrapper_rdata;
     logic        npu_wrapper_ready;
 
+    logic        dma_req;
+    logic        dma_we;
+    logic [11:0] dma_addr;
+    logic [31:0] dma_wdata;
+    logic [31:0] dma_rdata;
+    logic        dma_ready;
+    logic        dma_rom_req;
+    logic [31:0] dma_rom_addr;
+    logic [SOC_SRAM_CPU_DATA_WIDTH_BITS-1:0] dma_rom_rdata;
+    logic        dma_rom_ready;
+    logic        dma_sram_req;
+    logic [SOC_SRAM_CPU_LANES-1:0] dma_sram_we;
+    logic [31:0] dma_sram_addr;
+    logic [SOC_SRAM_CPU_DATA_WIDTH_BITS-1:0] dma_sram_wdata;
+    logic        dma_sram_ready;
+
     logic        npu_sram_req;
     logic [SOC_NPU_SRAM_LANES-1:0] npu_sram_we;
     logic [31:0] npu_sram_addr;
@@ -46,6 +62,11 @@ module soc_cpu_top (
     logic [31:0] test_wdata;
     logic [31:0] test_rdata;
     logic        test_ready;
+
+    logic        sram_req_mux;
+    logic [SOC_SRAM_CPU_LANES-1:0] sram_we_mux;
+    logic [31:0] sram_addr_mux;
+    logic [SOC_SRAM_CPU_DATA_WIDTH_BITS-1:0] sram_wdata_mux;
 
     picorv32_native_cpu u_cpu (
         .clk(clk),
@@ -86,6 +107,12 @@ module soc_cpu_top (
         .npu_wrapper_wdata(npu_wrapper_wdata),
         .npu_wrapper_rdata(npu_wrapper_rdata),
         .npu_wrapper_ready(npu_wrapper_ready),
+        .dma_req(dma_req),
+        .dma_we(dma_we),
+        .dma_addr(dma_addr),
+        .dma_wdata(dma_wdata),
+        .dma_rdata(dma_rdata),
+        .dma_ready(dma_ready),
         .test_req(test_req),
         .test_we(test_we),
         .test_addr(test_addr),
@@ -96,7 +123,8 @@ module soc_cpu_top (
 
     boot_rom #(
         .WORDS(SOC_BOOT_ROM_SIZE_BYTES / 4),
-        .INIT_HEX("build/firmware/soc_cpu_smoke.hex")
+        .INIT_HEX("build/firmware/soc_cpu_smoke.hex"),
+        .DMA_LANES(SOC_SRAM_CPU_LANES)
     ) u_boot_rom (
         .clk(clk),
         .req(rom_req),
@@ -104,8 +132,18 @@ module soc_cpu_top (
         .addr(rom_addr),
         .wdata(rom_wdata),
         .rdata(rom_rdata),
-        .ready(rom_ready)
+        .ready(rom_ready),
+        .dma_req(dma_rom_req),
+        .dma_addr(dma_rom_addr),
+        .dma_rdata(dma_rom_rdata),
+        .dma_ready(dma_rom_ready)
     );
+
+    assign sram_req_mux = dma_sram_req ? dma_sram_req : sram_req;
+    assign sram_we_mux = dma_sram_req ? dma_sram_we : sram_we;
+    assign sram_addr_mux = dma_sram_req ? dma_sram_addr : sram_addr;
+    assign sram_wdata_mux = dma_sram_req ? dma_sram_wdata : sram_wdata;
+    assign dma_sram_ready = dma_sram_req && sram_ready;
 
     simple_sram #(
         .WORDS(SOC_SRAM_SIZE_BYTES / 4),
@@ -114,10 +152,10 @@ module soc_cpu_top (
     ) u_sram (
         .clk(clk),
         .rst_n(rst_n),
-        .req(sram_req),
-        .we(sram_we),
-        .addr(sram_addr),
-        .wdata(sram_wdata),
+        .req(sram_req_mux),
+        .we(sram_we_mux),
+        .addr(sram_addr_mux),
+        .wdata(sram_wdata_mux),
         .rdata(sram_rdata),
         .ready(sram_ready),
         .npu_req(npu_sram_req),
@@ -126,6 +164,28 @@ module soc_cpu_top (
         .npu_wdata(npu_sram_wdata),
         .npu_rdata(npu_sram_rdata),
         .npu_ready(npu_sram_ready)
+    );
+
+    soc_dma #(
+        .LANES(SOC_SRAM_CPU_LANES)
+    ) u_dma (
+        .clk(clk),
+        .rst_n(rst_n),
+        .bus_req(dma_req),
+        .bus_we(dma_we),
+        .bus_addr(dma_addr),
+        .bus_wdata(dma_wdata),
+        .bus_rdata(dma_rdata),
+        .bus_ready(dma_ready),
+        .rom_req(dma_rom_req),
+        .rom_addr(dma_rom_addr),
+        .rom_rdata(dma_rom_rdata),
+        .rom_ready(dma_rom_ready),
+        .sram_req(dma_sram_req),
+        .sram_we(dma_sram_we),
+        .sram_addr(dma_sram_addr),
+        .sram_wdata(dma_sram_wdata),
+        .sram_ready(dma_sram_ready)
     );
 
     npu_v0_opsched #(

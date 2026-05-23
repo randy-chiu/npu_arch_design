@@ -33,6 +33,7 @@ Current CPU-controlled top:
 | `simple_bus` | `hw/soc/rtl/bus/simple_bus.sv` | Address decode and single-master routing |
 | `boot_rom` | `hw/soc/rtl/mem/boot_rom.sv` | Read-only firmware image for simulation |
 | `simple_sram` | `hw/soc/rtl/mem/simple_sram.sv` | CPU data memory plus independent NPU port |
+| `soc_dma` | `hw/soc/rtl/dma/soc_dma.sv` | CPU-configured ROM-to-SRAM staging DMA |
 | `npu_v0_opsched` | `hw/npu_wrapper/rtl/npu_v0_opsched.sv` | CPU-visible NPU wrapper |
 | `test_status` | `hw/soc/rtl/debug/test_status.sv` | Simulation pass/fail register |
 
@@ -57,6 +58,7 @@ Current regions:
 | NPU wrapper | `0x1000_0000` - `0x1000_0fff` | CPU | NPU control/status/register windows |
 | UART | `0x2000_0000` - `0x2000_0fff` | reserved | Not implemented |
 | Test status | `0x3000_0000` - `0x3000_000f` | CPU | Simulation pass/fail |
+| DMA | `0x4000_0000` - `0x4000_0fff` | CPU | ROM-to-SRAM staging DMA |
 
 Important detail: `simple_bus` subtracts region bases for ROM/SRAM local
 addresses. The NPU wrapper receives only `m_addr[11:0]` as its local register
@@ -146,6 +148,13 @@ This image currently contains the whole smoke firmware. In a more realistic
 system, boot ROM would contain a smaller loader that fetches code/data from
 external storage into SRAM/DRAM.
 
+The current boot ROM also exposes a second packed DMA read port. This is an
+idealized simulation shortcut so the CPU can continue fetching instructions
+while the DMA stages generated arrays into SRAM.
+
+当前 boot ROM 还暴露第二个 packed DMA read port。这是仿真简化，用来让 CPU 继续
+取指，同时 DMA 将生成数组搬到 SRAM。
+
 ### SRAM
 
 `simple_sram` has two ports:
@@ -173,6 +182,15 @@ CPU
 
 The CPU does not write tensors directly into the NPU core in the main firmware
 path. It stages data in SRAM, builds a descriptor, and starts the wrapper.
+
+Large generated arrays are now staged with `soc_dma` instead of scalar
+PicoRV32 copy loops. Firmware configures source ROM address, destination SRAM
+address, word count, and start; the DMA writes up to `SOC_SRAM_CPU_LANES` words
+per cycle into the SRAM CPU/preload port.
+
+大规模生成数组现在通过 `soc_dma` staging，而不是 PicoRV32 逐 word copy loop。
+Firmware 配置 ROM 源地址、SRAM 目标地址、word 数和 start；DMA 每拍最多向 SRAM
+CPU/preload port 写入 `SOC_SRAM_CPU_LANES` 个 word。
 
 Legacy debug windows still exist under the NPU wrapper register space for older
 `soc-sim` tests. The firmware-controlled path should use descriptor/SRAM launch.
@@ -202,6 +220,7 @@ driven by firmware, not by direct testbench pokes into the NPU.
 - ROM is simulation firmware storage, not a real boot flow.
 - SRAM has no realistic latency, arbitration, or banking.
 - NPU SRAM port bypasses the CPU bus and does not model contention.
+- DMA has an ideal second boot-ROM read port and only a simple SRAM-port mux.
 - PicoRV32 itself remains a 32-bit scalar bus master; the wider SRAM CPU port is
   only useful for scalar lane mapping today and for a future preload/copy
   engine.
@@ -214,8 +233,7 @@ driven by firmware, not by direct testbench pokes into the NPU.
 Near-term SoC work should support A2 without overbuilding:
 
 - add explicit data mover counters and optional debug registers;
-- add a preload/copy engine that drives multiple SRAM CPU lanes per cycle for
-  ROM/flash-to-SRAM staging;
+- add DMA counters and error bits;
 - model SRAM bandwidth and later bank conflicts;
 - keep descriptor ABI stable while the internal data mover changes;
 - decide when IRQ replaces polling in the firmware loop.

@@ -11,6 +11,7 @@
 | `architecture.md` | 当前 NPU SoC 架构、计算逻辑、CPU/NPU 软件硬件交互协议 |
 | `design/README.md` | 当前活跃模块级设计文档索引 |
 | `design/soc_architecture.md` | SoC 顶层、memory map、bus、ROM/SRAM、NPU 接入方式的详细设计 |
+| `design/soc_dma.md` | SoC ROM-to-SRAM DMA/preload engine 设计 |
 | `design/npu_wrapper.md` | NPU wrapper、descriptor FSM、core host window、A2 data mover 的详细设计 |
 | `design/npu_core.md` | NPU core、内部 memory、uop 执行、matmul array、softmax 路径的详细设计 |
 | `design/software_hardware_flow.md` | compiler/assembler/firmware/descriptor/wrapper/core 的软硬件交互流程 |

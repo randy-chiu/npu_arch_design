@@ -47,9 +47,12 @@ End condition:
 wrapper reaches DESC_DONE and PERF_JOB is printed
 ```
 
-Current measured interval starts at NPU launch, not at CPU input staging. CPU
-copying tensors/programs into SRAM and checking outputs are outside the current
+Current measured interval starts at NPU launch, not at CPU/DMA input staging.
+Copying tensors/programs into SRAM and checking outputs are outside the current
 cycle report.
+
+当前测量区间从 NPU launch 开始，不包含 CPU/DMA input staging。tensor/program
+搬到 SRAM 以及 firmware 检查输出都不在当前 `PERF_JOB` cycle 统计内。
 
 ## 4. Sampled Signals
 
@@ -140,6 +143,15 @@ simulation testbench, not timestamp events emitted by synthesizable RTL logic.
 They are valid for bring-up and bottleneck classification, but they are not yet
 CPU-readable hardware counters.
 
+The SoC now has a ROM-to-SRAM DMA for firmware staging. This reduces
+CPU-controlled simulation finish time, but it does not change the NPU job
+cycle counts above because those jobs are timed only after firmware starts the
+NPU wrapper.
+
+SoC 当前已有 ROM-to-SRAM DMA 用于 firmware staging。它会降低 CPU-controlled
+simulation 的整体 finish time，但不会改变上面的 NPU job cycle，因为这些 job 只从
+firmware 启动 NPU wrapper 后开始计时。
+
 ## 5. Current JSON Shape
 
 Each job has:
@@ -219,6 +231,7 @@ setup cycle、stall cycle 和搬运/计算 overlap 仍是后续工作。
 ## 9. Known Limitations
 
 - CPU staging/check work is not measured.
+- DMA staging work is not measured yet.
 - CPU polling is modeled as one synthetic wait span.
 - Data mover lane is reconstructed, not from independent data mover counters.
 - SRAM `ready`/stall cycles are not separated.

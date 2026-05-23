@@ -11,6 +11,8 @@ void npu_start(void);
 void npu_wait_done(void);
 uint32_t npu_status(void);
 
+void dma_copy_words(uint32_t *dst, const uint32_t *src, uint32_t len);
+
 void test_status_pass(void);
 void test_status_fail(void);
 void test_status_fail_code(uint32_t code);

@@ -29,6 +29,13 @@ module simple_bus #(
     input  logic [31:0] npu_wrapper_rdata,
     input  logic        npu_wrapper_ready,
 
+    output logic        dma_req,
+    output logic        dma_we,
+    output logic [11:0] dma_addr,
+    output logic [31:0] dma_wdata,
+    input  logic [31:0] dma_rdata,
+    input  logic        dma_ready,
+
     output logic        test_req,
     output logic        test_we,
     output logic [3:0]  test_addr,
@@ -41,6 +48,7 @@ module simple_bus #(
     logic sel_rom;
     logic sel_sram;
     logic sel_npu_wrapper;
+    logic sel_dma;
     logic sel_test;
     logic [31:0] sram_local_addr;
     logic [31:0] sram_lane;
@@ -49,6 +57,7 @@ module simple_bus #(
     assign sel_rom = ((m_addr & SOC_BOOT_ROM_MASK) == SOC_BOOT_ROM_BASE);
     assign sel_sram = ((m_addr & SOC_SRAM_MASK) == SOC_SRAM_BASE);
     assign sel_npu_wrapper = ((m_addr & SOC_NPU_WRAPPER_MASK) == SOC_NPU_WRAPPER_BASE);
+    assign sel_dma = ((m_addr & SOC_DMA_MASK) == SOC_DMA_BASE);
     assign sel_test = ((m_addr & SOC_TEST_STATUS_MASK) == SOC_TEST_STATUS_BASE);
 
     assign rom_req = m_req && sel_rom;
@@ -65,6 +74,11 @@ module simple_bus #(
     assign npu_wrapper_we = m_we;
     assign npu_wrapper_addr = m_addr[11:0];
     assign npu_wrapper_wdata = m_wdata;
+
+    assign dma_req = m_req && sel_dma;
+    assign dma_we = m_we;
+    assign dma_addr = m_addr[11:0];
+    assign dma_wdata = m_wdata;
 
     assign test_req = m_req && sel_test;
     assign test_we = m_we;
@@ -94,6 +108,9 @@ module simple_bus #(
         end else if (sel_npu_wrapper) begin
             m_ready = npu_wrapper_ready;
             m_rdata = npu_wrapper_rdata;
+        end else if (sel_dma) begin
+            m_ready = dma_ready;
+            m_rdata = dma_rdata;
         end else if (sel_test) begin
             m_ready = test_ready;
             m_rdata = test_rdata;

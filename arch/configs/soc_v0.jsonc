@@ -45,6 +45,11 @@
       "size_bytes": 4096,
       "description": "CPU-visible NPU wrapper MMIO window"
     },
+    "dma": {
+      "base": 1073741824,
+      "size_bytes": 4096,
+      "description": "CPU-configured simulation DMA for ROM/flash-to-SRAM staging. The first implementation reads the boot ROM image and writes the wide SRAM CPU/preload port."
+    },
     "uart": {
       "base": 536870912,
       "size_bytes": 4096,

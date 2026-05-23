@@ -73,6 +73,7 @@ soc-sim: rtl-fixtures soc-spec npu-wrapper-spec
 		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
 		hw/soc/rtl/bus/simple_bus.sv \
+		hw/soc/rtl/dma/soc_dma.sv \
 		hw/soc/rtl/mem/boot_rom.sv \
 		hw/soc/rtl/mem/simple_sram.sv \
 		hw/soc/rtl/debug/test_status.sv \
@@ -90,6 +91,7 @@ cpu-soc-sim: firmware-smoke
 		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
 		hw/soc/rtl/bus/simple_bus.sv \
+		hw/soc/rtl/dma/soc_dma.sv \
 		hw/soc/rtl/mem/boot_rom.sv \
 		hw/soc/rtl/mem/simple_sram.sv \
 		hw/soc/rtl/debug/test_status.sv \
@@ -107,6 +109,7 @@ perf-report: firmware-smoke
 		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
 		hw/soc/rtl/bus/simple_bus.sv \
+		hw/soc/rtl/dma/soc_dma.sv \
 		hw/soc/rtl/mem/boot_rom.sv \
 		hw/soc/rtl/mem/simple_sram.sv \
 		hw/soc/rtl/debug/test_status.sv \

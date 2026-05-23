@@ -33,6 +33,13 @@ module soc_top (
     logic [31:0] npu_wrapper_rdata;
     logic        npu_wrapper_ready;
 
+    logic        dma_req;
+    logic        dma_we;
+    logic [11:0] dma_addr;
+    logic [31:0] dma_wdata;
+    logic [31:0] dma_rdata;
+    logic        dma_ready;
+
     logic        test_req;
     logic        test_we;
     logic [3:0]  test_addr;
@@ -67,6 +74,12 @@ module soc_top (
         .npu_wrapper_wdata(npu_wrapper_wdata),
         .npu_wrapper_rdata(npu_wrapper_rdata),
         .npu_wrapper_ready(npu_wrapper_ready),
+        .dma_req(dma_req),
+        .dma_we(dma_we),
+        .dma_addr(dma_addr),
+        .dma_wdata(dma_wdata),
+        .dma_rdata(dma_rdata),
+        .dma_ready(dma_ready),
         .test_req(test_req),
         .test_we(test_we),
         .test_addr(test_addr),
@@ -75,14 +88,20 @@ module soc_top (
         .test_ready(test_ready)
     );
 
-    boot_rom u_boot_rom (
+    boot_rom #(
+        .DMA_LANES(SOC_SRAM_CPU_LANES)
+    ) u_boot_rom (
         .clk(clk),
         .req(rom_req),
         .we(rom_we),
         .addr(rom_addr),
         .wdata(rom_wdata),
         .rdata(rom_rdata),
-        .ready(rom_ready)
+        .ready(rom_ready),
+        .dma_req(1'b0),
+        .dma_addr(32'h0000_0000),
+        .dma_rdata(),
+        .dma_ready()
     );
 
     simple_sram #(
@@ -123,6 +142,9 @@ module soc_top (
         .sram_rdata('0),
         .sram_ready(1'b0)
     );
+
+    assign dma_rdata = 32'h0000_0000;
+    assign dma_ready = dma_req;
 
     test_status u_test_status (
         .clk(clk),

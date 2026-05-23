@@ -53,9 +53,7 @@ static uint32_t ptr32(const void *ptr)
 
 static void copy_words(uint32_t *dst, const uint32_t *src, uint32_t len)
 {
-    for (uint32_t i = 0; i < len; ++i) {
-        dst[i] = src[i];
-    }
+    dma_copy_words(dst, src, len);
 }
 
 static int check_words(const uint32_t *actual, const uint32_t *expected, uint32_t len, uint32_t fail_base)
