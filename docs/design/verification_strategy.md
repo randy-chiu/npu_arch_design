@@ -106,9 +106,10 @@ small synthetic log.
 ## 8. Current Baselines
 
 After A1 matmul array, A2 structural data mover, 4-lane core host interface,
-`WORDS_PER_CYCLE=4` NPU-side SRAM/data-mover/core-host movement, grayscale
-digit fixtures, real MNIST CNN `fc2` SoC smoke, the first real `fc1` SoC tile
-smoke, and one full `fc1` single-N-tile K-stream SoC smoke:
+`WORDS_PER_CYCLE=4` NPU-side SRAM/data-mover/core-host movement, SoC DMA
+staging, explicit data mover counters, K-streaming A/B ping-pong overlap,
+grayscale digit fixtures, real MNIST CNN `fc2` SoC smoke, the first real `fc1`
+SoC tile smoke, and full `fc1` 16-output-N-tile K-stream SoC coverage:
 
 ```text
 make test        PASS, 31 tests
@@ -118,11 +119,26 @@ matmul core matmul cycles: 10
 softmax total cycles: 30
 digits_linear_classifier: 16 jobs, 1296 cycles
 real_mnist_cnn_fc1_tile0: 1 job, 81 cycles
-real_mnist_cnn_fc1_k_stream_smoke: 1 job, 236 cycles
-real_mnist_cnn_fc1_full_k_stream_tile0: 1 job, 58784 cycles
+real_mnist_cnn_fc1_k_stream_smoke: 1 job, 185 cycles
+real_mnist_cnn_fc1_full_k_stream_layer: 16 jobs, 627472 cycles
 real_mnist_cnn_fc2: 32 jobs, 2592 cycles
-perf summary: 53 jobs, 7 workloads, 63100 total cycles
+perf summary: 68 jobs, 7 workloads, 631737 total cycles
 ```
+
+Current explicit data mover counters for one full `fc1` K-stream output N tile:
+
+```text
+data_mover.transfer_cycles: 36884
+data_mover.words: 147536
+data_mover.read_words: 147472
+data_mover.write_words: 64
+core.matmul cycles: 11520
+```
+
+The full FC1 single-N-tile total cycle count dropped from 58784 to 39217 after
+K-streaming A/B ping-pong overlap. The data mover words and core matmul cycles
+stay stable, which is the intended proof that the change overlaps movement with
+compute rather than skipping work.
 
 The full `fc1` K-stream smoke verifies one complete output N tile:
 
@@ -132,7 +148,8 @@ k_chunks = 1152
 ```
 
 完整 `fc1` K-stream smoke 验证的是一个完整 output N tile，而不是完整 128 输出通道的
-`fc1` layer。完整 layer 仍需要 16 个 output N-tile jobs 以及 bias/ReLU 处理。
+`fc1` layer。当前 CPU-controlled SoC smoke 已经进一步运行 16 个 output N-tile
+K-stream jobs，覆盖完整 quantized `fc1` matmul layer；bias/ReLU 仍是下一步。
 
 When a change intentionally modifies timing, update docs and explain whether
 the change is functional RTL behavior or report/model accounting.
@@ -141,6 +158,10 @@ the change is functional RTL behavior or report/model accounting.
 
 Near-term verification gaps:
 
+- ping-pong overlap regression assertion is covered in
+  `test/rtl/test_perf_report.py`: the full `fc1` synthetic PERF_JOB remains
+  below the old 58784-cycle serial baseline while `data_mover.words` and
+  `core.matmul` stay stable;
 - unit test for `npu_v0_data_mover` edge cases: zero words, one word, multiple
   words, store direction;
 - perf regression assertions for expected lane names and key counters;

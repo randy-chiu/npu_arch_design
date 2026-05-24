@@ -32,7 +32,8 @@ module npu_v0_opsched #(
         DESC_WRITE_OUTPUT,
         DESC_DONE,
         DESC_CONFIG_ACC,
-        DESC_DISABLE_ACC
+        DESC_DISABLE_ACC,
+        DESC_CONFIG_NEXT_BANK
     } desc_state_t;
 
     logic        start_pulse;
@@ -47,6 +48,8 @@ module npu_v0_opsched #(
     logic [3:0]  desc_idx;
     logic [7:0]  transfer_idx;
     logic [15:0] stream_chunk_idx;
+    logic [1:0]  prefetch_phase;
+    logic        core_done_seen;
 
     logic [31:0] job_op_type;
     logic [31:0] job_program_addr;
@@ -85,12 +88,22 @@ module npu_v0_opsched #(
     logic [CORE_HOST_LANES-1:0] mover_host_we;
     logic [11:0] mover_host_addr;
     logic [(CORE_HOST_LANES*32)-1:0] mover_host_wdata;
+    logic        mover_perf_active;
+    logic        mover_perf_setup;
+    logic        mover_perf_transfer;
+    logic        mover_perf_stall;
+    logic [31:0] mover_perf_words;
     logic        job_is_k_stream;
+    logic        k_stream_has_next;
+    logic        k_stream_next_bank;
 
     localparam int DATA_MOVER_WORDS_PER_CYCLE = SOC_NPU_DATA_MOVER_WORDS_PER_CYCLE;
     localparam int DATA_MOVER_SETUP_CYCLES = SOC_NPU_DATA_MOVER_SETUP_CYCLES;
 
     assign job_is_k_stream = (job_op_type == SOC_NPU_JOB_OP_MATMUL_K_STREAM);
+    assign k_stream_has_next =
+        job_is_k_stream && (stream_chunk_idx + 16'h0001 < job_k_chunks[15:0]);
+    assign k_stream_next_bank = ~stream_chunk_idx[0];
 
     assign bus_ready = bus_req;
     assign npu_host_addr = (desc_state == DESC_IDLE) ? legacy_host_addr : desc_host_addr;
@@ -139,7 +152,12 @@ module npu_v0_opsched #(
         .host_we(mover_host_we),
         .host_addr(mover_host_addr),
         .host_wdata(mover_host_wdata),
-        .host_rdata(npu_host_rdata)
+        .host_rdata(npu_host_rdata),
+        .perf_active(mover_perf_active),
+        .perf_setup(mover_perf_setup),
+        .perf_transfer(mover_perf_transfer),
+        .perf_stall(mover_perf_stall),
+        .perf_words(mover_perf_words)
     );
 
     always @* begin
@@ -263,10 +281,39 @@ module npu_v0_opsched #(
                 desc_host_addr = 12'h500;
                 desc_host_wdata = 32'h0000_0003;
             end
+            DESC_CONFIG_NEXT_BANK: begin
+                desc_host_we = 1'b1;
+                desc_host_addr = 12'h500;
+                desc_host_wdata = 32'h0000_0001 |
+                    (k_stream_next_bank ? 32'h0000_000c : 32'h0000_0000);
+            end
             DESC_DISABLE_ACC: begin
                 desc_host_we = 1'b1;
                 desc_host_addr = 12'h500;
                 desc_host_wdata = 32'h0000_0000;
+            end
+            DESC_WAIT_CORE: begin
+                if (k_stream_has_next && prefetch_phase != 2'd2) begin
+                    mover_start = !mover_busy;
+                    mover_words = (prefetch_phase == 2'd0) ?
+                        job_input0_words[7:0] : job_input1_words[7:0];
+                    if (prefetch_phase == 2'd0) begin
+                        mover_sram_base = job_input0_addr +
+                            (((stream_chunk_idx + 16'h0001) * job_input0_words[15:0]) << 2);
+                        mover_host_base = 12'h000;
+                    end else begin
+                        mover_sram_base = job_input1_addr +
+                            (((stream_chunk_idx + 16'h0001) * job_input1_words[15:0]) << 2);
+                        mover_host_base = 12'h100;
+                    end
+                    sram_req = mover_sram_req;
+                    sram_we = mover_sram_we;
+                    sram_addr = mover_sram_addr;
+                    sram_wdata = mover_sram_wdata;
+                    desc_host_we = |mover_host_we;
+                    desc_host_addr = mover_host_addr;
+                    desc_host_wdata = 32'h0000_0000;
+                end
             end
             default: begin
             end
@@ -316,6 +363,8 @@ module npu_v0_opsched #(
             desc_idx <= 4'h0;
             transfer_idx <= 8'h0;
             stream_chunk_idx <= 16'h0000;
+            prefetch_phase <= 2'd0;
+            core_done_seen <= 1'b0;
             job_op_type <= 32'h0000_0000;
             job_program_addr <= 32'h0000_0000;
             job_program_words <= 32'h0000_0000;
@@ -356,6 +405,8 @@ module npu_v0_opsched #(
                         desc_idx <= 4'h0;
                         transfer_idx <= 8'h0;
                         stream_chunk_idx <= 16'h0000;
+                        prefetch_phase <= 2'd0;
+                        core_done_seen <= 1'b0;
                         desc_state <= DESC_FETCH_PROGRAM;
                     end else begin
                         desc_idx <= desc_idx + 1'b1;
@@ -374,6 +425,9 @@ module npu_v0_opsched #(
                 end
                 DESC_CONFIG_ACC: begin
                     desc_state <= DESC_FETCH_INPUT0;
+                end
+                DESC_CONFIG_NEXT_BANK: begin
+                    desc_state <= DESC_WAIT_CORE;
                 end
                 DESC_DISABLE_ACC: begin
                     desc_state <= DESC_DONE;
@@ -396,14 +450,35 @@ module npu_v0_opsched #(
                 end
                 DESC_START_CORE: begin
                     start_pulse <= 1'b1;
-                    desc_state <= DESC_WAIT_CORE;
+                    core_done_seen <= 1'b0;
+                    prefetch_phase <= 2'd0;
+                    if (k_stream_has_next) begin
+                        desc_state <= DESC_CONFIG_NEXT_BANK;
+                    end else begin
+                        desc_state <= DESC_WAIT_CORE;
+                    end
                 end
                 DESC_WAIT_CORE: begin
                     if (npu_done) begin
+                        core_done_seen <= 1'b1;
+                    end
+                    if (k_stream_has_next && mover_complete) begin
+                        if (prefetch_phase == 2'd0) begin
+                            prefetch_phase <= 2'd1;
+                        end else if (prefetch_phase == 2'd1) begin
+                            prefetch_phase <= 2'd2;
+                        end
+                    end
+                    if ((core_done_seen || npu_done) &&
+                        (!k_stream_has_next ||
+                         prefetch_phase == 2'd2 ||
+                         (prefetch_phase == 2'd1 && mover_complete))) begin
                         transfer_idx <= 8'h0;
-                        if (job_is_k_stream && stream_chunk_idx + 16'h0001 < job_k_chunks[15:0]) begin
+                        core_done_seen <= 1'b0;
+                        prefetch_phase <= 2'd0;
+                        if (k_stream_has_next) begin
                             stream_chunk_idx <= stream_chunk_idx + 16'h0001;
-                            desc_state <= DESC_FETCH_INPUT0;
+                            desc_state <= DESC_START_CORE;
                         end else begin
                             desc_state <= DESC_WRITE_OUTPUT;
                         end
@@ -443,6 +518,8 @@ module npu_v0_opsched #(
                                 desc_idx <= 4'h0;
                                 transfer_idx <= 8'h0;
                                 stream_chunk_idx <= 16'h0000;
+                                prefetch_phase <= 2'd0;
+                                core_done_seen <= 1'b0;
                                 desc_state <= DESC_READ;
                             end else begin
                                 start_pulse <= 1'b1;

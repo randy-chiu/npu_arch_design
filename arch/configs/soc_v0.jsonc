@@ -11,7 +11,7 @@
   "cpu": {
     "core": "picorv32",
     "reset_vector": 0,
-    "stack_pointer": 4194288
+    "stack_pointer": 12582704
   },
 
   "bus": {
@@ -32,13 +32,13 @@
   "memory_map": {
     "boot_rom": {
       "base": 0,
-      "size_bytes": 2097152,
-      "description": "Simulation boot ROM. Current bring-up stores the full firmware image here, including start code, driver, main, and generated test data. This is intentionally oversized for full FC1 K-stream bring-up; a later flash/loader flow should avoid requiring all software to fit in ROM."
+      "size_bytes": 8388608,
+      "description": "Simulation boot ROM. Current bring-up stores the full firmware image here, including start code, driver, main, and generated test data. This is intentionally oversized for full FC1 16-N-tile K-stream bring-up; a later flash/loader flow should avoid requiring all software to fit in ROM."
     },
     "sram": {
-      "base": 2097152,
-      "size_bytes": 2097152,
-      "description": "CPU writable data memory for stack, locals, descriptors, and staged NPU buffers. This is intentionally oversized for full FC1 single-N-tile K-stream bring-up."
+      "base": 8388608,
+      "size_bytes": 4194304,
+      "description": "CPU writable data memory for stack, locals, descriptors, and staged NPU buffers. This is intentionally oversized for full FC1 16-N-tile K-stream bring-up."
     },
     "npu_wrapper": {
       "base": 268435456,

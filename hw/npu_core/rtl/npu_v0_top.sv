@@ -22,7 +22,9 @@ module npu_v0_top #(
     } state_t;
 
     logic signed [7:0]  dram_a [0:RTL_MATMUL_ELEMS-1];
+    logic signed [7:0]  dram_a_bank1 [0:RTL_MATMUL_ELEMS-1];
     logic signed [7:0]  dram_b [0:RTL_MATMUL_ELEMS-1];
+    logic signed [7:0]  dram_b_bank1 [0:RTL_MATMUL_ELEMS-1];
     logic signed [31:0] dram_c [0:RTL_MATMUL_ELEMS-1];
     logic signed [7:0]  dram_x [0:RTL_SOFTMAX_LEN-1];
     logic [7:0]         dram_y [0:RTL_SOFTMAX_LEN-1];
@@ -44,6 +46,9 @@ module npu_v0_top #(
     logic matmul_start;
     logic matmul_done;
     logic matmul_accumulate_enable;
+    logic host_write_bank;
+    logic compute_bank_select;
+    logic compute_bank_active;
     logic [(RTL_MATMUL_ELEMS*8)-1:0]  matmul_a_flat;
     logic [(RTL_MATMUL_ELEMS*8)-1:0]  matmul_b_flat;
     logic [(RTL_MATMUL_ELEMS*32)-1:0] matmul_result_flat;
@@ -85,7 +90,9 @@ module npu_v0_top #(
         if (!rst_n) begin
             for (idx = 0; idx < RTL_MATMUL_ELEMS; idx = idx + 1) begin
                 dram_a[idx] <= '0;
+                dram_a_bank1[idx] <= '0;
                 dram_b[idx] <= '0;
+                dram_b_bank1[idx] <= '0;
                 dram_c[idx] <= '0;
                 spad_a[idx] <= '0;
                 spad_b[idx] <= '0;
@@ -100,20 +107,32 @@ module npu_v0_top #(
                 instr_mem[idx] <= '0;
             end
             matmul_accumulate_enable <= 1'b0;
-        end else if (state == ST_IDLE) begin
+            host_write_bank <= 1'b0;
+            compute_bank_select <= 1'b0;
+        end else begin
             for (host_lane_idx = 0; host_lane_idx < CORE_HOST_LANES; host_lane_idx = host_lane_idx + 1) begin
                 if (host_we[host_lane_idx]) begin
                     host_lane_addr = host_addr + host_lane_idx[11:0];
                     if (host_lane_addr < 12'h040) begin
-                        dram_a[host_lane_addr[5:0]] <= host_wdata[(host_lane_idx * 32) +: 8];
+                        if (host_write_bank) begin
+                            dram_a_bank1[host_lane_addr[5:0]] <= host_wdata[(host_lane_idx * 32) +: 8];
+                        end else begin
+                            dram_a[host_lane_addr[5:0]] <= host_wdata[(host_lane_idx * 32) +: 8];
+                        end
                     end else if (host_lane_addr >= 12'h100 && host_lane_addr < 12'h140) begin
-                        dram_b[host_lane_addr[5:0]] <= host_wdata[(host_lane_idx * 32) +: 8];
-                    end else if (host_lane_addr >= 12'h300 && host_lane_addr < 12'h308) begin
+                        if (host_write_bank) begin
+                            dram_b_bank1[host_lane_addr[5:0]] <= host_wdata[(host_lane_idx * 32) +: 8];
+                        end else begin
+                            dram_b[host_lane_addr[5:0]] <= host_wdata[(host_lane_idx * 32) +: 8];
+                        end
+                    end else if (state == ST_IDLE && host_lane_addr >= 12'h300 && host_lane_addr < 12'h308) begin
                         dram_x[host_lane_addr[2:0]] <= host_wdata[(host_lane_idx * 32) +: 8];
-                    end else if (host_lane_addr >= 12'h400 && host_lane_addr < 12'h410) begin
+                    end else if (state == ST_IDLE && host_lane_addr >= 12'h400 && host_lane_addr < 12'h410) begin
                         instr_mem[host_lane_addr[3:0]] <= host_wdata[(host_lane_idx * 32) +: 32];
                     end else if (host_lane_addr == 12'h500) begin
                         matmul_accumulate_enable <= host_wdata[(host_lane_idx * 32)];
+                        host_write_bank <= host_wdata[(host_lane_idx * 32) + 2];
+                        compute_bank_select <= host_wdata[(host_lane_idx * 32) + 3];
                         if (host_wdata[(host_lane_idx * 32) + 1]) begin
                             for (idx = 0; idx < RTL_MATMUL_ELEMS; idx = idx + 1) begin
                                 acc_buf[idx] <= '0;
@@ -146,12 +165,14 @@ module npu_v0_top #(
             matmul_start <= 1'b0;
             scalar_max <= '0;
             scalar_sum <= '0;
+            compute_bank_active <= 1'b0;
         end else begin
             done <= 1'b0;
             matmul_start <= 1'b0;
             case (state)
                 ST_IDLE: begin
                     if (start) begin
+                        compute_bank_active <= compute_bank_select;
                         pc <= 4'h0;
                         state <= ST_FETCH;
                     end
@@ -228,9 +249,17 @@ module npu_v0_top #(
         integer l;
         begin
             if (tensor == TENSOR_A && buffer == BUF_SPAD_A) begin
-                for (l = 0; l < RTL_MATMUL_ELEMS; l = l + 1) spad_a[l] = dram_a[l];
+                if (compute_bank_active) begin
+                    for (l = 0; l < RTL_MATMUL_ELEMS; l = l + 1) spad_a[l] = dram_a_bank1[l];
+                end else begin
+                    for (l = 0; l < RTL_MATMUL_ELEMS; l = l + 1) spad_a[l] = dram_a[l];
+                end
             end else if (tensor == TENSOR_B && buffer == BUF_SPAD_B) begin
-                for (l = 0; l < RTL_MATMUL_ELEMS; l = l + 1) spad_b[l] = dram_b[l];
+                if (compute_bank_active) begin
+                    for (l = 0; l < RTL_MATMUL_ELEMS; l = l + 1) spad_b[l] = dram_b_bank1[l];
+                end else begin
+                    for (l = 0; l < RTL_MATMUL_ELEMS; l = l + 1) spad_b[l] = dram_b[l];
+                end
             end else if (tensor == TENSOR_X && buffer == BUF_VEC) begin
                 for (l = 0; l < RTL_SOFTMAX_LEN; l = l + 1) vec_buf[l] = {{8{dram_x[l][7]}}, dram_x[l]};
             end

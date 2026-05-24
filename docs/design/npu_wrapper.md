@@ -146,7 +146,8 @@ Current behavior:
 - no setup latency;
 - lane grouping is contiguous from the base word address;
 - no stalls from `sram_ready`;
-- no independent counters inside the module yet.
+- no cumulative counters inside the module yet; per-cycle perf signals are
+  exposed for testbench aggregation.
 
 当前行为：
 
@@ -154,7 +155,36 @@ Current behavior:
 - 没有 setup latency；
 - lane 分组从 base word 地址开始连续映射；
 - 还没有 `sram_ready` stall 处理；
-- data mover 内部还没有独立计数器。
+- data mover 内部还没有累积计数器；当前暴露 per-cycle perf signals，由
+  testbench 聚合。
+
+Perf visibility:
+
+```text
+perf_active
+perf_setup
+perf_transfer
+perf_stall
+perf_words
+```
+
+`soc_cpu_tb` samples these signals and emits a `data_mover` object in each
+`PERF_JOB`. This is the explicit data mover counter source; the older
+`movement` object remains for SRAM/core-host compatibility counters.
+
+Perf 可观测性：
+
+```text
+perf_active
+perf_setup
+perf_transfer
+perf_stall
+perf_words
+```
+
+`soc_cpu_tb` 会采样这些信号，并在每个 `PERF_JOB` 中输出 `data_mover` 对象。这是
+显式 data mover counter 来源；旧的 `movement` 对象保留为 SRAM/core-host 兼容
+计数。
 
 The wrapper drives the data mover during:
 
@@ -348,7 +378,42 @@ bit 2: !busy
 Firmware currently polls `done_latched`. IRQ registers exist but are not wired
 into a CPU interrupt flow yet.
 
-## 10. Error Handling
+## 10. K-Streaming Ping-Pong Control
+
+For `SOC_NPU_JOB_OP_MATMUL_K_STREAM`, the wrapper now overlaps prefetch of the
+next K chunk with core execution of the current K chunk.
+
+The NPU core control host register at `0x500` is used as:
+
+| Bit | Meaning |
+| ---: | --- |
+| 0 | `matmul_accumulate_enable` |
+| 1 | `clear_accumulator` pulse |
+| 2 | `host_write_bank` for A/B host-window writes |
+| 3 | `compute_bank_select`, latched by the core at launch |
+
+The first chunk is loaded into bank 0. After launching chunk `i`, the wrapper
+configures both `host_write_bank` and the next `compute_bank_select` to the
+opposite bank, then uses the data mover to fetch chunk `i+1` while the core is
+active. The wrapper advances to the next chunk only after both conditions hold:
+
+```text
+core_done_seen && next_prefetch_done
+```
+
+`acc_buf` is not banked. It remains the single resident accumulator for all K
+chunks in the descriptor.
+
+Current measured result for the full FC1 single-N-tile smoke:
+
+```text
+before ping-pong: 58784 total cycles
+after ping-pong:  39217 total cycles
+data_mover.words: 147536 unchanged
+core.matmul:      11520 unchanged
+```
+
+## 11. Error Handling
 
 Current wrapper error handling is minimal:
 
@@ -360,12 +425,14 @@ Current wrapper error handling is minimal:
 
 These should be added before larger programs or untrusted descriptors are used.
 
-## 11. Next Work
+## 12. Next Work
 
 Immediate next work:
 
-1. Add explicit data mover counters to `PERF_JOB`.
-2. Drive the report `Data mover` lane from real data mover state/counters.
+1. Add a perf regression assertion for the K-streaming ping-pong result.
+2. Render overlapped prefetch and compute spans more explicitly in the perf
+   report timeline.
 3. Consider nonzero setup/stall modeling after the current `4 words/cycle`
    path is stable.
-4. Add scratchpad banking and overlap work.
+4. Add richer bank/stall counters if they become necessary for the next
+   scheduling decision.

@@ -13,6 +13,7 @@ development work.
 | `software_hardware_flow.md` | compiler, assembler, firmware, descriptor ABI, CPU/NPU flow |
 | `quantization_strategy.md` | selected-layer quantization boundary, scale policy, bias handling |
 | `fc1_k_streaming_matmul.md` | K-axis streaming matmul contract for real MNIST CNN `fc1` |
+| `k_stream_ping_pong_buffer.md` | K-streaming ping-pong buffer overlap design |
 | `performance_instrumentation.md` | cycle counters, PERF_JOB schema, report lanes, perf-counter strategy |
 | `verification_strategy.md` | verification layers, current baselines, gaps, and test update rules |
 

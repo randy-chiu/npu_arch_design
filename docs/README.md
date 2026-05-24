@@ -17,6 +17,7 @@
 | `design/software_hardware_flow.md` | compiler/assembler/firmware/descriptor/wrapper/core 的软硬件交互流程 |
 | `design/quantization_strategy.md` | 当前 selected-layer int8 量化边界、scale 策略、bias 处理和后续升级路径 |
 | `design/fc1_k_streaming_matmul.md` | 真实 MNIST CNN `fc1` 的 K 轴 streaming matmul 软硬件合同 |
+| `design/k_stream_ping_pong_buffer.md` | K-streaming ping-pong buffer overlap 设计、当前串行瓶颈和时序图 |
 | `design/performance_instrumentation.md` | cycle 级 perf 计数、PERF_JOB、HTML timeline、counter 下沉策略 |
 | `design/verification_strategy.md` | 当前测试层级、验证入口、coverage 边界和下一步测试计划 |
 | `digits_classifier_workload.md` | 下一阶段真实 workload：8x8 手写数字分类闭环 |

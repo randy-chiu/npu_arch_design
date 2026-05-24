@@ -61,6 +61,7 @@ def add_movement_estimates(job: dict) -> dict:
     measured_host_window_cycles = int(movement.get("core_host_write_cycles", 0)) + int(
         movement.get("core_host_read_cycles", 0)
     )
+    data_mover = job.get("data_mover", {})
     ideal_burst_cycles = ceil_div(total_words, PHASE0_DATA_MOVER_WORDS_PER_CYCLE)
     conservative_burst_cycles = sum(
         ceil_div(value, PHASE0_DATA_MOVER_WORDS_PER_CYCLE)
@@ -72,6 +73,8 @@ def add_movement_estimates(job: dict) -> dict:
         "total_words": total_words,
         "measured_sram_cycles": measured_sram_cycles,
         "measured_host_window_cycles": measured_host_window_cycles,
+        "measured_data_mover_transfer_cycles": int(data_mover.get("transfer_cycles", 0)),
+        "measured_data_mover_words": int(data_mover.get("words", 0)),
         "model_words_per_cycle": PHASE0_DATA_MOVER_WORDS_PER_CYCLE,
         "model_setup_cycles_per_segment": PHASE0_DATA_MOVER_SETUP_CYCLES,
         "ideal_burst_cycles": ideal_burst_cycles,
@@ -133,6 +136,7 @@ def add_timeline(job: dict) -> dict:
         cursor += value
 
     data_mover_spans = []
+    wrapper_span_by_label = {}
     movement_labels = {
         "Program fetch": "Program load",
         "Input0 fetch": "Input0 load",
@@ -140,6 +144,7 @@ def add_timeline(job: dict) -> dict:
         "Output writeback": "Output store",
     }
     for span in wrapper_spans:
+        wrapper_span_by_label[span["label"]] = span
         label = movement_labels.get(span["label"])
         if label is not None:
             data_mover_spans.append(
@@ -151,6 +156,28 @@ def add_timeline(job: dict) -> dict:
                     "kind": "work",
                 }
             )
+    if job.get("name") == "matmul_k_stream":
+        wait_span = wrapper_span_by_label.get("Wait for core")
+        if wait_span is not None:
+            initial_read_cycles = sum(
+                int(job.get("wrapper", {}).get(key, 0))
+                for key in ("fetch_program", "fetch_input0", "fetch_input1")
+            )
+            prefetch_cycles = max(
+                0,
+                int(job.get("data_mover", {}).get("read_cycles", 0)) - initial_read_cycles,
+            )
+            overlap_cycles = min(prefetch_cycles, int(wait_span["cycles"]))
+            if overlap_cycles > 0:
+                data_mover_spans.append(
+                    {
+                        "label": "K prefetch overlap",
+                        "start": wait_span["start"],
+                        "end": wait_span["start"] + overlap_cycles,
+                        "cycles": overlap_cycles,
+                        "kind": "work",
+                    }
+                )
 
     job["timeline"] = [
         {
@@ -187,6 +214,7 @@ def parse_perf_log(path: Path) -> dict:
     if not jobs:
         raise ValueError(f"no {PERF_PREFIX.strip()} records found in {path}")
     workloads = infer_workloads(jobs)
+    highlights = build_highlights(workloads, jobs)
     return {
         "schema": "npu_perf_report_v0",
         "source_log": str(path),
@@ -196,9 +224,52 @@ def parse_perf_log(path: Path) -> dict:
             "total_cycles": sum(job["total_cycles"] for job in jobs),
             "max_job_cycles": max(job["total_cycles"] for job in jobs),
         },
+        "highlights": highlights,
         "workloads": workloads,
         "jobs": jobs,
     }
+
+
+def build_highlights(workloads: list[dict], jobs: list[dict]) -> list[dict]:
+    highlights = []
+    workload_by_name = {workload["name"]: workload for workload in workloads}
+    fc1_full = workload_by_name.get("real_mnist_cnn_fc1_full_k_stream_layer")
+    if not fc1_full:
+        fc1_full = workload_by_name.get("real_mnist_cnn_fc1_full_k_stream_tile0")
+    if fc1_full:
+        old_serial_baseline = 58784 * int(fc1_full.get("jobs", 1))
+        total_cycles = int(fc1_full["total_cycles"])
+        cycles_saved = old_serial_baseline - total_cycles
+        improvement_pct = (cycles_saved * 100.0 / old_serial_baseline) if old_serial_baseline else 0.0
+        overlap_cycles = 0
+        for job in jobs:
+            if job.get("id") in fc1_full.get("job_ids", []):
+                for lane in job.get("timeline", []):
+                    if lane.get("module") == "Data mover":
+                        for span in lane.get("spans", []):
+                            if span.get("label") == "K prefetch overlap":
+                                overlap_cycles += int(span.get("cycles", 0))
+        highlights.append(
+            {
+                "title": "FC1 K-stream ping-pong overlap",
+                "workload": fc1_full["name"],
+                "before_cycles": old_serial_baseline,
+                "after_cycles": total_cycles,
+                "cycles_saved": cycles_saved,
+                "improvement_pct": round(improvement_pct, 1),
+                "overlap_cycles": overlap_cycles,
+                "core_matmul_cycles": int(fc1_full.get("core_matmul_cycles", 0)),
+                "data_mover_words": int(fc1_full.get("data_mover", {}).get("words", 0)),
+                "data_mover_transfer_cycles": int(
+                    fc1_full.get("data_mover", {}).get("transfer_cycles", 0)
+                ),
+                "summary": (
+                    "A/B ping-pong overlaps K-chunk prefetch with core execution; "
+                    "moved words and core matmul cycles stay stable."
+                ),
+            }
+        )
+    return highlights
 
 
 def infer_workloads(jobs: list[dict]) -> list[dict]:
@@ -234,7 +305,6 @@ def infer_workloads(jobs: list[dict]) -> list[dict]:
 
     real_mnist_fc1_tile_count = 1
     real_mnist_fc1_k_stream_count = 1
-    real_mnist_fc1_full_k_stream_count = 1
     real_mnist_fc2_tile_count = 32
     if cursor + real_mnist_fc1_tile_count + real_mnist_fc2_tile_count <= len(jobs):
         candidate = jobs[cursor : cursor + real_mnist_fc1_tile_count]
@@ -274,25 +344,35 @@ def infer_workloads(jobs: list[dict]) -> list[dict]:
             )
             cursor += real_mnist_fc1_k_stream_count
 
-    if cursor + real_mnist_fc1_full_k_stream_count + real_mnist_fc2_tile_count <= len(jobs):
-        candidate = jobs[cursor : cursor + real_mnist_fc1_full_k_stream_count]
-        if all(job.get("name") == "matmul_k_stream" for job in candidate):
+    if cursor + 1 + real_mnist_fc2_tile_count <= len(jobs):
+        remaining_before_fc2 = len(jobs) - cursor - real_mnist_fc2_tile_count
+        candidate = jobs[cursor : cursor + remaining_before_fc2]
+        if remaining_before_fc2 > 0 and all(job.get("name") == "matmul_k_stream" for job in candidate):
+            workload_name = (
+                "real_mnist_cnn_fc1_full_k_stream_layer"
+                if remaining_before_fc2 == 16
+                else "real_mnist_cnn_fc1_full_k_stream_tile0"
+            )
             workloads.append(
                 _workload_summary(
-                    "real_mnist_cnn_fc1_full_k_stream_tile0",
+                    workload_name,
                     candidate,
-                    "model_layer_tile",
+                    "model_layer",
                     metadata={
                         "input": "test/external/mnist/t10k-images-idx3-ubyte.gz sample 0",
                         "graph": "test/graphs/real_mnist_cnn.json",
                         "weights": "test/external/mnist_cnn/mnist-cnn.safetensors",
-                        "tile_jobs": real_mnist_fc1_full_k_stream_count,
+                        "tile_jobs": remaining_before_fc2,
                         "k_chunks": 1152,
-                        "description": "Full quantized fc1 single N-tile K-streaming descriptor; validates 1152 K chunks accumulated inside one NPU job",
+                        "description": (
+                            "Full quantized fc1 layer across all 16 output N tiles"
+                            if remaining_before_fc2 == 16
+                            else "Full quantized fc1 single N-tile K-streaming descriptor; validates 1152 K chunks accumulated inside one NPU job"
+                        ),
                     },
                 )
             )
-            cursor += real_mnist_fc1_full_k_stream_count
+            cursor += remaining_before_fc2
 
     if cursor + real_mnist_fc2_tile_count <= len(jobs):
         candidate = jobs[cursor : cursor + real_mnist_fc2_tile_count]
@@ -325,12 +405,14 @@ def _workload_summary(
     metadata: dict | None = None,
 ) -> dict:
     movement_totals: dict[str, int] = {}
+    data_mover_totals: dict[str, int] = {}
     wrapper_totals: dict[str, int] = {}
     core_totals: dict[str, int] = {}
     for job in jobs:
         _accumulate_counter_dict(wrapper_totals, job.get("wrapper", {}))
         _accumulate_counter_dict(core_totals, job.get("core", {}))
         _accumulate_counter_dict(movement_totals, job.get("movement", {}))
+        _accumulate_counter_dict(data_mover_totals, job.get("data_mover", {}))
 
     total_cycles = sum(int(job["total_cycles"]) for job in jobs)
     core_matmul_cycles = int(core_totals.get("matmul", 0))
@@ -349,6 +431,7 @@ def _workload_summary(
         "wrapper": wrapper_totals,
         "core": core_totals,
         "movement": movement_totals,
+        "data_mover": data_mover_totals,
         "metadata": metadata or {},
     }
 
@@ -421,6 +504,36 @@ def write_html(report: dict, path: Path) -> None:
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 16px;
+    }}
+    .highlight {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--accent-2);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }}
+    .highlight-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }}
+    .highlight-item {{
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      background: #fbfcfe;
+    }}
+    .highlight-item .label {{
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 4px;
+    }}
+    .highlight-item .value {{
+      font-size: 18px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
     }}
     .metric .value {{ font-size: 26px; font-weight: 700; margin-top: 8px; }}
     .grid {{ display: grid; gap: 16px; }}
@@ -624,6 +737,7 @@ def write_html(report: dict, path: Path) -> None:
       <div class="metric"><h2>Total Cycles</h2><div class="value">{report["summary"]["total_cycles"]}</div></div>
       <div class="metric"><h2>Max Job Cycles</h2><div class="value">{report["summary"]["max_job_cycles"]}</div></div>
     </section>
+    <section id="highlights"></section>
     <section class="job" id="workloads">
       <div class="job-head">
         <h2>Workload Summary</h2>
@@ -639,6 +753,7 @@ def write_html(report: dict, path: Path) -> None:
   <script>
     const jobs = {jobs_json};
     const workloads = {workloads_json};
+    const highlights = {json.dumps(report.get("highlights", []))};
     const colors = ["var(--accent)", "var(--accent-2)", "var(--accent-3)", "var(--accent-4)"];
     const timelineColors = {{
       "CPU firmware": "#7b61d1",
@@ -875,7 +990,30 @@ def write_html(report: dict, path: Path) -> None:
     }}
 
     const root = document.getElementById("jobs");
+    const highlightRoot = document.getElementById("highlights");
     const workloadRoot = document.getElementById("workloads");
+    if (highlights.length) {{
+      highlights.forEach((h) => {{
+        const section = document.createElement("article");
+        section.className = "highlight";
+        section.innerHTML = `
+          <div class="job-head">
+            <h2>${{h.title}}</h2>
+            <div class="subtle">${{h.workload}}</div>
+          </div>
+          <div class="subtle">${{h.summary}}</div>
+          <div class="highlight-grid">
+            <div class="highlight-item"><div class="label">Before</div><div class="value">${{h.before_cycles}} cycles</div></div>
+            <div class="highlight-item"><div class="label">After</div><div class="value">${{h.after_cycles}} cycles</div></div>
+            <div class="highlight-item"><div class="label">Saved</div><div class="value">${{h.cycles_saved}} cycles (${{h.improvement_pct}}%)</div></div>
+            <div class="highlight-item"><div class="label">Overlap</div><div class="value">${{h.overlap_cycles}} cycles</div></div>
+            <div class="highlight-item"><div class="label">Core matmul</div><div class="value">${{h.core_matmul_cycles}} cycles</div></div>
+            <div class="highlight-item"><div class="label">Moved words</div><div class="value">${{h.data_mover_words}}</div></div>
+          </div>
+        `;
+        highlightRoot.appendChild(section);
+      }});
+    }}
     if (workloads.length) {{
       const table = document.createElement("table");
       table.className = "workload-table";

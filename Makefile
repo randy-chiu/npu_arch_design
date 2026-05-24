@@ -9,7 +9,7 @@ RISCV_OBJCOPY ?= $(patsubst %-gcc,%-objcopy,$(RISCV_GCC))
 RISCV_OBJDUMP ?= $(patsubst %-gcc,%-objdump,$(RISCV_GCC))
 RISCV_CFLAGS := -march=rv32i -mabi=ilp32 -mcmodel=medlow -msmall-data-limit=0 -ffreestanding -fno-pic -nostdlib -nostartfiles -Os -Wall -Wextra
 RISCV_INCLUDES := -I build/soc -I build/npu_wrapper -I build/firmware -I sw/soc_cpu/runtime
-FIRMWARE_ROM_WORDS ?= 524288
+FIRMWARE_ROM_WORDS ?= 2097152
 
 validate-arch:
 	PYTHONPATH=$(PYTHONPATH) python -m npu_phase0.cli validate-arch --arch $(ARCH)

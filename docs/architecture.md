@@ -93,8 +93,8 @@ arch/configs/soc_v0.jsonc
 
 | Region | Address range | 用途 |
 | --- | --- | --- |
-| Boot ROM | `0x0000_0000` - `0x0000_7fff` | 当前仿真完整 firmware 镜像 |
-| SRAM | `0x0002_0000` - `0x0003_ffff` | stack、locals、descriptor、tensor/program buffers |
+| Boot ROM | `0x0000_0000` - `0x007f_ffff` | 当前仿真完整 firmware 镜像和生成的 smoke data |
+| SRAM | `0x0080_0000` - `0x00bf_ffff` | stack、locals、descriptor、tensor/program buffers |
 | NPU wrapper | `0x1000_0000` - `0x1000_0fff` | NPU 控制寄存器和 legacy debug windows |
 | UART | `0x2000_0000` - `0x2000_0fff` | 预留 |
 | Test status | `0x3000_0000` - `0x3000_000f` | 仿真 pass/fail |

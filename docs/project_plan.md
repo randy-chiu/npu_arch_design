@@ -77,9 +77,12 @@ Exit condition:
 ### W2: Real MNIST CNN Layer Mapping
 
 Status: `fc2` SoC RTL path implemented; `fc1` tool-level layer mapping, first
-SoC RTL tile checkpoint, and a multi-chunk K-streaming SoC smoke implemented.
-Full `fc1` SoC layer execution still requires compact staging or an external
-load path for full K streams.
+SoC RTL tile checkpoint, multi-chunk K-streaming SoC smoke, full single-N-tile
+`fc1` K-streaming SoC smoke, DMA staging, explicit data mover counters,
+K-streaming A/B ping-pong overlap, and full 16-output-N-tile `fc1` K-streaming
+SoC coverage are implemented. Next work is applying `fc1` bias/ReLU and feeding
+the NPU-produced `fc1_relu` into the existing `fc2` path instead of using the
+precomputed tool-side `fc1_relu`.
 
 Purpose:
 
@@ -100,9 +103,14 @@ Exit condition:
   arithmetic checkpoint;
 - `fc1` K-streaming smoke passes CPU-controlled SoC RTL with multiple K chunks
   accumulated inside one descriptor;
-- full `fc1` then passes CPU-controlled SoC RTL through an NPU-side K-streaming
-  contract, with conv/maxpool still CPU/tool side until a conv lowering plan is
-  chosen.
+- full single-N-tile `fc1` passes CPU-controlled SoC RTL through an NPU-side
+  K-streaming contract, with conv/maxpool still CPU/tool side until a conv
+  lowering plan is chosen;
+- K-streaming ping-pong overlap reduces full single-N-tile `fc1` total cycles
+  while preserving `data_mover.words` and `core.matmul` work.
+- full 16-output-N-tile `fc1` K-streaming layer passes CPU-controlled SoC RTL,
+  still with conv/maxpool on the CPU/tool side and `fc1` bias/ReLU as the next
+  integration step.
 
 ### W3: Retire Linear Digits Classifier
 

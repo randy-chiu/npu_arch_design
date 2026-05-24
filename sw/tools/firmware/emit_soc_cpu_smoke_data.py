@@ -211,22 +211,31 @@ def _append_real_mnist_cnn_fc1_full_k_stream_data(lines: list[str]) -> None:
 
     intermediates = forward_intermediates(images[sample_index], weights)
     npu_inputs = fc1_npu_inputs_from_flat(intermediates["flat"], weights)
-    plan = plan_matmul_k_stream(npu_inputs["A"], npu_inputs["W"], n_offset=0)
+    tile_n = 8
+    tile_count = npu_inputs["padded_columns"] // tile_n
+    plans = [
+        plan_matmul_k_stream(npu_inputs["A"], npu_inputs["W"], n_offset=tile * tile_n)
+        for tile in range(tile_count)
+    ]
+    first_plan = plans[0]
 
     lines.append("#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_ENABLED 1u")
     lines.append(f"#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_SAMPLE_INDEX {sample_index}u")
-    lines.append(f"#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_CHUNKS {plan['k_chunks']}u")
+    lines.append(f"#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_COUNT {tile_count}u")
+    lines.append(f"#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_CHUNKS {first_plan['k_chunks']}u")
     lines.append("#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS 64u")
-    lines.append(f"#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_N_OFFSET {plan['n_offset']}u")
+    lines.append(f"#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_REAL_COLUMNS {npu_inputs['real_columns']}u")
+    lines.append(f"#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_PADDED_COLUMNS {npu_inputs['padded_columns']}u")
     lines.append("")
 
-    _append_flat_array(lines, "real_mnist_cnn_fc1_full_k_stream_k_offsets", plan["k_offsets"], bits=32)
-    _append_2d_array(lines, "real_mnist_cnn_fc1_full_k_stream_a", plan["a_stream"], bits=8)
-    _append_2d_array(lines, "real_mnist_cnn_fc1_full_k_stream_b", plan["b_stream"], bits=8)
-    _append_flat_array(
+    _append_flat_array(lines, "real_mnist_cnn_fc1_full_k_stream_n_offsets", [plan["n_offset"] for plan in plans], bits=32)
+    _append_flat_array(lines, "real_mnist_cnn_fc1_full_k_stream_k_offsets", first_plan["k_offsets"], bits=32)
+    _append_2d_array(lines, "real_mnist_cnn_fc1_full_k_stream_a", first_plan["a_stream"], bits=8)
+    _append_3d_array(lines, "real_mnist_cnn_fc1_full_k_stream_b", [plan["b_stream"] for plan in plans], bits=8)
+    _append_2d_array(
         lines,
         "real_mnist_cnn_fc1_full_k_stream_expected_c",
-        _flatten(plan["expected_c"]),
+        [plan["expected_c"] for plan in plans],
         bits=32,
     )
 
@@ -287,6 +296,21 @@ def _append_2d_array(lines: list[str], symbol: str, values: list, bits: int) -> 
     mask = (1 << bits) - 1
     for row in flat_rows:
         lines.append("    {" + ", ".join(f"0x{(int(value) & mask):08x}u" for value in row) + "},")
+    lines.append("};")
+    lines.append("")
+
+
+def _append_3d_array(lines: list[str], symbol: str, values: list, bits: int) -> None:
+    flat_planes = [[_flatten(row) for row in plane] for plane in values]
+    rows = len(flat_planes[0])
+    cols = len(flat_planes[0][0])
+    mask = (1 << bits) - 1
+    lines.append(f"static const uint32_t {symbol}[{len(flat_planes)}][{rows}][{cols}] = {{")
+    for plane in flat_planes:
+        lines.append("    {")
+        for row in plane:
+            lines.append("        {" + ", ".join(f"0x{(int(value) & mask):08x}u" for value in row) + "},")
+        lines.append("    },")
     lines.append("};")
     lines.append("")
 

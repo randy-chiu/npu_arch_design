@@ -34,7 +34,7 @@ static uint32_t real_mnist_cnn_fc1_k_stream_c_sram[REAL_MNIST_CNN_FC1_K_STREAM_T
 #if REAL_MNIST_CNN_FC1_FULL_K_STREAM_ENABLED
 static uint32_t real_mnist_cnn_fc1_full_k_stream_a_sram[REAL_MNIST_CNN_FC1_FULL_K_STREAM_CHUNKS][REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS];
 static uint32_t real_mnist_cnn_fc1_full_k_stream_b_sram[REAL_MNIST_CNN_FC1_FULL_K_STREAM_CHUNKS][REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS];
-static uint32_t real_mnist_cnn_fc1_full_k_stream_c_sram[REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS];
+static uint32_t real_mnist_cnn_fc1_full_k_stream_c_sram[REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_COUNT][REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS];
 #endif
 
 #if REAL_MNIST_CNN_FC2_ENABLED
@@ -223,25 +223,33 @@ static int run_real_mnist_cnn_fc1_full_k_stream(void)
     for (uint32_t chunk = 0; chunk < REAL_MNIST_CNN_FC1_FULL_K_STREAM_CHUNKS; ++chunk) {
         copy_words(real_mnist_cnn_fc1_full_k_stream_a_sram[chunk], real_mnist_cnn_fc1_full_k_stream_a[chunk],
                    REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS);
-        copy_words(real_mnist_cnn_fc1_full_k_stream_b_sram[chunk], real_mnist_cnn_fc1_full_k_stream_b[chunk],
-                   REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS);
     }
 
-    job_desc.op_type = SOC_NPU_JOB_OP_MATMUL_K_STREAM;
-    job_desc.program_addr = ptr32(matmul_program_sram);
-    job_desc.program_words = MATMUL_PROGRAM_LEN;
-    job_desc.input0_addr = ptr32(real_mnist_cnn_fc1_full_k_stream_a_sram);
-    job_desc.input0_words = REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS;
-    job_desc.input1_addr = ptr32(real_mnist_cnn_fc1_full_k_stream_b_sram);
-    job_desc.input1_words = REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS;
-    job_desc.output_addr = ptr32(real_mnist_cnn_fc1_full_k_stream_c_sram);
-    job_desc.output_words = REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS;
-    job_desc.k_chunks = REAL_MNIST_CNN_FC1_FULL_K_STREAM_CHUNKS;
-    run_job();
+    for (uint32_t tile = 0; tile < REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_COUNT; ++tile) {
+        for (uint32_t chunk = 0; chunk < REAL_MNIST_CNN_FC1_FULL_K_STREAM_CHUNKS; ++chunk) {
+            copy_words(real_mnist_cnn_fc1_full_k_stream_b_sram[chunk],
+                       real_mnist_cnn_fc1_full_k_stream_b[tile][chunk],
+                       REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS);
+        }
 
-    if (!check_words(real_mnist_cnn_fc1_full_k_stream_c_sram, real_mnist_cnn_fc1_full_k_stream_expected_c,
-                     REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS, 0x900u)) {
-        return 0;
+        job_desc.op_type = SOC_NPU_JOB_OP_MATMUL_K_STREAM;
+        job_desc.program_addr = ptr32(matmul_program_sram);
+        job_desc.program_words = MATMUL_PROGRAM_LEN;
+        job_desc.input0_addr = ptr32(real_mnist_cnn_fc1_full_k_stream_a_sram);
+        job_desc.input0_words = REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS;
+        job_desc.input1_addr = ptr32(real_mnist_cnn_fc1_full_k_stream_b_sram);
+        job_desc.input1_words = REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS;
+        job_desc.output_addr = ptr32(real_mnist_cnn_fc1_full_k_stream_c_sram[tile]);
+        job_desc.output_words = REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS;
+        job_desc.k_chunks = REAL_MNIST_CNN_FC1_FULL_K_STREAM_CHUNKS;
+        run_job();
+
+        if (!check_words(real_mnist_cnn_fc1_full_k_stream_c_sram[tile],
+                         real_mnist_cnn_fc1_full_k_stream_expected_c[tile],
+                         REAL_MNIST_CNN_FC1_FULL_K_STREAM_TILE_WORDS,
+                         0x900u | ((tile & 0xfu) << 4))) {
+            return 0;
+        }
     }
     return 1;
 }

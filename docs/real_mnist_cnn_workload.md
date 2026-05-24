@@ -180,6 +180,12 @@ It verifies:
   `MATMUL_K_STREAM` descriptor with `k_chunks=1152`. Firmware copies the packed
   stream into enlarged simulation SRAM, the wrapper streams all K chunks, and
   the core keeps the partial sum resident in `acc_buf` until the final writeback;
+- CPU-controlled SoC RTL now also runs all 16 full `fc1` output N tiles. The
+  tool-side firmware data emitter plans `n_offset = 0, 8, ..., 120`; firmware
+  loops over the generated plans, launches 16 `MATMUL_K_STREAM` descriptors,
+  and checks each `8x8` output tile against the tool-generated expected C tile.
+  This verifies the full quantized `fc1` matmul layer, but bias/ReLU is still a
+  follow-up integration step;
 - CPU-controlled SoC RTL smoke runs the same `fc2` hardware-facing view for
   MNIST test sample 0:
   - firmware stages the precomputed quantized `fc1_relu` activation and
@@ -194,24 +200,40 @@ It verifies:
 ```text
 jobs: 53
 workloads: 7
-total_cycles: 63100
+total_cycles: 43482
 real_mnist_cnn_fc1_tile0: 1 job, 81 cycles
-real_mnist_cnn_fc1_k_stream_smoke: 1 job, 236 cycles
-real_mnist_cnn_fc1_full_k_stream_tile0: 1 job, 58784 cycles
+real_mnist_cnn_fc1_k_stream_smoke: 1 job, 185 cycles
+real_mnist_cnn_fc1_full_k_stream_tile0: 1 job, 39217 cycles
+real_mnist_cnn_fc2: 32 jobs, 2592 cycles
+```
+
+After extending full `fc1` from one output N tile to all 16 output N tiles,
+`make perf-report` reports:
+
+```text
+jobs: 68
+workloads: 7
+total_cycles: 631737
+real_mnist_cnn_fc1_tile0: 1 job, 81 cycles
+real_mnist_cnn_fc1_k_stream_smoke: 1 job, 185 cycles
+real_mnist_cnn_fc1_full_k_stream_layer: 16 jobs, 627472 cycles
 real_mnist_cnn_fc2: 32 jobs, 2592 cycles
 ```
 
 Next steps:
 
-1. extend the full `fc1` checkpoint from one N tile to all 16 output N tiles;
-2. add bias/ReLU handling after the `fc1` K-stream output tiles;
+1. add a perf regression assertion for the K-streaming ping-pong result:
+   transferred words and core matmul cycles should stay stable while full
+   single-N-tile total cycles remain below the old serial baseline;
+2. add bias/ReLU handling after the 16 `fc1` K-stream output tiles and feed the
+   resulting `fc1_relu` into the existing `fc2` path;
 3. replace the current oversized C/boot-ROM staging with a host preload,
    loader, or stride-based compact staging path.
-2. only after `fc1/fc2` are stable, decide whether convolution should be a
+4. only after `fc1/fc2` are stable, decide whether convolution should be a
    direct NPU op or lowered through `im2col -> matmul` tiles.
-3. move more of the original model's runtime preprocessing into firmware when
+5. move more of the original model's runtime preprocessing into firmware when
    the data movement and SRAM footprint are understood.
-4. after real MNIST CNN `fc1/fc2` SoC coverage is stable, retire the temporary
+6. after real MNIST CNN `fc1/fc2` SoC coverage is stable, retire the temporary
    8x8 linear digits classifier as a separate cleanup task instead of deleting
    only its image assets.
 

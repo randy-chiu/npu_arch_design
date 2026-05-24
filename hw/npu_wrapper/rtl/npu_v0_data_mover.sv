@@ -25,7 +25,13 @@ module npu_v0_data_mover #(
     output logic [LANES-1:0] host_we,
     output logic [11:0] host_addr,
     output logic [(LANES*32)-1:0] host_wdata,
-    input  logic [(LANES*32)-1:0] host_rdata
+    input  logic [(LANES*32)-1:0] host_rdata,
+
+    output logic        perf_active,
+    output logic        perf_setup,
+    output logic        perf_transfer,
+    output logic        perf_stall,
+    output logic [31:0] perf_words
 );
     initial begin
         if (WORDS_PER_CYCLE <= 0 || WORDS_PER_CYCLE > LANES) begin
@@ -45,6 +51,7 @@ module npu_v0_data_mover #(
     logic [SETUP_COUNT_WIDTH-1:0] setup_count;
     logic [LANES-1:0] active_lane_mask;
     integer lane_idx;
+    integer perf_lane_idx;
 
     assign setup_active = (SETUP_CYCLES > 0) && (start || setup_count != '0);
     assign active = (busy || start) && !setup_active;
@@ -69,6 +76,20 @@ module npu_v0_data_mover #(
         host_addr = host_base_addr + {4'h0, current_index};
         host_wdata = sram_rdata;
     end
+
+    always_comb begin
+        perf_words = 32'h0000_0000;
+        for (perf_lane_idx = 0; perf_lane_idx < LANES; perf_lane_idx = perf_lane_idx + 1) begin
+            if (active_lane_mask[perf_lane_idx]) begin
+                perf_words = perf_words + 1'b1;
+            end
+        end
+    end
+
+    assign perf_active = busy || start;
+    assign perf_setup = setup_active;
+    assign perf_transfer = active && (words != 8'h00);
+    assign perf_stall = 1'b0;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin

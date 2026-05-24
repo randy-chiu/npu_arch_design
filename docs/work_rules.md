@@ -232,3 +232,57 @@ Minimum expectation:
 - 问题定义、接口合同、时序行为、memory/buffer 划分、验证计划、限制和后续工作
   需要双语说明；
 - 代码符号、文件名、命令、寄存器名保持原始拼写。
+
+## 10. Performance Iteration Record Rule
+
+Every NPU performance or PPA optimization iteration must leave a reviewable
+record in the relevant design document. The goal is to make later architecture
+review possible without reconstructing the reasoning from patches and logs.
+
+Required content:
+
+- measured bottleneck or missing capability before the change;
+- design idea and why it should improve performance;
+- affected modules and interface/control changes;
+- expected perf impact and any expected tradeoff in area, power, verification,
+  or software complexity;
+- actual measured perf result after implementation;
+- commands used for verification;
+- whether the result came from real RTL behavior, testbench-side profiling, or
+  report/model accounting;
+- remaining gap and recommended next performance step.
+
+For changes that intentionally improve cycle count, also add or update a perf
+regression check where practical. The check should guard the intended
+invariant, for example:
+
+```text
+total cycles drops below the previous baseline
+data_mover.words remains stable
+core.matmul cycles remains stable
+```
+
+每次 NPU 性能或 PPA 优化迭代，都必须在对应设计文档中留下可复盘记录。目标是后续
+架构 review 时可以直接看到当时的问题、思路、收益和代价，而不是从 patch 和 log
+里反推。
+
+必须记录：
+
+- 优化前测到的瓶颈或缺失能力；
+- 设计改进思路，以及为什么它应该提升性能；
+- 影响的模块、接口和控制逻辑；
+- 预期性能收益，以及面积、功耗、验证、软件复杂度等代价；
+- 实现后的实测 perf 结果；
+- 使用的验证命令；
+- 该结果来自真实 RTL 行为、testbench-side profiling，还是 report/model
+  accounting；
+- 剩余 gap 和推荐的下一步性能优化。
+
+如果改动有意改善 cycle count，应尽量增加或更新 perf regression check。测试应守住
+真正的设计不变量，例如：
+
+```text
+total cycles 低于旧 baseline
+data_mover.words 保持稳定
+core.matmul cycles 保持稳定
+```

@@ -2478,3 +2478,366 @@ Next step:
   time explicitly.
 - Then return to NPU-side work: explicit data mover counters, overlap, and
   scratchpad banking.
+
+## Session 50: Add Explicit Data Mover Counters And Ping-Pong Design
+
+User asked to first implement explicit data mover counters, then write the
+K-streaming ping-pong buffer design document with current-problem explanation,
+overlap advantages, and diagrams.
+
+Implemented explicit data mover visibility:
+
+- `npu_v0_data_mover` now exposes per-cycle perf signals:
+  - `perf_active`;
+  - `perf_setup`;
+  - `perf_transfer`;
+  - `perf_stall`;
+  - `perf_words`.
+- `soc_cpu_tb` samples those signals and emits a new `data_mover` object in
+  every `PERF_JOB`.
+- The old `movement` object remains for compatibility and SRAM/core-host
+  counters.
+- `sw/tools/perf/report.py` now carries `data_mover` into job and workload
+  summaries and includes data mover measured values in movement estimates.
+- `test/rtl/test_perf_report.py` now covers the new JSON field.
+
+Measured full FC1 single-N-tile explicit data mover counters:
+
+```text
+real_mnist_cnn_fc1_full_k_stream_tile0:
+  total_cycles: 58784
+  data_mover.active_cycles: 36884
+  data_mover.transfer_cycles: 36884
+  data_mover.stall_cycles: 0
+  data_mover.words: 147536
+  data_mover.read_cycles: 36868
+  data_mover.write_cycles: 16
+  data_mover.read_words: 147472
+  data_mover.write_words: 64
+  core.matmul cycles: 11520
+```
+
+Design documentation:
+
+- Added `docs/design/k_stream_ping_pong_buffer.md`.
+- The document explains the current serial K-streaming problem:
+  `load_A + load_B + compute`.
+- It includes ASCII timelines for:
+  - current serial execution;
+  - proposed ping-pong overlap;
+  - A/B bank ownership;
+  - wrapper barrier conditions.
+- It defines the first RTL scope:
+  - keep physical `8x8x8` MAC tile;
+  - keep one resident `acc_buf`;
+  - add A/B ping-pong banks;
+  - overlap prefetch of chunk `i+1` with compute of chunk `i`;
+  - keep normal matmul/softmax behavior unchanged.
+
+Docs updated:
+
+- `docs/design/performance_instrumentation.md`;
+- `docs/design/npu_wrapper.md`;
+- `docs/design/README.md`;
+- `docs/README.md`.
+
+Validation:
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report -v: PASS, 6 tests
+make npu-core-sim: PASS
+make soc-sim: PASS
+make cpu-soc-sim: PASS, 53 PERF_JOB records
+make perf-report: PASS
+build/perf/perf.json summary: jobs=53, workloads=7, total_cycles=63100
+make test: PASS, 31 tests, 44.071s
+```
+
+Next step:
+
+- Start coding K-streaming ping-pong overlap according to
+  `docs/design/k_stream_ping_pong_buffer.md`.
+
+### Resume Snapshot: 2026-05-23
+
+Stop point:
+
+- DMA staging is implemented and verified.
+- Explicit data mover counters are implemented and verified.
+- K-streaming ping-pong buffer overlap design is written, but RTL implementation
+  has not started.
+
+Current verified commands:
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report -v: PASS, 6 tests
+make npu-core-sim: PASS
+make soc-sim: PASS
+make cpu-soc-sim: PASS, 53 PERF_JOB records
+make perf-report: PASS
+build/perf/perf.json summary: jobs=53, workloads=7, total_cycles=63100
+make test: PASS, 31 tests, 44.071s
+```
+
+Current key performance facts:
+
+```text
+CPU SoC sim finish time after DMA: 3765375000 ps
+real_mnist_cnn_fc1_full_k_stream_tile0 total_cycles: 58784
+data_mover.transfer_cycles: 36884
+data_mover.words: 147536
+data_mover.read_words: 147472
+data_mover.write_words: 64
+core.matmul cycles: 11520
+```
+
+Important interpretation:
+
+- DMA reduced firmware staging wall-clock simulation time.
+- NPU job cycles are unchanged by DMA because DMA staging happens before
+  `PERF_JOB` starts.
+- Explicit data mover counters now prove that full FC1 K-streaming still spends
+  a large serial block in movement before/around compute.
+- Next optimization should attack overlap, not bus width again.
+
+Primary design doc for tomorrow:
+
+```text
+docs/design/k_stream_ping_pong_buffer.md
+```
+
+Tomorrow's recommended task order:
+
+1. Re-read `docs/design/k_stream_ping_pong_buffer.md`.
+2. Inspect current core host window and buffer layout in
+   `hw/npu_core/rtl/npu_v0_top.sv`.
+3. Decide the bank-select ABI:
+   recommended first version is a core control register, not host address bits.
+4. Add A/B bank storage in the core while keeping the normal matmul/softmax path
+   unchanged.
+5. Update wrapper K-stream FSM so prefetch of chunk `i+1` can run while core
+   computes chunk `i`.
+6. Run `make npu-core-sim`, `make soc-sim`, `make cpu-soc-sim`, `make test`, and
+   `make perf-report`.
+
+Expected success signal after overlap:
+
+```text
+data_mover.words stays roughly unchanged
+core.matmul cycles stays roughly unchanged
+real_mnist_cnn_fc1_full_k_stream_tile0 total_cycles drops
+```
+
+Do not start with:
+
+- full 16-N-tile `fc1` layer expansion;
+- conv lowering;
+- changing `WORDS_PER_CYCLE` beyond 4;
+- replacing PicoRV32;
+- DMA counters, unless staging visibility becomes the immediate question.
+
+## Session 51: Implement K-Streaming Ping-Pong Overlap
+
+User asked whether the current NPU internal buffers already have banks and how
+bank ownership should be understood. Decision:
+
+- current `dram_a`, `dram_b`, `spad_a`, `spad_b`, and `acc_buf` were simple
+  register arrays with no bank concept;
+- a bank is an access-partitioning mechanism, not a new data type;
+- bank ownership is temporal:
+  - core owns the compute bank for the current chunk;
+  - data mover owns the load bank for the next chunk;
+  - ownership swaps at the chunk boundary after compute and prefetch are both
+    complete;
+- first implementation should bank only A/B staging and keep `acc_buf` single,
+  because K-streaming requires one resident accumulator.
+
+Implemented:
+
+- Added bank principle and ownership explanation to
+  `docs/design/k_stream_ping_pong_buffer.md`.
+- Added A/B bank 1 in `hw/npu_core/rtl/npu_v0_top.sv`:
+  - bank 0 keeps historical names `dram_a` / `dram_b`;
+  - bank 1 uses `dram_a_bank1` / `dram_b_bank1`;
+  - `spad_a`, `spad_b`, and `acc_buf` remain single-copy.
+- Extended core control register `0x500`:
+  - bit 0: `matmul_accumulate_enable`;
+  - bit 1: `clear_accumulator` pulse;
+  - bit 2: `host_write_bank`;
+  - bit 3: `compute_bank_select`.
+- The core latches `compute_bank_select` at launch so wrapper can switch
+  `host_write_bank` for prefetch while the current program is executing.
+- Updated `hw/npu_wrapper/rtl/npu_v0_opsched.sv` K-streaming flow:
+  - chunk 0 is prefetched normally;
+  - after launching chunk `i`, wrapper configures the next bank;
+  - wrapper prefetches chunk `i+1` during `DESC_WAIT_CORE`;
+  - wrapper advances only after `core_done_seen && next_prefetch_done`.
+
+Validation:
+
+```text
+make npu-core-sim: PASS
+make soc-sim: PASS
+make cpu-soc-sim: PASS, 53 PERF_JOB records
+make perf-report: PASS
+make test: PASS, 31 tests, 48.635s
+```
+
+Measured result:
+
+```text
+real_mnist_cnn_fc1_full_k_stream_tile0 total_cycles:
+  before: 58784
+  after:  39217
+
+data_mover.transfer_cycles: 36884 unchanged
+data_mover.words:           147536 unchanged
+data_mover.read_words:      147472 unchanged
+data_mover.write_words:     64 unchanged
+core.matmul cycles:         11520 unchanged
+perf summary total_cycles:  43482
+```
+
+Interpretation:
+
+- Functional output remains correct.
+- The optimization did not reduce transferred data or MAC work.
+- The cycle reduction comes from overlapping A/B chunk movement with core
+  execution.
+
+Next recommended work:
+
+1. Add a perf regression assertion for this overlap result.
+2. Improve perf timeline rendering so prefetch and compute overlap is visible
+   as overlapping spans, not only aggregate counters.
+3. Then extend real MNIST CNN `fc1` from one output N tile to all 16 N tiles and
+   add bias/ReLU handling.
+
+## Session 52: Add Performance Iteration Rule And Ping-Pong Regression
+
+User requested a standing rule: every NPU performance optimization iteration
+must document the design idea and measured perf benefit for later review.
+
+Updated:
+
+- Added `Performance Iteration Record Rule` to `docs/work_rules.md`.
+- The rule requires each NPU perf/PPA iteration to document:
+  - measured bottleneck before the change;
+  - design idea and expected improvement;
+  - affected modules and interface/control changes;
+  - expected tradeoffs;
+  - actual measured perf result;
+  - verification commands;
+  - whether the result is real RTL behavior, testbench-side profiling, or
+    report/model accounting;
+  - remaining gap and next performance step.
+
+Also added the first ping-pong perf regression assertion:
+
+- `test/rtl/test_perf_report.py` now models the full `fc1` single-N-tile
+  K-stream PERF_JOB with the ping-pong result:
+  - total cycles: 39217, below old serial baseline 58784;
+  - `core_matmul_cycles`: 11520 stable;
+  - `data_mover.transfer_cycles`: 36884 stable;
+  - `data_mover.words`: 147536 stable;
+  - `data_mover.read_words`: 147472 stable;
+  - `data_mover.write_words`: 64 stable.
+
+Validation:
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report -v: PASS, 6 tests
+```
+
+Next recommended work:
+
+- Improve perf timeline rendering so overlapped prefetch and compute are visible
+  as overlapping spans, not only aggregate counters.
+
+Follow-up completed in the same session:
+
+- `sw/tools/perf/report.py` now adds a `K prefetch overlap` span to the Data
+  mover timeline for `matmul_k_stream` jobs.
+- The span is placed inside the wrapper `wait_core` interval, starting at the
+  same point as the NPU core lane. This makes ping-pong overlap visible in the
+  HTML/JSON timeline instead of only in aggregate counters.
+- `test/rtl/test_perf_report.py` asserts that the full `fc1` K-stream synthetic
+  PERF_JOB includes this overlap span.
+
+Validation:
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report -v: PASS, 6 tests
+make test: PASS, 31 tests, 45.544s
+```
+
+## Session 53: Extend Real MNIST CNN FC1 To 16 Output N Tiles
+
+User approved extending `fc1` from one output N tile to all 16 output N tiles
+and asked where the split should live.
+
+Decision:
+
+- The split belongs in the tool-side firmware data emitter, not primarily in
+  `main.c`.
+- `sw/tools/firmware/emit_soc_cpu_smoke_data.py` plans
+  `n_offset = 0, 8, ..., 120` with `plan_matmul_k_stream()`.
+- Firmware should only loop over generated tile plans, stage the streams, launch
+  descriptors, and check expected output tiles.
+
+Implemented:
+
+- `emit_soc_cpu_smoke_data.py` now generates 16 full `fc1` K-stream N-tile
+  plans.
+- `main.c` now runs 16 `SOC_NPU_JOB_OP_MATMUL_K_STREAM` descriptors and checks
+  every `8x8` output tile.
+- The A stream is staged once because it is shared across N tiles; each B stream
+  is staged per N tile.
+- The first attempted compact `uint8_t` ROM representation was functionally
+  reasonable but made PicoRV32 unpacking too slow in simulation. It was replaced
+  with `uint32_t` generated arrays so existing DMA staging can be used.
+- `arch/configs/soc_v0.jsonc` now temporarily uses an 8 MiB simulation boot ROM
+  and 4 MiB SRAM at `0x0080_0000` to hold the full-layer generated smoke data
+  and staging buffers.
+- `Makefile` now emits `soc_cpu_smoke.hex` with 2097152 words for the 8 MiB
+  boot ROM.
+- `sw/tools/perf/report.py` groups the 16 K-stream jobs as
+  `real_mnist_cnn_fc1_full_k_stream_layer`.
+
+Validation:
+
+```text
+make cpu-soc-sim: PASS, 68 PERF_JOB records
+make perf-report: PASS
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report -v: PASS, 6 tests
+make test: PASS, 31 tests, 213.655s
+```
+
+Perf result:
+
+```text
+jobs: 68
+workloads: 7
+total_cycles: 631737
+real_mnist_cnn_fc1_full_k_stream_layer:
+  jobs: 16
+  total_cycles: 627472
+  core_matmul_cycles: 184320
+  data_mover.words: 2360576
+  ping-pong baseline saved cycles vs old serial estimate: 313072
+```
+
+Important limitation:
+
+- Full `fc1` matmul layer is now covered by CPU-controlled SoC RTL.
+- `fc1` bias/ReLU is not yet applied to these NPU-produced tiles.
+- Existing `fc2` smoke still uses tool-side precomputed `fc1_relu`.
+- Current full-layer data staging embeds packed streams in the simulation boot
+  ROM. This is a checkpoint, not the final loader/layout model.
+
+Next recommended work:
+
+1. Apply `fc1` bias/ReLU in firmware after the 16 output tiles.
+2. Feed the resulting `fc1_relu` into the existing `fc2` tile path.
+3. Replace packed-stream firmware bloat with stride/layout fields or a loader
+   path.

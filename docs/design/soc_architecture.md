@@ -53,12 +53,19 @@ Current regions:
 
 | Region | Address range | Accessor | Use |
 | --- | --- | --- | --- |
-| Boot ROM | `0x0000_0000` - `0x0000_7fff` | CPU | Firmware image |
-| SRAM | `0x0002_0000` - `0x0003_ffff` | CPU + NPU port | stack, locals, descriptor, tensor buffers, program buffers |
+| Boot ROM | `0x0000_0000` - `0x007f_ffff` | CPU + DMA read port | Firmware image and generated smoke data |
+| SRAM | `0x0080_0000` - `0x00bf_ffff` | CPU + NPU port | stack, locals, descriptor, tensor buffers, program buffers |
 | NPU wrapper | `0x1000_0000` - `0x1000_0fff` | CPU | NPU control/status/register windows |
 | UART | `0x2000_0000` - `0x2000_0fff` | reserved | Not implemented |
 | Test status | `0x3000_0000` - `0x3000_000f` | CPU | Simulation pass/fail |
 | DMA | `0x4000_0000` - `0x4000_0fff` | CPU | ROM-to-SRAM staging DMA |
+
+The ROM/SRAM sizes are intentionally large for the current real MNIST CNN
+bring-up checkpoint. The full `fc1` 16-output-N-tile smoke keeps generated
+packed stream fixtures in the simulation ROM and stages one N tile at a time
+into SRAM. This is not the final deployment model; a later loader or stride
+address generator should avoid embedding all packed streams in the firmware
+image.
 
 Important detail: `simple_bus` subtracts region bases for ROM/SRAM local
 addresses. The NPU wrapper receives only `m_addr[11:0]` as its local register
