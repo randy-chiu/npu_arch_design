@@ -1,0 +1,38 @@
+{
+  "schema": "npu_ppa_proxy_baseline_v0",
+  "evidence_level": "L0_proxy",
+  "design": {
+    "top": "npu_subsystem",
+    "variant": "npu_v0_a2_serial_k_stream"
+  },
+  "area_config": "arch/configs/ppa/area_proxy_v0_serial_k_stream.jsonc",
+  "energy_config": "arch/configs/ppa/energy_proxy_v0.jsonc",
+  "source": {
+    "performance": "recorded_rtl_perf_job_counters",
+    "reference_docs": [
+      "docs/design/k_stream_ping_pong_buffer.md",
+      "docs/collaboration_journal.md"
+    ],
+    "note": "Serial full-fc1 K-stream measurement before A/B ping-pong overlap; the 16-job layer baseline is derived from the recorded one-output-N-tile RTL measurement."
+  },
+  "workloads": [
+    {
+      "name": "real_mnist_cnn_fc1_full_k_stream_layer",
+      "kind": "model_layer",
+      "jobs": 16,
+      "total_cycles": 940544,
+      "core_matmul_cycles": 184320,
+      "data_mover": {
+        "words": 2360576,
+        "read_words": 2359552,
+        "write_words": 1024
+      },
+      "metadata": {
+        "tile_jobs": 16,
+        "k_chunks": 1152,
+        "derived_from_recorded_single_n_tile": true
+      }
+    }
+  ],
+  "highlights": []
+}

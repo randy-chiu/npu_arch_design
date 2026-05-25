@@ -2841,3 +2841,227 @@ Next recommended work:
 2. Feed the resulting `fc1_relu` into the existing `fc2` tile path.
 3. Replace packed-stream firmware bloat with stride/layout fields or a loader
    path.
+
+## Session 54: Shift Mainline To ASIC-Oriented PPA And Transformer Workloads
+
+User clarified the long-term project objective:
+
+- there is no current FPGA board or private ASIC technology target;
+- the desired end state is ASIC-oriented PPA analysis, accepting public-flow
+  estimates before signoff-grade accuracy is possible;
+- `npu_core` breakdown remains important, but the main NPU evaluation boundary
+  must include wrapper/data mover and core together;
+- Transformer/LLM inference, rather than MNIST CNN, is the long-term target
+  application.
+
+Decision:
+
+- establish a public-ASIC PPA framework before further major datapath
+  expansion;
+- use `npu_subsystem` as the primary PPA boundary, with `npu_core` reported for
+  attribution and `soc_reference` kept only as a system reference;
+- retain real MNIST CNN as a functional/compatibility regression workload;
+- make Transformer prefill/decode workloads the driver for future matrix,
+  vector/reduction, precision, and memory-system decisions;
+- retain the existing `hw/` layout and add stable future-facing directories
+  incrementally rather than moving working RTL before a baseline exists.
+
+Documentation added or updated:
+
+- `docs/design/ppa_methodology.md`: public ASIC targets, measurement tops,
+  area/timing/power/energy metrics, activity windows, memory accounting, and
+  result contract;
+- `docs/design/transformer_workloads.md`: prefill/decode distinction,
+  micro-kernel progression, precision and external-memory reporting
+  requirements;
+- `docs/design/npu_subsystem.md`: primary PPA RTL top and external-memory
+  boundary contract;
+- `docs/project_plan.md`, `docs/target_architecture.md`, `docs/architecture.md`,
+  `docs/work_rules.md`, and entry-point READMEs updated to reflect the new
+  mainline.
+
+Engineering scaffold implemented:
+
+- added `hw/npu_subsystem/rtl/npu_subsystem_top.sv`, a structural top around
+  the already verified `npu_v0_opsched`/data-mover/core hierarchy; it exposes
+  memory externally and does not include CPU or oversized simulation memories;
+- added `make npu-subsystem-elab` as an immediate structural verification gate;
+- added initial PPA target assumptions in
+  `arch/configs/ppa/sky130hd_v0.jsonc`;
+- added result contract in `ppa/schema/ppa_result.schema.json`;
+- added Transformer initial workload manifest in
+  `workloads/manifests/transformer/transformer_micro_v0.jsonc`;
+- added initial OpenROAD Flow Scripts design inputs for `npu_core` and
+  `npu_subsystem`, each with a 100 MHz starting constraint;
+- added PPA contract tests, now located at
+  `test/ppa_contract/test_ppa_contract.py`, to verify schema, target, Transformer
+  prefill/decode split, and subsystem elaboration.
+
+Limitations:
+
+- no OpenROAD, OpenLane, Yosys, or OpenSTA executable is currently available
+  in the local environment, so no area/timing/power number is claimed in this
+  session;
+- the OpenROAD files are flow inputs only until the toolchain is installed and
+  an actual report is produced;
+- local-memory macro accounting and activity-driven power remain PPA1/PPA2
+  work.
+
+Validation performed while introducing the scaffold:
+
+```text
+make npu-subsystem-elab: PASS
+make npu-core-sim: PASS
+PYTHONPATH=sw/tools python -m unittest test.ppa_contract.test_ppa_contract -v: PASS, 4 tests
+make test: PASS, 35 tests, 206.773s (includes the 4 new PPA tests)
+```
+
+Next work:
+
+1. Make the first executable `sky130hd` area/timing flow available and extract
+   `npu_core` and `npu_subsystem` machine-readable summaries.
+2. Define job-scoped switching-activity capture for future power/energy
+   extraction.
+3. Add initial Transformer workload/golden handling once the PPA baseline
+   execution path is usable.
+
+## Session 55: Make Lightweight PPA Proxy The Immediate Execution Path
+
+User questioned whether starting with full SKY130HD/OpenROAD/OpenLane
+implementation was too heavy before the PPA framework and Transformer
+workloads were mature.
+
+Decision:
+
+- keep ASIC PPA as the end goal, but use layered evidence;
+- make `L0_proxy` the immediate executable level:
+  - performance and traffic from real RTL `PERF_JOB` counters;
+  - structural-area proxy from explicit hardware resource counts;
+  - event-energy proxy from replaceable normalized coefficients;
+- defer Yosys/ABC/OpenSTA mapped-area/timing to `L1_mapped`;
+- defer activity-driven power to `L2_power`;
+- retain OpenROAD/OpenLane and `sky130hd` as `L3_physical` selected-variant
+  validation, not an immediate prerequisite.
+
+Updated planning/docs:
+
+- `docs/design/ppa_methodology.md` now defines `L0_proxy`, `L1_mapped`,
+  `L2_power`, and `L3_physical`, including the claim boundary of each level;
+- `docs/project_plan.md`, `docs/target_architecture.md`, `README.md`, and
+  `docs/design/verification_strategy.md` now identify Level 0 proxy reporting
+  as the current task.
+
+Implemented Level 0 flow:
+
+- `arch/configs/ppa/area_proxy_v0.jsonc`: current `npu_subsystem` structural
+  resources and normalized coefficients;
+- `arch/configs/ppa/energy_proxy_v0.jsonc`: event-energy coefficients and
+  verified `8x8x8` matmul event derivation;
+- `ppa/schema/ppa_proxy_report.schema.json`: Level 0 report contract;
+- `sw/tools/ppa/proxy_report.py`: consumes `build/perf/perf.json`, produces
+  JSON and HTML proxy reports;
+- `make ppa-proxy-report`: full report entry point after RTL performance
+  collection;
+- `test/ppa_contract/test_ppa_contract.py`: tests proxy labeling, structural
+  calculation, MAC derivation, and ping-pong summary.
+
+First generated Level 0 results from the current RTL perf baseline:
+
+```text
+npu_subsystem structural area proxy: 6998.4 normalized_area_units
+npu_subsystem local-state storage:    7968 bits
+operator_smoke_matmul:
+  measured cycles:                    81
+  measured data_mover.words:          208
+  event-energy proxy:                 1428.25 normalized_energy_units
+real_mnist_cnn_fc1_full_k_stream_layer:
+  measured cycles:                    627472
+  measured data_mover.words:          2360576
+  derived int8 MAC operations:        9437184
+  event-energy proxy:                 19037380.0 normalized_energy_units
+ping-pong versus recorded serial baseline:
+  measured cycles saved:              313072
+  modeled active-duration energy saved only: 78268.0 normalized_energy_units
+```
+
+Interpretation:
+
+- cycles and movement are real RTL measurements from the current SoC
+  simulation;
+- area is not `um^2` and is not synthesized area;
+- energy is not joules or watts and currently excludes external-memory energy;
+- the ping-pong result deliberately does not claim MAC or moved-data energy
+  savings, because those work counters remain unchanged.
+
+Validation:
+
+```text
+make ppa-proxy-report: PASS
+PYTHONPATH=sw/tools python -m unittest test.ppa_contract.test_ppa_contract -v: PASS, 5 tests
+make test: PASS, 36 tests, 208.466s
+```
+
+Implementation note:
+
+- the PPA contract test package is named `test/ppa_contract/` rather than
+  `test/ppa/`, because a top-level test package named `ppa` shadows the
+  implementation package `sw/tools/ppa` during `unittest discover`.
+
+## Session 56: Require Candidate-Versus-Baseline PPA Deltas
+
+User specified that each future NPU iteration should show its PPA difference
+relative to the older architecture, especially where the new version improves.
+
+Decision:
+
+- every PPA-affecting NPU iteration after a named baseline exists must emit a
+  candidate-versus-baseline delta report;
+- the report must show advantages and costs together rather than filtering out
+  unfavorable metrics;
+- Level 0 delta reports distinguish real RTL performance counters from
+  normalized area/energy proxies.
+
+Implemented:
+
+- added the baseline delta rule to `docs/design/ppa_methodology.md` and
+  `docs/work_rules.md`;
+- added a checked-in first baseline:
+  `ppa/baselines/l0/npu_v0_a2_serial_k_stream.json`;
+- added serial K-stream structural configuration:
+  `arch/configs/ppa/area_proxy_v0_serial_k_stream.jsonc`;
+- extended `sw/tools/ppa/proxy_report.py` and `make ppa-proxy-report` with
+  baseline comparison support;
+- extended the HTML/JSON output with `comparison`, `improvements`, and `costs`
+  sections;
+- extended `test/ppa_contract/test_ppa_contract.py` to protect delta behavior.
+
+First named comparison:
+
+```text
+baseline:  npu_v0_a2_serial_k_stream
+candidate: npu_v0_a2_ping_pong
+workload:  real_mnist_cnn_fc1_full_k_stream_layer
+
+measured cycles:       940544 -> 627472, -313072 (-33.286%), improvement
+measured mover words:  2360576 -> 2360576, invariant
+derived MAC work:      9437184 -> 9437184, invariant
+energy proxy:          19115648.0 -> 19037380.0, -78268.0 (-0.409%), improvement
+area proxy:            6947.2 -> 6998.4, +51.2 (+0.737%), cost
+```
+
+Interpretation:
+
+- ping-pong is favorable for this workload because it removes a large serial
+  latency component for a small normalized storage-area increase;
+- mover words and MAC work do not fall, so this is an overlap improvement, not
+  a reduction in arithmetic or transfer work;
+- external-memory energy remains unknown at Level 0 and is explicitly listed
+  as an unavailable decision metric.
+
+Validation:
+
+```text
+make ppa-proxy-report: PASS, generated candidate-versus-baseline JSON/HTML
+PYTHONPATH=sw/tools python -m unittest test.ppa_contract.test_ppa_contract -v: PASS, 6 tests
+make test: PASS, 37 tests, 204.151s
+```

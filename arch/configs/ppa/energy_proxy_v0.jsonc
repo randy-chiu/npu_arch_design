@@ -1,0 +1,26 @@
+{
+  // Level 0 event-energy proxy. Coefficients are normalized and replaceable.
+  // They are intended to compare event mix, not claim joules or watts.
+  "name": "energy_proxy_v0",
+  "version": 0,
+  "evidence_level": "L0_proxy",
+  "units": "normalized_energy_units",
+  "interpretation": "event_proxy_not_measured_power",
+  "event_coefficients": {
+    "int8_mac_accumulate": 1.0,
+    "data_mover_read_word": 4.0,
+    "data_mover_write_word": 5.0,
+    "active_subsystem_cycle": 0.25,
+    "external_memory_byte": 20.0
+  },
+  "matmul_event_derivation": {
+    "physical_tile": [8, 8, 8],
+    "mac_ops_per_tile": 512,
+    "measured_core_matmul_cycles_per_tile": 10,
+    "description": "Current RTL PERF_JOB core.matmul includes 10 cycles per completed 8x8x8 physical matmul tile. MAC operations are derived from the fixed verified tile contract rather than treating every observed phase cycle as one tile."
+  },
+  "external_memory": {
+    "included_when_manifest_provides_bytes": true,
+    "current_cnn_perf_report_bytes_available": false
+  }
+}

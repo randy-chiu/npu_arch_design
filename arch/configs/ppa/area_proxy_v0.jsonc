@@ -1,0 +1,41 @@
+{
+  // Level 0 structural area proxy for the current NPU subsystem.
+  // Units are normalized ranking weights, not um^2 or synthesized cell area.
+  "name": "area_proxy_v0",
+  "version": 0,
+  "evidence_level": "L0_proxy",
+  "units": "normalized_area_units",
+  "interpretation": "structural_proxy_not_synthesized_area",
+  "design": {
+    "top": "npu_subsystem",
+    "variant": "npu_v0_a2_ping_pong"
+  },
+  "coefficients": {
+    "int8_mac_lane": 100.0,
+    "stored_bit": 0.05,
+    "data_mover_lane": 25.0,
+    "wrapper_control_unit": 100.0
+  },
+  "resources": {
+    "int8_mac_lanes": 64,
+    "data_mover_lanes": 4,
+    "wrapper_control_units": 1,
+    "storage_bits": {
+      "a_preload_ping_pong": 1024,
+      "b_preload_ping_pong": 1024,
+      "spad_a": 512,
+      "spad_b": 512,
+      "accumulator": 2048,
+      "output_window": 2048,
+      "instruction_memory": 512,
+      "softmax_state": 288
+    }
+  },
+  "excludes": [
+    "CPU",
+    "simulation boot ROM",
+    "simulation SoC SRAM",
+    "external memory energy",
+    "unmeasured wiring and clock tree"
+  ]
+}

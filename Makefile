@@ -1,9 +1,12 @@
-.PHONY: test demo digits-demo validate-arch soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke npu-core-sim rtl-sim soc-sim cpu-soc-sim perf-report
+.PHONY: test demo digits-demo validate-arch soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke npu-core-sim npu-subsystem-elab rtl-sim soc-sim cpu-soc-sim perf-report ppa-proxy-report
 
 PYTHONPATH := sw/tools
 ARCH := arch/configs/npu_v0.jsonc
 SOC := arch/configs/soc_v0.jsonc
 NPU_WRAPPER := arch/configs/npu_wrapper_v0.jsonc
+PPA_AREA_PROXY := arch/configs/ppa/area_proxy_v0.jsonc
+PPA_ENERGY_PROXY := arch/configs/ppa/energy_proxy_v0.jsonc
+PPA_BASELINE := ppa/baselines/l0/npu_v0_a2_serial_k_stream.json
 RISCV_GCC ?= $(firstword $(shell command -v riscv-none-elf-gcc 2>/dev/null) $(shell command -v riscv32-unknown-elf-gcc 2>/dev/null) $(shell command -v riscv64-unknown-elf-gcc 2>/dev/null))
 RISCV_OBJCOPY ?= $(patsubst %-gcc,%-objcopy,$(RISCV_GCC))
 RISCV_OBJDUMP ?= $(patsubst %-gcc,%-objdump,$(RISCV_GCC))
@@ -63,6 +66,15 @@ npu-core-sim: rtl-fixtures
 	iverilog -g2012 -I build/rtl_fixture -o build/npu_v0_tb hw/npu_core/rtl/matmul_array.sv hw/npu_core/rtl/npu_v0_top.sv hw/npu_core/tb/npu_v0_tb.sv
 	vvp build/npu_v0_tb
 
+npu-subsystem-elab: rtl-fixtures soc-spec npu-wrapper-spec
+	mkdir -p build/ppa/elab
+	iverilog -g2012 -t null -s npu_subsystem_top -I build/rtl_fixture -I build/soc -I build/npu_wrapper -I hw/npu_wrapper/rtl \
+		hw/npu_core/rtl/matmul_array.sv \
+		hw/npu_core/rtl/npu_v0_top.sv \
+		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
+		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
+		hw/npu_subsystem/rtl/npu_subsystem_top.sv
+
 rtl-sim: npu-core-sim
 
 soc-sim: rtl-fixtures soc-spec npu-wrapper-spec
@@ -117,3 +129,13 @@ perf-report: firmware-smoke
 		hw/soc/tb/soc_cpu_tb.sv
 	vvp build/soc/soc_cpu_tb > build/perf/cpu_soc_perf.log
 	python sw/tools/perf/report.py --log build/perf/cpu_soc_perf.log --json-out build/perf/perf.json --html-out build/perf/perf_report.html
+
+ppa-proxy-report: perf-report
+	mkdir -p build/ppa/proxy
+	PYTHONPATH=$(PYTHONPATH) python -m ppa.proxy_report \
+		--perf-json build/perf/perf.json \
+		--area-config $(PPA_AREA_PROXY) \
+		--energy-config $(PPA_ENERGY_PROXY) \
+		--baseline-json $(PPA_BASELINE) \
+		--json-out build/ppa/proxy/ppa_proxy.json \
+		--html-out build/ppa/proxy/ppa_proxy_report.html

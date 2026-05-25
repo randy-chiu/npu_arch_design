@@ -33,6 +33,9 @@ silently regresses.
 | Wrapper/SoC legacy path | `make soc-sim` | direct wrapper-window path |
 | CPU firmware SoC | `make cpu-soc-sim` | PicoRV32 firmware launches descriptor jobs |
 | Perf report | `make perf-report` | CPU SoC simulation plus JSON/HTML performance report |
+| NPU subsystem elaboration | `make npu-subsystem-elab` | check the primary PPA RTL boundary compiles without simulation SoC memories |
+| PPA contract | `test/ppa_contract/test_ppa_contract.py` | check PPA target/schema and Transformer manifest contracts |
+| PPA proxy report | `make ppa-proxy-report` | produce Level 0 measured-performance and normalized area/energy proxy output |
 | Full unit gate | `make test` | Python tests and available RTL sims |
 
 ## 3. Golden And Simulator Tests
@@ -103,7 +106,47 @@ It verifies:
 `test/rtl/test_perf_report.py` also unit-tests parser/report generation with a
 small synthetic log.
 
-## 8. Current Baselines
+## 8. PPA Contract And Subsystem Boundary
+
+The first PPA-framework gate does not claim synthesized area, timing, or power
+values. It verifies that the primary PPA boundary and its Level 0 proxy input
+contracts are structurally usable:
+
+```text
+make npu-subsystem-elab
+PYTHONPATH=sw/tools python -m unittest test.ppa_contract.test_ppa_contract -v
+```
+
+Current checks:
+
+- `npu_subsystem_top` elaborates from the existing wrapper/data-mover/core RTL
+  while keeping CPU, boot ROM, and staging SRAM outside the top;
+- `arch/configs/ppa/sky130hd_v0.jsonc` declares `npu_subsystem_top` as the
+  primary public-ASIC estimation boundary;
+- `ppa/schema/ppa_result.schema.json` preserves top/workload/target identity
+  and optional future area/timing/power/energy sections;
+- the initial Transformer micro workload manifest distinguishes prefill and
+  decode requirements.
+
+The Level 0 report combines RTL-measured cycle/traffic values with normalized
+area/energy proxies. Mapped-area/timing, activity-driven power, and physical
+ASIC gates will be added only after the corresponding analysis level is useful
+and executable.
+
+Current Level 0 entry point:
+
+```text
+make ppa-proxy-report
+```
+
+Generated outputs:
+
+```text
+build/ppa/proxy/ppa_proxy.json
+build/ppa/proxy/ppa_proxy_report.html
+```
+
+## 9. Current Baselines
 
 After A1 matmul array, A2 structural data mover, 4-lane core host interface,
 `WORDS_PER_CYCLE=4` NPU-side SRAM/data-mover/core-host movement, SoC DMA
@@ -112,7 +155,7 @@ grayscale digit fixtures, real MNIST CNN `fc2` SoC smoke, the first real `fc1`
 SoC tile smoke, and full `fc1` 16-output-N-tile K-stream SoC coverage:
 
 ```text
-make test        PASS, 31 tests
+make test        PASS, 37 tests (including 6 PPA contract/proxy/delta/subsystem-boundary checks)
 make perf-report PASS
 matmul total cycles: 81
 matmul core matmul cycles: 10
@@ -124,6 +167,41 @@ real_mnist_cnn_fc1_full_k_stream_layer: 16 jobs, 627472 cycles
 real_mnist_cnn_fc2: 32 jobs, 2592 cycles
 perf summary: 68 jobs, 7 workloads, 631737 total cycles
 ```
+
+Current Level 0 proxy output, based on the same RTL performance report:
+
+```text
+npu_subsystem structural area proxy: 6998.4 normalized_area_units
+npu_subsystem local-state storage:    7968 bits
+operator_smoke_matmul energy proxy:   1428.25 normalized_energy_units
+real_mnist_cnn_fc1_full_k_stream_layer:
+  measured cycles:                    627472
+  measured data_mover.words:          2360576
+  derived int8 MAC operations:        9437184
+  event-energy proxy:                 19037380.0 normalized_energy_units
+```
+
+For the ping-pong comparison, RTL counters show `313072` saved cycles with
+MAC work and moved words unchanged. The Level 0 model attributes only
+`78268.0 normalized_energy_units` of modeled reduction to the shorter active
+duration; it does not claim measured power or external-memory energy savings.
+
+The current named baseline comparison in `make ppa-proxy-report` is:
+
+```text
+baseline:  npu_v0_a2_serial_k_stream
+candidate: npu_v0_a2_ping_pong
+workload:  real_mnist_cnn_fc1_full_k_stream_layer
+
+measured cycles:       940544 -> 627472, -313072 (-33.286%), improvement
+measured mover words:  2360576 -> 2360576, invariant
+derived MAC work:      9437184 -> 9437184, invariant
+energy proxy:          19115648.0 -> 19037380.0, -78268.0 (-0.409%), improvement
+area proxy:            6947.2 -> 6998.4, +51.2 (+0.737%), cost
+```
+
+This is the intended report shape for future NPU iterations: improvements and
+resource/energy costs remain visible together.
 
 Current explicit data mover counters for one full `fc1` K-stream output N tile:
 
@@ -154,10 +232,16 @@ K-stream jobs，覆盖完整 quantized `fc1` matmul layer；bias/ReLU 仍是下�
 When a change intentionally modifies timing, update docs and explain whether
 the change is functional RTL behavior or report/model accounting.
 
-## 9. What To Add Next
+## 10. What To Add Next
 
 Near-term verification gaps:
 
+- add comparable baselines for earlier array and narrower-mover architecture
+  changes, using explicit recorded evidence or rerunnable variants;
+- later run lightweight mapped-area/timing extraction for `npu_core` and
+  `npu_subsystem`;
+- add activity capture and power/energy result validation after the power flow
+  is executable;
 - ping-pong overlap regression assertion is covered in
   `test/rtl/test_perf_report.py`: the full `fc1` synthetic PERF_JOB remains
   below the old 58784-cycle serial baseline while `data_mover.words` and
@@ -169,7 +253,7 @@ Near-term verification gaps:
 - descriptor validation/error tests once wrapper exposes errors;
 - larger transfer tests after counter widths are expanded.
 
-## 10. Test Update Rule
+## 11. Test Update Rule
 
 When changing an interface or timing model:
 

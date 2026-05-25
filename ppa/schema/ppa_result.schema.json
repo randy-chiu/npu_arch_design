@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ppa_result.schema.json",
+  "title": "NPU PPA Result",
+  "type": "object",
+  "required": ["schema_version", "design", "target", "workload", "functional", "performance"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 0},
+    "design": {
+      "type": "object",
+      "required": ["top", "variant"],
+      "properties": {
+        "top": {"enum": ["npu_core", "npu_subsystem", "soc_reference"]},
+        "variant": {"type": "string"},
+        "rtl_revision": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "target": {
+      "type": "object",
+      "required": ["technology", "interpretation"],
+      "properties": {
+        "technology": {"type": "string"},
+        "flow": {"type": "string"},
+        "tool_revision": {"type": "string"},
+        "interpretation": {"enum": ["estimate_not_signoff", "signoff"]}
+      },
+      "additionalProperties": true
+    },
+    "workload": {
+      "type": "object",
+      "required": ["name", "activity_scope"],
+      "properties": {
+        "name": {"type": "string"},
+        "activity_scope": {"enum": ["kernel_only", "staging_inclusive", "not_captured"]},
+        "scenario": {"enum": ["smoke", "cnn_compat", "transformer_prefill", "transformer_decode", "unspecified"]}
+      },
+      "additionalProperties": true
+    },
+    "functional": {
+      "type": "object",
+      "required": ["passed"],
+      "properties": {"passed": {"type": "boolean"}},
+      "additionalProperties": true
+    },
+    "performance": {
+      "type": "object",
+      "required": ["cycles"],
+      "properties": {
+        "cycles": {"type": "integer", "minimum": 0},
+        "mac_ops": {"type": "integer", "minimum": 0},
+        "words_moved": {"type": "integer", "minimum": 0},
+        "cycles_per_token": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "area": {"type": ["object", "null"]},
+    "timing": {"type": ["object", "null"]},
+    "power": {"type": ["object", "null"]},
+    "energy": {"type": ["object", "null"]},
+    "external_memory_model": {"type": ["object", "null"]},
+    "baseline": {"type": ["object", "null"]}
+  },
+  "additionalProperties": true
+}

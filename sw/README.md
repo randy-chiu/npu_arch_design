@@ -7,4 +7,5 @@ Software is split by where it runs and what it controls.
 - `sw/npu_core`: code or programs consumed by the NPU core itself, such as
   operator programs and later NPU-side operator implementations.
 - `sw/tools`: development-host tools, including graph compilers, NPU
-  assemblers, simulators, fixture generators, and CPU toolchain integration.
+  assemblers, simulators, fixture generators, CPU toolchain integration, and
+  PPA result normalization/reporting.

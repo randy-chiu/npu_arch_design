@@ -1,0 +1,1 @@
+"""PPA contract tests."""

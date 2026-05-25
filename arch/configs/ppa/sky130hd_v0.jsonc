@@ -1,0 +1,40 @@
+{
+  // Future Level 3 public physical ASIC target assumptions for selected
+  // architecture comparisons. Level 0 proxy reporting does not use this
+  // configuration. Results produced with this target are estimates, not
+  // signoff claims.
+  "name": "sky130hd_v0",
+  "version": 0,
+  "purpose": "future_l3_physical_open_asic_architecture_comparison",
+  "interpretation": "estimate_not_signoff",
+
+  "flow": {
+    "family": "openroad",
+    "platform": "sky130hd",
+    "initial_stages": ["synthesis", "sta"],
+    "later_stages": ["place_route", "activity_driven_power"]
+  },
+
+  "tops": {
+    "primary": "npu_subsystem_top",
+    "breakdown": "npu_v0_top",
+    "reference_only": "soc_cpu_top"
+  },
+
+  "clock": {
+    "port": "clk",
+    "period_ns": 10.0,
+    "target_frequency_mhz": 100.0
+  },
+
+  "power": {
+    "activity_scopes": ["kernel_only", "staging_inclusive"],
+    "external_memory_energy_is_separate_model": true
+  },
+
+  "memory_accounting": {
+    "simulation_boot_rom_is_excluded_from_primary_npu_ppa": true,
+    "simulation_soc_sram_is_excluded_from_primary_npu_ppa": true,
+    "local_buffer_implementation_must_be_reported": true
+  }
+}

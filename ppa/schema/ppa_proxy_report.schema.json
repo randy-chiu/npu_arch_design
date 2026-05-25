@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ppa_proxy_report.schema.json",
+  "title": "NPU Level 0 PPA Proxy Report",
+  "type": "object",
+  "required": ["schema", "evidence_level", "design", "area_proxy", "workloads"],
+  "properties": {
+    "schema": {"const": "npu_ppa_proxy_report_v0"},
+    "evidence_level": {"const": "L0_proxy"},
+    "design": {"type": "object"},
+    "metric_provenance": {"type": "object"},
+    "area_proxy": {"type": "object"},
+    "workloads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "performance", "energy_proxy"]
+      }
+    },
+    "highlights": {"type": "array"},
+    "comparison": {
+      "type": ["object", "null"],
+      "properties": {
+        "baseline": {"type": "object"},
+        "candidate": {"type": "object"},
+        "area_delta": {"type": "object"},
+        "workload_deltas": {"type": "array"},
+        "improvements": {"type": "array"},
+        "costs": {"type": "array"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

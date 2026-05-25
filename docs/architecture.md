@@ -37,6 +37,16 @@ wrapper、NPU core、firmware、compiler artifacts 串成真实软硬件闭环�
 - wrapper 是 SoC 和 NPU core 之间的边界，后续可以逐步演进为更真实的
   scheduler/DMA/command queue。
 
+当前 PPA 评估边界补充：
+
+- `hw/npu_subsystem/rtl/npu_subsystem_top.sv` 将 wrapper、data mover 和 core
+  封装为主要综合/PPA top；
+- 该 top 暴露外部 memory 接口，不包含当前仿真用 CPU、boot ROM、大容量 staging
+  SRAM 或 `test_status`；
+- `soc_cpu_top` 仍是最重要的功能闭环路径，但仅作为系统参考 PPA 边界；
+- 面积、功耗、能耗和 Transformer workload 规则见
+  `docs/design/ppa_methodology.md` 与 `docs/design/transformer_workloads.md`。
+
 ## 2. 顶层 SoC 框架
 
 当前 CPU-controlled SoC 的硬件框架是：

@@ -1,0 +1,425 @@
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+
+SCHEMA_NAME = "npu_ppa_proxy_report_v0"
+EVIDENCE_LEVEL = "L0_proxy"
+
+
+def read_jsonc(path: Path) -> dict[str, Any]:
+    text = path.read_text(encoding="utf-8")
+    return json.loads(re.sub(r"//.*$", "", text, flags=re.MULTILINE))
+
+
+def build_proxy_report(
+    perf: dict[str, Any],
+    area_cfg: dict[str, Any],
+    energy_cfg: dict[str, Any],
+    baseline_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    area_proxy = build_area_proxy(area_cfg)
+    performance_provenance = perf.get("source", {}).get(
+        "performance", "measured_rtl_perf_job_counters"
+    )
+    workload_results = [
+        build_workload_proxy(workload, energy_cfg, performance_provenance)
+        for workload in perf.get("workloads", [])
+    ]
+    report = {
+        "schema": SCHEMA_NAME,
+        "evidence_level": EVIDENCE_LEVEL,
+        "source_perf_report": perf.get("source_log", ""),
+        "design": area_cfg["design"],
+        "metric_provenance": {
+            "performance": performance_provenance,
+            "area": area_cfg["interpretation"],
+            "energy": energy_cfg["interpretation"],
+            "timing": "unavailable_until_mapped_or_physical_analysis",
+            "power": "unavailable_until_activity_based_tool_flow",
+        },
+        "area_proxy": area_proxy,
+        "workloads": workload_results,
+        "highlights": build_highlights(perf, workload_results, energy_cfg),
+        "limitations": [
+            "Normalized area units are not synthesized cell area or physical area.",
+            "Normalized energy units are not joules or measured power.",
+            "Current workload counters do not include external-memory traffic energy.",
+        ],
+    }
+    report["comparison"] = build_comparison(baseline_report, report) if baseline_report else None
+    return report
+
+
+def build_area_proxy(config: dict[str, Any]) -> dict[str, Any]:
+    coeff = config["coefficients"]
+    resources = config["resources"]
+    storage_bits = resources["storage_bits"]
+    storage_total = sum(int(value) for value in storage_bits.values())
+    contributions = {
+        "int8_mac_lanes": resources["int8_mac_lanes"] * coeff["int8_mac_lane"],
+        "stored_bits": storage_total * coeff["stored_bit"],
+        "data_mover_lanes": resources["data_mover_lanes"] * coeff["data_mover_lane"],
+        "wrapper_control": resources["wrapper_control_units"] * coeff["wrapper_control_unit"],
+    }
+    return {
+        "units": config["units"],
+        "interpretation": config["interpretation"],
+        "config": config["name"],
+        "resources": resources,
+        "storage_bits_total": storage_total,
+        "coefficients": coeff,
+        "contributions": contributions,
+        "normalized_area_units": round(sum(contributions.values()), 3),
+        "excludes": config.get("excludes", []),
+    }
+
+
+def build_workload_proxy(
+    workload: dict[str, Any],
+    energy_cfg: dict[str, Any],
+    performance_provenance: str = "measured_rtl_perf_job_counters",
+) -> dict[str, Any]:
+    coefficients = energy_cfg["event_coefficients"]
+    events = derive_workload_events(workload, energy_cfg)
+    contributions = {
+        name: events[name] * coefficients[name]
+        for name in (
+            "int8_mac_accumulate",
+            "data_mover_read_word",
+            "data_mover_write_word",
+            "active_subsystem_cycle",
+            "external_memory_byte",
+        )
+    }
+    total_energy = sum(contributions.values())
+    mac_ops = events["int8_mac_accumulate"]
+    return {
+        "name": workload["name"],
+        "kind": workload.get("kind", "unknown"),
+        "jobs": int(workload.get("jobs", 0)),
+        "performance": {
+            "cycles": int(workload["total_cycles"]),
+            "core_matmul_cycles": int(workload.get("core_matmul_cycles", 0)),
+            "data_mover_words": int(workload.get("data_mover", {}).get("words", 0)),
+            "provenance": performance_provenance,
+        },
+        "energy_proxy": {
+            "units": energy_cfg["units"],
+            "interpretation": energy_cfg["interpretation"],
+            "events": events,
+            "coefficients": coefficients,
+            "contributions": contributions,
+            "normalized_energy_units": round(total_energy, 3),
+            "normalized_energy_per_mac": (
+                round(total_energy / mac_ops, 6) if mac_ops else None
+            ),
+        },
+        "metadata": workload.get("metadata", {}),
+    }
+
+
+def build_comparison(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    baseline_area = float(baseline["area_proxy"]["normalized_area_units"])
+    candidate_area = float(candidate["area_proxy"]["normalized_area_units"])
+    area_delta = delta_metric(baseline_area, candidate_area, lower_is_better=True)
+    area_delta["metric"] = "normalized_area_units"
+    area_delta["interpretation"] = "structural_proxy_not_synthesized_area"
+
+    baseline_by_name = {item["name"]: item for item in baseline["workloads"]}
+    candidate_by_name = {item["name"]: item for item in candidate["workloads"]}
+    common_names = sorted(set(baseline_by_name) & set(candidate_by_name))
+    workload_deltas = []
+    improvements: list[str] = []
+    costs: list[str] = []
+    for name in common_names:
+        old = baseline_by_name[name]
+        new = candidate_by_name[name]
+        cycles = delta_metric(
+            old["performance"]["cycles"], new["performance"]["cycles"], lower_is_better=True
+        )
+        energy = delta_metric(
+            old["energy_proxy"]["normalized_energy_units"],
+            new["energy_proxy"]["normalized_energy_units"],
+            lower_is_better=True,
+        )
+        moved_words = delta_metric(
+            old["performance"]["data_mover_words"],
+            new["performance"]["data_mover_words"],
+            lower_is_better=True,
+        )
+        mac_ops = delta_metric(
+            old["energy_proxy"]["events"]["int8_mac_accumulate"],
+            new["energy_proxy"]["events"]["int8_mac_accumulate"],
+            lower_is_better=False,
+        )
+        workload_deltas.append(
+            {
+                "name": name,
+                "cycles": cycles,
+                "energy_proxy": energy,
+                "data_mover_words": moved_words,
+                "int8_mac_accumulate": mac_ops,
+            }
+        )
+        if cycles["classification"] == "improvement":
+            improvements.append(
+                f"{name}: latency decreases by {abs(cycles['delta'])} cycles "
+                f"({abs(cycles['delta_pct']):.1f}%)."
+            )
+        if energy["classification"] == "improvement":
+            improvements.append(
+                f"{name}: event-energy proxy decreases by {abs(energy['delta'])} normalized units "
+                f"({abs(energy['delta_pct']):.3f}%)."
+            )
+    if area_delta["classification"] == "regression":
+        costs.append(
+            f"Structural area proxy increases by {area_delta['delta']} normalized units "
+            f"({area_delta['delta_pct']:.3f}%) due to candidate resources."
+        )
+    costs.append(
+        "External-memory energy is unavailable at Level 0 and is not part of this preference decision."
+    )
+    return {
+        "evidence_level": EVIDENCE_LEVEL,
+        "baseline": baseline["design"],
+        "candidate": candidate["design"],
+        "metric_provenance": {
+            "baseline_performance": baseline["metric_provenance"]["performance"],
+            "candidate_performance": candidate["metric_provenance"]["performance"],
+            "area": "structural_proxy_not_synthesized_area",
+            "energy": "event_proxy_not_measured_power",
+        },
+        "area_delta": area_delta,
+        "workload_deltas": workload_deltas,
+        "improvements": improvements,
+        "costs": costs,
+    }
+
+
+def delta_metric(baseline: float, candidate: float, lower_is_better: bool) -> dict[str, Any]:
+    delta = candidate - baseline
+    delta_pct = (delta * 100.0 / baseline) if baseline else 0.0
+    if delta == 0:
+        classification = "invariant"
+    elif (delta < 0 and lower_is_better) or (delta > 0 and not lower_is_better):
+        classification = "improvement"
+    else:
+        classification = "regression"
+    return {
+        "baseline": baseline,
+        "candidate": candidate,
+        "delta": round(delta, 3),
+        "delta_pct": round(delta_pct, 3),
+        "classification": classification,
+    }
+
+
+def derive_workload_events(workload: dict[str, Any], energy_cfg: dict[str, Any]) -> dict[str, int]:
+    derivation = energy_cfg["matmul_event_derivation"]
+    matmul_cycles_per_tile = int(derivation["measured_core_matmul_cycles_per_tile"])
+    mac_ops_per_tile = int(derivation["mac_ops_per_tile"])
+    core_matmul_cycles = int(workload.get("core_matmul_cycles", 0))
+    if core_matmul_cycles % matmul_cycles_per_tile != 0:
+        raise ValueError(
+            f"{workload['name']}: core_matmul_cycles={core_matmul_cycles} "
+            f"is not divisible by verified tile cycles={matmul_cycles_per_tile}"
+        )
+    matmul_tiles = core_matmul_cycles // matmul_cycles_per_tile
+    data_mover = workload.get("data_mover", {})
+    external_bytes = int(workload.get("metadata", {}).get("external_memory_bytes", 0))
+    return {
+        "int8_mac_accumulate": matmul_tiles * mac_ops_per_tile,
+        "data_mover_read_word": int(data_mover.get("read_words", 0)),
+        "data_mover_write_word": int(data_mover.get("write_words", 0)),
+        "active_subsystem_cycle": int(workload["total_cycles"]),
+        "external_memory_byte": external_bytes,
+    }
+
+
+def build_highlights(
+    perf: dict[str, Any],
+    workload_results: list[dict[str, Any]],
+    energy_cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    result_by_name = {item["name"]: item for item in workload_results}
+    highlights = []
+    for perf_highlight in perf.get("highlights", []):
+        if perf_highlight.get("title") != "FC1 K-stream ping-pong overlap":
+            continue
+        current = result_by_name.get(perf_highlight["workload"])
+        if current is None:
+            continue
+        coeff = energy_cfg["event_coefficients"]
+        before_cycles = int(perf_highlight["before_cycles"])
+        after_energy = current["energy_proxy"]["normalized_energy_units"]
+        cycles_saved = int(perf_highlight["cycles_saved"])
+        modeled_active_cycle_energy_saved = cycles_saved * coeff["active_subsystem_cycle"]
+        highlights.append(
+            {
+                "title": perf_highlight["title"],
+                "workload": current["name"],
+                "performance_provenance": "measured_rtl_perf_job_counters",
+                "before_cycles": before_cycles,
+                "after_cycles": current["performance"]["cycles"],
+                "cycles_saved": cycles_saved,
+                "core_matmul_cycles": int(perf_highlight["core_matmul_cycles"]),
+                "data_mover_words": int(perf_highlight["data_mover_words"]),
+                "energy_proxy_interpretation": energy_cfg["interpretation"],
+                "after_normalized_energy_units": after_energy,
+                "modeled_energy_saved_from_shorter_active_duration_only": round(
+                    modeled_active_cycle_energy_saved, 3
+                ),
+                "summary": (
+                    "RTL counters prove latency reduction with stable MAC and moved-word work; "
+                    "the only modeled energy reduction here is shorter active duration."
+                ),
+            }
+        )
+    return highlights
+
+
+def write_json(report: dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+
+def write_html(report: dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    area = report["area_proxy"]
+    rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(item['name'])}</td>"
+        f"<td>{item['performance']['cycles']}</td>"
+        f"<td>{item['energy_proxy']['events']['int8_mac_accumulate']}</td>"
+        f"<td>{item['performance']['data_mover_words']}</td>"
+        f"<td>{item['energy_proxy']['normalized_energy_units']}</td>"
+        "</tr>"
+        for item in report["workloads"]
+    )
+    limitations = "".join(f"<li>{html.escape(text)}</li>" for text in report["limitations"])
+    comparison_html = ""
+    comparison = report.get("comparison")
+    if comparison:
+        delta_rows = "".join(
+            "<tr>"
+            f"<td>{html.escape(item['name'])}</td>"
+            f"<td>{item['cycles']['baseline']} -> {item['cycles']['candidate']} "
+            f"({item['cycles']['delta_pct']}%)</td>"
+            f"<td>{item['energy_proxy']['baseline']} -> {item['energy_proxy']['candidate']} "
+            f"({item['energy_proxy']['delta_pct']}%)</td>"
+            f"<td>{item['data_mover_words']['classification']}</td>"
+            f"<td>{item['int8_mac_accumulate']['classification']}</td>"
+            "</tr>"
+            for item in comparison["workload_deltas"]
+        )
+        benefits = "".join(f"<li>{html.escape(text)}</li>" for text in comparison["improvements"])
+        costs = "".join(f"<li>{html.escape(text)}</li>" for text in comparison["costs"])
+        area_delta = comparison["area_delta"]
+        comparison_html = f"""
+  <section>
+    <h2>Candidate Versus Baseline</h2>
+    <p><code>{html.escape(comparison['candidate']['variant'])}</code> compared with
+       <code>{html.escape(comparison['baseline']['variant'])}</code>.</p>
+    <p>Structural area proxy: {area_delta['baseline']} -> {area_delta['candidate']}
+       ({area_delta['delta_pct']}%, {area_delta['classification']}).</p>
+    <table>
+      <thead><tr><th>Common workload</th><th>Measured cycles</th><th>Energy proxy</th><th>Moved words</th><th>MAC work</th></tr></thead>
+      <tbody>{delta_rows}</tbody>
+    </table>
+    <h3>Improvements</h3><ul>{benefits}</ul>
+    <h3>Costs And Unknowns</h3><ul>{costs}</ul>
+  </section>"""
+    highlights = "".join(
+        f"<section><h2>{html.escape(item['title'])}</h2>"
+        f"<p>{html.escape(item['summary'])}</p>"
+        f"<p>Cycles: {item['before_cycles']} -> {item['after_cycles']} "
+        f"(saved {item['cycles_saved']}); modeled active-duration energy saved: "
+        f"{item['modeled_energy_saved_from_shorter_active_duration_only']} normalized units.</p></section>"
+        for item in report["highlights"]
+    )
+    path.write_text(
+        f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>NPU Level 0 PPA Proxy Report</title>
+  <style>
+    body {{ font-family: system-ui, sans-serif; margin: 32px; color: #17202a; }}
+    .warning {{ background: #fff4df; border: 1px solid #dfb052; padding: 12px; }}
+    .metrics {{ display: flex; gap: 16px; margin: 18px 0; }}
+    .metric, section {{ border: 1px solid #d9dee8; padding: 14px; border-radius: 6px; }}
+    .metric strong {{ display: block; font-size: 24px; }}
+    table {{ border-collapse: collapse; width: 100%; margin-top: 16px; }}
+    th, td {{ text-align: left; padding: 8px; border-bottom: 1px solid #d9dee8; }}
+    code {{ background: #f2f4f8; padding: 2px 4px; }}
+  </style>
+</head>
+<body>
+  <h1>NPU Level 0 PPA Proxy Report</h1>
+  <p class="warning"><strong>Interpretation:</strong> Performance and movement are measured from RTL
+  <code>PERF_JOB</code> counters. Area and energy are normalized proxies, not synthesized area,
+  watts, or joules.</p>
+  <div class="metrics">
+    <div class="metric">Area proxy<strong>{area['normalized_area_units']}</strong>normalized units</div>
+    <div class="metric">Stored bits<strong>{area['storage_bits_total']}</strong>current local state</div>
+    <div class="metric">MAC lanes<strong>{area['resources']['int8_mac_lanes']}</strong>INT8 lanes</div>
+  </div>
+  {comparison_html}
+  {highlights}
+  <section>
+    <h2>Workloads</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Measured cycles</th><th>Derived MAC ops</th><th>Moved words</th><th>Energy proxy</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </section>
+  <section>
+    <h2>Limitations</h2>
+    <ul>{limitations}</ul>
+  </section>
+</body>
+</html>
+""",
+        encoding="utf-8",
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate an NPU Level 0 PPA proxy report.")
+    parser.add_argument("--perf-json", required=True, type=Path)
+    parser.add_argument("--area-config", required=True, type=Path)
+    parser.add_argument("--energy-config", required=True, type=Path)
+    parser.add_argument("--baseline-json", type=Path)
+    parser.add_argument("--json-out", required=True, type=Path)
+    parser.add_argument("--html-out", required=True, type=Path)
+    args = parser.parse_args()
+
+    perf = json.loads(args.perf_json.read_text(encoding="utf-8"))
+    baseline_report = None
+    if args.baseline_json:
+        baseline = json.loads(args.baseline_json.read_text(encoding="utf-8"))
+        baseline_report = build_proxy_report(
+            baseline,
+            read_jsonc(Path(baseline["area_config"])),
+            read_jsonc(Path(baseline["energy_config"])),
+        )
+    report = build_proxy_report(
+        perf,
+        read_jsonc(args.area_config),
+        read_jsonc(args.energy_config),
+        baseline_report=baseline_report,
+    )
+    write_json(report, args.json_out)
+    write_html(report, args.html_out)
+    print(f"Wrote {args.json_out}")
+    print(f"Wrote {args.html_out}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,46 @@
+{
+  // First Transformer workload requirements. Entries marked planned are not
+  // claims of current RTL support; they define upcoming PPA/golden targets.
+  "name": "transformer_micro_v0",
+  "version": 0,
+  "precision_baseline": {
+    "activation": "int8",
+    "weight": "int8",
+    "accumulator": "int32"
+  },
+  "workloads": [
+    {
+      "name": "prefill_gemm_tiny",
+      "scenario": "transformer_prefill",
+      "op": "matmul",
+      "shape": {"m": 128, "n": 256, "k": 256},
+      "status": "planned_current_matmul_extension",
+      "metrics": ["cycles", "mac_ops", "words_moved", "energy_per_mac"]
+    },
+    {
+      "name": "decode_skinny_gemm_proxy",
+      "scenario": "transformer_decode",
+      "op": "matmul",
+      "shape": {"m": 8, "n": 256, "k": 256},
+      "note": "M=8 is a current array-compatible proxy for single-token/GEMV utilization study.",
+      "status": "planned_current_matmul_extension",
+      "metrics": ["cycles", "mac_ops", "words_moved", "energy_per_token_proxy"]
+    },
+    {
+      "name": "rmsnorm_tiny",
+      "scenario": "transformer_decode",
+      "op": "rmsnorm",
+      "shape": {"elements": 256},
+      "status": "requires_future_operator_contract",
+      "metrics": ["cycles", "accuracy", "energy_per_token_proxy"]
+    },
+    {
+      "name": "kv_cache_traffic_tiny",
+      "scenario": "transformer_decode",
+      "op": "memory_traffic",
+      "shape": {"hidden_size": 256, "heads": 4, "head_dim": 64, "context_lengths": [128, 512]},
+      "status": "model_only_initially",
+      "metrics": ["read_bytes_per_token", "write_bytes_per_token", "estimated_external_memory_energy"]
+    }
+  ]
+}

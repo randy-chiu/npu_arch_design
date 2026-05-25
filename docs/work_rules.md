@@ -201,6 +201,8 @@ Use the most specific active document:
 | NPU core, uops, matmul/vector datapath | `docs/design/npu_core.md` |
 | Firmware, compiler artifacts, CPU/NPU ABI | `docs/design/software_hardware_flow.md` |
 | Perf counters, report schema, UI lanes | `docs/design/performance_instrumentation.md` |
+| ASIC PPA boundary, metric or result schema | `docs/design/ppa_methodology.md` |
+| Transformer workload, trace or metric choice | `docs/design/transformer_workloads.md` |
 | Tests and coverage | `docs/design/verification_strategy.md` |
 | Long-term direction | `docs/target_architecture.md` |
 
@@ -261,6 +263,20 @@ total cycles drops below the previous baseline
 data_mover.words remains stable
 core.matmul cycles remains stable
 ```
+
+Once a Level 0 baseline exists, a PPA-affecting RTL change is not complete
+until its result summary names the evidence level, candidate, baseline,
+workload, metric provenance, improvement deltas, and tradeoff/regression
+deltas. The comparison must not suppress unfavorable metrics. At Level 0,
+area/energy fields are normalized proxies; until higher-level extraction is
+available, timing or real power fields may be marked unavailable but must not
+be silently inferred from cycle results.
+
+一旦建立 Level 0 baseline，影响 PPA 的 RTL 变更必须在结果摘要中明确证据层级、
+candidate、baseline、workload、指标来源、收益差异和代价/退化差异，才能视为
+完成；报告不得隐藏不利指标。在 Level 0 阶段，area/energy 字段是 normalized
+proxy；在更高级提取流程可用之前，可以把真实时序或功耗字段标为不可用，但不能
+把 cycle 改善直接当成功耗或面积结论。
 
 每次 NPU 性能或 PPA 优化迭代，都必须在对应设计文档中留下可复盘记录。目标是后续
 架构 review 时可以直接看到当时的问题、思路、收益和代价，而不是从 patch 和 log

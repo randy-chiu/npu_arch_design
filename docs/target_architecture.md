@@ -10,6 +10,19 @@ implement every feature immediately. Architecture changes still follow the
 measurement rule in `docs/project_plan.md`: do not add complexity without a
 measured bottleneck and a verification plan.
 
+Current priority update:
+
+- the long-term application driver is Transformer/LLM inference, including
+  distinct prefill and decode behavior;
+- the immediate engineering phase is Level 0 lightweight PPA reporting:
+  real RTL performance counters plus structural-area and event-energy proxies,
+  with `npu_subsystem` as the primary measurement boundary;
+- MNIST CNN remains a compatibility/regression workload rather than the sole
+  reason to extend the architecture;
+- additional datapath features must be evaluated using the PPA contract in
+  `docs/design/ppa_methodology.md` and workload plan in
+  `docs/design/transformer_workloads.md`.
+
 ## 1. Research Snapshot
 
 Checked on 2026-05-17. Primary public references:
@@ -268,22 +281,29 @@ Only after A1-A4 are measured:
 - structured sparsity and compressed-domain execution;
 - multi-core partitioning and NoC;
 - command queues and IRQ-driven runtime;
-- energy/area estimation.
+- broader technology/precision variants after the PPA baseline is stable.
 
 ## 5. Immediate Next Plan
 
 Recommended next implementation sequence:
 
-1. Freeze the current perf baseline in docs and generated report examples.
-2. Add a cycle-model estimate for current scalar matmul vs ideal 8x8 array
-   matmul, without changing RTL yet.
-3. Create a separate `matmul_array` RTL module behind the same core interface.
-4. Add a config switch or new architecture version for scalar vs array matmul.
-5. Update `perf-report` to show expected-vs-measured cycles for matmul.
-6. Only then replace the default core matmul path.
+1. Generate a Level 0 proxy report from existing RTL `PERF_JOB` counters,
+   structural resource assumptions, and replaceable event-energy
+   coefficients.
+2. Use the already implemented matrix-array, wider movement, and ping-pong
+   behavior as the first PPA comparison/reference cases.
+3. Define Transformer micro-workload manifests for GEMM/GEMV, RMSNorm,
+   attention, and KV-cache traffic, splitting prefill from decode.
+4. Add lightweight mapped-area/timing estimation with Yosys/ABC and a public
+   Liberty library when the proxy identifies variants worth ranking.
+5. Add activity-driven power and later SKY130HD/OpenROAD/OpenLane physical
+   estimates only for selected variants with stable memory boundaries.
+6. Select the next RTL capability after the PPA baseline and
+   Transformer-driven gap are visible.
 
-This keeps the next step narrow: prove that the matrix engine changes the
-measured bottleneck before adding DMA, banking, or vector pipeline complexity.
+The existing MNIST `fc1 -> fc2` completion remains useful as a system
+regression task, but it is no longer ahead of establishing PPA measurement
+discipline.
 
 A1 implementation details are tracked in:
 
