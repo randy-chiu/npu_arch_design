@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import warnings
 from pathlib import Path
 
 
@@ -200,7 +201,7 @@ def add_timeline(job: dict) -> dict:
     return job
 
 
-def parse_perf_log(path: Path) -> dict:
+def parse_perf_log(path: Path, manifest_path: Path | None = None) -> dict:
     jobs = []
     with path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -213,11 +214,30 @@ def parse_perf_log(path: Path) -> dict:
                 )
     if not jobs:
         raise ValueError(f"no {PERF_PREFIX.strip()} records found in {path}")
-    workloads = infer_workloads(jobs)
+    workload_manifest = None
+    if manifest_path is not None:
+        workload_manifest = load_workload_manifest(manifest_path)
+        workloads = workloads_from_manifest(jobs, workload_manifest)
+    else:
+        warnings.warn(
+            "no workload manifest provided; falling back to order-based workload inference",
+            UserWarning,
+        )
+        workloads = infer_workloads(jobs)
     highlights = build_highlights(workloads, jobs)
     return {
         "schema": "npu_perf_report_v0",
         "source_log": str(path),
+        "workload_manifest": (
+            {
+                "schema": workload_manifest["schema"],
+                "id": workload_manifest["manifest_id"],
+                "run_name": workload_manifest["run_name"],
+                "source": str(manifest_path),
+            }
+            if workload_manifest is not None
+            else None
+        ),
         "summary": {
             "jobs": len(jobs),
             "workloads": len(workloads),
@@ -228,6 +248,86 @@ def parse_perf_log(path: Path) -> dict:
         "workloads": workloads,
         "jobs": jobs,
     }
+
+
+def load_workload_manifest(path: Path) -> dict:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if manifest.get("schema") != "npu_workload_manifest_v0":
+        raise ValueError(f"{path}: unsupported workload manifest schema {manifest.get('schema')!r}")
+    for required in ("manifest_id", "run_name", "jobs"):
+        if required not in manifest:
+            raise ValueError(f"{path}: workload manifest is missing required field {required!r}")
+    if not isinstance(manifest["jobs"], list) or not manifest["jobs"]:
+        raise ValueError(f"{path}: workload manifest jobs must be a non-empty array")
+    seen: set[int] = set()
+    for entry in manifest["jobs"]:
+        for required in ("job_id", "workload", "op", "role"):
+            if required not in entry:
+                raise ValueError(f"{path}: workload manifest job is missing required field {required!r}")
+        job_id = entry["job_id"]
+        if not isinstance(job_id, int) or job_id in seen:
+            raise ValueError(f"{path}: workload manifest has invalid or duplicate job_id {job_id!r}")
+        seen.add(job_id)
+    return manifest
+
+
+def _job_id(job: dict, require_explicit: bool = False) -> int:
+    if "job_id" in job:
+        return int(job["job_id"])
+    if not require_explicit and "id" in job:
+        return int(job["id"])
+    raise ValueError("PERF_JOB record is missing required job_id for manifest correlation")
+
+
+def workloads_from_manifest(jobs: list[dict], manifest: dict) -> list[dict]:
+    job_by_id: dict[int, dict] = {}
+    for job in jobs:
+        job_id = _job_id(job, require_explicit=True)
+        if job_id in job_by_id:
+            raise ValueError(f"duplicate PERF_JOB job_id {job_id}")
+        job_by_id[job_id] = job
+
+    entry_by_id = {entry["job_id"]: entry for entry in manifest["jobs"]}
+    missing = sorted(set(entry_by_id) - set(job_by_id))
+    unexpected = sorted(set(job_by_id) - set(entry_by_id))
+    if missing or unexpected:
+        raise ValueError(
+            "workload manifest/PERF_JOB mismatch: "
+            f"missing job_id(s) {missing}; unexpected job_id(s) {unexpected}"
+        )
+
+    ordered_workloads: list[str] = []
+    grouped_jobs: dict[str, list[dict]] = {}
+    first_entry: dict[str, dict] = {}
+    for entry in manifest["jobs"]:
+        job_id = entry["job_id"]
+        job = job_by_id[job_id]
+        if job.get("name") != entry["op"]:
+            raise ValueError(
+                f"workload manifest/PERF_JOB mismatch for job_id {job_id}: "
+                f"manifest op {entry['op']!r}, PERF_JOB name {job.get('name')!r}"
+            )
+        workload = entry["workload"]
+        if workload not in grouped_jobs:
+            ordered_workloads.append(workload)
+            grouped_jobs[workload] = []
+            first_entry[workload] = entry
+        grouped_jobs[workload].append(job)
+
+    definitions = manifest.get("workload_metadata", {})
+    summaries = []
+    for workload in ordered_workloads:
+        definition = definitions.get(workload, {})
+        entry = first_entry[workload]
+        summaries.append(
+            _workload_summary(
+                workload,
+                grouped_jobs[workload],
+                definition.get("kind", entry["role"]),
+                metadata=definition.get("metadata", {}),
+            )
+        )
+    return summaries
 
 
 def build_highlights(workloads: list[dict], jobs: list[dict]) -> list[dict]:
@@ -243,7 +343,7 @@ def build_highlights(workloads: list[dict], jobs: list[dict]) -> list[dict]:
         improvement_pct = (cycles_saved * 100.0 / old_serial_baseline) if old_serial_baseline else 0.0
         overlap_cycles = 0
         for job in jobs:
-            if job.get("id") in fc1_full.get("job_ids", []):
+            if _job_id(job) in fc1_full.get("job_ids", []):
                 for lane in job.get("timeline", []):
                     if lane.get("module") == "Data mover":
                         for span in lane.get("spans", []):
@@ -422,7 +522,7 @@ def _workload_summary(
     return {
         "name": name,
         "kind": kind,
-        "job_ids": [job["id"] for job in jobs],
+        "job_ids": [_job_id(job) for job in jobs],
         "jobs": len(jobs),
         "total_cycles": total_cycles,
         "max_job_cycles": max(int(job["total_cycles"]) for job in jobs),
@@ -741,7 +841,7 @@ def write_html(report: dict, path: Path) -> None:
     <section class="job" id="workloads">
       <div class="job-head">
         <h2>Workload Summary</h2>
-        <div class="subtle">Grouped model/operator runs inferred from PERF_JOB records</div>
+        <div class="subtle">Grouped model/operator runs from workload manifest when supplied; legacy logs fall back to inference</div>
       </div>
     </section>
     <section class="grid" id="jobs"></section>
@@ -1073,11 +1173,12 @@ def write_html(report: dict, path: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate NPU cycle report UI from simulation log.")
     parser.add_argument("--log", required=True, type=Path)
+    parser.add_argument("--workload-manifest", type=Path)
     parser.add_argument("--json-out", required=True, type=Path)
     parser.add_argument("--html-out", required=True, type=Path)
     args = parser.parse_args()
 
-    report = parse_perf_log(args.log)
+    report = parse_perf_log(args.log, args.workload_manifest)
     write_json(report, args.json_out)
     write_html(report, args.html_out)
     print(f"Wrote {args.json_out}")

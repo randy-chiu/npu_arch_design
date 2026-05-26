@@ -13,6 +13,7 @@ Outputs:
 
 ```text
 build/perf/cpu_soc_perf.log
+build/perf/workload_manifest.json
 build/perf/perf.json
 build/perf/perf_report.html
 ```
@@ -22,8 +23,11 @@ The schema is intentionally small: each job has total cycles plus nested module
 phase counters. Later RTL modules can add more nested counters without changing
 the basic report flow.
 
-The report also emits an inferred `workloads` section for the current firmware
-smoke sequence:
+The report reads `workload_manifest.json` and emits a `workloads` section for
+the current firmware smoke sequence. Each `PERF_JOB` carries canonical
+`job_id`; the manifest fixes the workload semantics independently of line
+order. Invocation without a manifest is retained for legacy logs only and
+prints a warning before order-based inference.
 
 - `operator_smoke_matmul`: the original single matmul job;
 - `operator_smoke_softmax`: the original single softmax job;
@@ -56,7 +60,8 @@ do not insert counters into every module.
 - core host-window write cycles are counted from wrapper `desc_host_we`;
 - core host-window read cycles are currently inferred during
   `DESC_WRITE_OUTPUT`;
-- at `DESC_DONE`, the testbench prints one `PERF_JOB` JSON line.
+- at `DESC_DONE`, the testbench prints one `PERF_JOB` JSON line with stable
+  `job_id` and legacy `id`.
 
 This keeps the bring-up RTL clean while the performance taxonomy is still
 changing. The tradeoff is that the counters are simulation/reporting counters,
@@ -273,8 +278,9 @@ Near-term extensions:
 
 - Add CPU-side spans before and after NPU launch: input staging, descriptor
   write, program copy, result check, and test-status write.
-- Emit explicit firmware workload metadata instead of relying on report-side
-  inference for `digits_linear_classifier`.
+- Keep workload metadata generation in
+  `sw/tools/firmware/emit_soc_cpu_smoke_data.py` synchronized with firmware
+  regression jobs as they evolve.
 - Split CPU polling into MMIO read transactions and idle cycles.
 - Convert SRAM NPU-port read/write spans from simple one-word-per-cycle movement
   into burst/bandwidth-aware data mover counters.

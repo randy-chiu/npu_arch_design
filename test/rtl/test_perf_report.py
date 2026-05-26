@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import unittest
 from tempfile import TemporaryDirectory
 from pathlib import Path
@@ -8,6 +9,100 @@ from perf.report import parse_perf_log, write_html, write_json
 
 
 class PerfReportTests(unittest.TestCase):
+    def test_firmware_fixture_tool_emits_manifest_from_job_counts(self):
+        tool_path = Path("sw/tools/firmware/emit_soc_cpu_smoke_data.py")
+        spec = importlib.util.spec_from_file_location("emit_soc_cpu_smoke_data", tool_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "manifest.json"
+            module._write_workload_manifest(manifest_path, 16, 1, 1, 16, 1152, 32)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest["generated_by"], "sw/tools/firmware/emit_soc_cpu_smoke_data.py")
+        self.assertEqual(len(manifest["jobs"]), 68)
+        self.assertEqual(manifest["jobs"][20]["workload"], "real_mnist_cnn_fc1_full_k_stream_layer")
+        self.assertEqual(manifest["jobs"][-1]["job_id"], 68)
+        self.assertEqual(
+            manifest["workload_metadata"]["real_mnist_cnn_fc1_full_k_stream_layer"]["metadata"]["k_chunks"],
+            1152,
+        )
+
+    def test_manifest_groups_jobs_by_job_id_not_log_order(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "perf.log"
+            manifest_path = tmp_path / "manifest.json"
+            first = _perf_job_line(7, "softmax", 53, matmul_cycles=0).replace(
+                '{"id":7', '{"job_id":7,"id":7'
+            )
+            second = _perf_job_line(4, "matmul", 236).replace(
+                '{"id":4', '{"job_id":4,"id":4'
+            )
+            log_path.write_text(first + second, encoding="utf-8")
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "npu_workload_manifest_v0",
+                        "manifest_id": "reordered_v0",
+                        "run_name": "unit",
+                        "jobs": [
+                            {
+                                "job_id": 4,
+                                "workload": "matrix_regression",
+                                "op": "matmul",
+                                "role": "regression",
+                            },
+                            {
+                                "job_id": 7,
+                                "workload": "vector_regression",
+                                "op": "softmax",
+                                "role": "regression",
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = parse_perf_log(log_path, manifest_path)
+
+            self.assertEqual(report["workload_manifest"]["id"], "reordered_v0")
+            self.assertEqual(report["workloads"][0]["name"], "matrix_regression")
+            self.assertEqual(report["workloads"][0]["job_ids"], [4])
+            self.assertEqual(report["workloads"][1]["name"], "vector_regression")
+            self.assertEqual(report["workloads"][1]["job_ids"], [7])
+
+    def test_manifest_requires_explicit_perf_job_id(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "perf.log"
+            manifest_path = tmp_path / "manifest.json"
+            log_path.write_text(_perf_job_line(1, "matmul", 236), encoding="utf-8")
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "npu_workload_manifest_v0",
+                        "manifest_id": "unit_v0",
+                        "run_name": "unit",
+                        "jobs": [
+                            {
+                                "job_id": 1,
+                                "workload": "operator_smoke_matmul",
+                                "op": "matmul",
+                                "role": "smoke",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "missing required job_id"):
+                parse_perf_log(log_path, manifest_path)
+
     def test_perf_log_generates_json_and_html_report(self):
         with TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

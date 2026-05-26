@@ -16,3 +16,9 @@ working fixture code should happen only when it reduces duplication or enables
 a required comparison.
 
 See `docs/design/transformer_workloads.md`.
+
+The current SoC regression's explicit job-to-workload contract is generated
+beside firmware fixture artifacts by `sw/tools/firmware/emit_soc_cpu_smoke_data.py`
+into `build/perf/workload_manifest.json`; see
+`docs/design/workload_manifest.md`. Versioned Transformer input manifests
+remain checked in under `manifests/`.

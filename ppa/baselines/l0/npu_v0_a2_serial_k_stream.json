@@ -7,6 +7,7 @@
   },
   "area_config": "arch/configs/ppa/area_proxy_v0_serial_k_stream.jsonc",
   "energy_config": "arch/configs/ppa/energy_proxy_v0.jsonc",
+  "workload_manifest_id": "soc_cpu_smoke_v0",
   "source": {
     "performance": "recorded_rtl_perf_job_counters",
     "reference_docs": [

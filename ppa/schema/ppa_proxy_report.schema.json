@@ -3,32 +3,90 @@
   "$id": "ppa_proxy_report.schema.json",
   "title": "NPU Level 0 PPA Proxy Report",
   "type": "object",
-  "required": ["schema", "evidence_level", "design", "area_proxy", "workloads"],
+  "required": [
+    "schema",
+    "evidence_level",
+    "design",
+    "proxy_config",
+    "metric_provenance",
+    "area_proxy",
+    "workloads",
+    "limitations",
+    "comparison"
+  ],
   "properties": {
     "schema": {"const": "npu_ppa_proxy_report_v0"},
     "evidence_level": {"const": "L0_proxy"},
-    "design": {"type": "object"},
-    "metric_provenance": {"type": "object"},
-    "area_proxy": {"type": "object"},
+    "source_perf_report": {"type": "string"},
+    "workload_manifest_id": {"type": ["string", "null"]},
+    "run_metadata": {
+      "type": "object",
+      "properties": {
+        "baseline_kind": {"type": "string"},
+        "rtl_revision": {"type": "string"},
+        "functional_status": {"type": "string"},
+        "activity_scope": {"type": "string"},
+        "generation_command": {"type": "string"}
+      }
+    },
+    "design": {"type": "object", "required": ["top", "variant"]},
+    "proxy_config": {
+      "type": "object",
+      "required": [
+        "area_coefficient_version",
+        "area_units",
+        "area_coefficients",
+        "energy_coefficient_version",
+        "energy_units",
+        "energy_coefficients"
+      ]
+    },
+    "metric_provenance": {
+      "type": "object",
+      "required": ["performance", "area", "energy", "timing", "power"]
+    },
+    "area_proxy": {
+      "type": "object",
+      "required": ["units", "resources", "coefficients", "normalized_area_units"],
+      "properties": {
+        "units": {"const": "normalized_area_units"},
+        "normalized_area_units": {"type": "number"}
+      }
+    },
     "workloads": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "performance", "energy_proxy"]
+        "required": ["name", "performance", "energy_proxy"],
+        "properties": {
+          "performance": {
+            "type": "object",
+            "required": ["cycles", "core_matmul_cycles", "data_mover_words", "provenance"]
+          },
+          "energy_proxy": {
+            "type": "object",
+            "required": ["units", "events", "coefficients", "normalized_energy_units"],
+            "properties": {
+              "units": {"const": "normalized_energy_units"}
+            }
+          }
+        }
       }
     },
     "highlights": {"type": "array"},
+    "limitations": {"type": "array", "minItems": 1, "items": {"type": "string"}},
     "comparison": {
       "type": ["object", "null"],
       "properties": {
+        "comparable": {"type": "boolean"},
+        "compatibility": {"type": "object"},
         "baseline": {"type": "object"},
         "candidate": {"type": "object"},
-        "area_delta": {"type": "object"},
+        "area_delta": {"type": ["object", "null"]},
         "workload_deltas": {"type": "array"},
         "improvements": {"type": "array"},
         "costs": {"type": "array"}
-      },
-      "additionalProperties": true
+      }
     }
   },
   "additionalProperties": true

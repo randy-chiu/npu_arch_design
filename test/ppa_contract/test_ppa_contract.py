@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from ppa.proxy_report import build_proxy_report, read_jsonc
+from ppa.schema_check import validate_proxy_report
 
 
 PPA_TARGET_PATH = Path("arch/configs/ppa/sky130hd_v0.jsonc")
@@ -13,7 +14,7 @@ PPA_SCHEMA_PATH = Path("ppa/schema/ppa_result.schema.json")
 PPA_PROXY_SCHEMA_PATH = Path("ppa/schema/ppa_proxy_report.schema.json")
 AREA_PROXY_PATH = Path("arch/configs/ppa/area_proxy_v0.jsonc")
 ENERGY_PROXY_PATH = Path("arch/configs/ppa/energy_proxy_v0.jsonc")
-SERIAL_BASELINE_PATH = Path("ppa/baselines/l0/npu_v0_a2_serial_k_stream.json")
+SERIAL_BASELINE_PATH = Path("ppa/baselines/l0/npu_v0_a2_serial_k_stream_proxy.json")
 TRANSFORMER_MANIFEST_PATH = Path("workloads/manifests/transformer/transformer_micro_v0.jsonc")
 SUBSYSTEM_RTL_PATH = Path("hw/npu_subsystem/rtl/npu_subsystem_top.sv")
 
@@ -90,13 +91,10 @@ class PPAContractTests(unittest.TestCase):
         )
 
     def test_proxy_report_compares_ping_pong_candidate_against_serial_baseline(self):
-        baseline_input = json.loads(SERIAL_BASELINE_PATH.read_text(encoding="utf-8"))
-        baseline_report = build_proxy_report(
-            baseline_input,
-            read_jsonc(Path(baseline_input["area_config"])),
-            read_jsonc(Path(baseline_input["energy_config"])),
-        )
+        baseline_report = json.loads(SERIAL_BASELINE_PATH.read_text(encoding="utf-8"))
+        validate_proxy_report(baseline_report)
         candidate_perf = {
+            "workload_manifest_id": "soc_cpu_smoke_v0",
             "workloads": [
                 {
                     "name": "real_mnist_cnn_fc1_full_k_stream_layer",
@@ -135,6 +133,58 @@ class PPAContractTests(unittest.TestCase):
         self.assertEqual(delta["energy_proxy"]["classification"], "improvement")
         self.assertTrue(comparison["improvements"])
         self.assertTrue(any("area proxy increases" in item for item in comparison["costs"]))
+
+    def test_proxy_schema_validator_requires_critical_fields(self):
+        report = build_proxy_report(
+            {"workloads": [], "highlights": []},
+            read_jsonc(AREA_PROXY_PATH),
+            read_jsonc(ENERGY_PROXY_PATH),
+        )
+        validate_proxy_report(report)
+        del report["area_proxy"]["normalized_area_units"]
+        with self.assertRaisesRegex(ValueError, "normalized_area_units is required"):
+            validate_proxy_report(report)
+
+    def test_proxy_schema_validator_rejects_inconsistent_or_negative_metrics(self):
+        report = build_proxy_report(
+            {
+                "workloads": [
+                    {
+                        "name": "bad_workload",
+                        "total_cycles": 1,
+                        "core_matmul_cycles": 0,
+                        "data_mover": {"words": 0},
+                    }
+                ],
+                "highlights": [],
+            },
+            read_jsonc(AREA_PROXY_PATH),
+            read_jsonc(ENERGY_PROXY_PATH),
+        )
+        report["area_proxy"]["normalized_area_units"] += 1
+        report["workloads"][0]["performance"]["cycles"] = -1
+        with self.assertRaisesRegex(ValueError, "contribution sum"):
+            validate_proxy_report(report)
+        with self.assertRaisesRegex(ValueError, "non-negative number"):
+            validate_proxy_report(report)
+
+    def test_proxy_comparison_marks_mismatched_manifest_incomparable(self):
+        baseline = build_proxy_report(
+            {"workload_manifest_id": "baseline_manifest", "workloads": [], "highlights": []},
+            read_jsonc(AREA_PROXY_PATH),
+            read_jsonc(ENERGY_PROXY_PATH),
+        )
+        candidate = build_proxy_report(
+            {"workload_manifest_id": "candidate_manifest", "workloads": [], "highlights": []},
+            read_jsonc(AREA_PROXY_PATH),
+            read_jsonc(ENERGY_PROXY_PATH),
+            baseline_report=baseline,
+        )
+        self.assertFalse(candidate["comparison"]["comparable"])
+        self.assertIn(
+            "workload_manifest_id differs or is missing on one report",
+            candidate["comparison"]["compatibility"]["issues"],
+        )
 
     def test_transformer_manifest_separates_prefill_and_decode(self):
         manifest = _read_jsonc(TRANSFORMER_MANIFEST_PATH)

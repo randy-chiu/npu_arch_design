@@ -304,6 +304,20 @@ build/ppa/proxy/ppa_proxy.json
 build/ppa/proxy/ppa_proxy_report.html
 ```
 
+The executable `L0_proxy` report contract is documented in
+`ppa/schema/ppa_proxy_schema_v0.md` and validated by
+`sw/tools/ppa/schema_check.py`. `normalized_area_units` and
+`normalized_energy_units` are not physical area or joules. A report is
+directly comparable to a baseline only when schema, evidence level, proxy
+coefficient model/units, common workload names, and declared
+`workload_manifest_id` are compatible.
+
+`make ppa-proxy-report` remains the complete validation gate because it
+regenerates RTL-measured performance. When an existing `build/perf/perf.json`
+is already valid and only schema/report presentation is changing,
+`make ppa-proxy-from-perf` performs the derived Level 0 generation and
+validation without repeating the long SoC run.
+
 Named baseline summaries are checked in under:
 
 ```text

@@ -173,6 +173,7 @@ the generated smoke image path used during early bring-up.
 `make perf-report` writes:
 
 ```text
+build/perf/workload_manifest.json
 build/perf/perf.json
 build/perf/perf_report.html
 ```
@@ -185,6 +186,16 @@ performance/traffic: measured from RTL PERF_JOB counters
 area:                structural normalized proxy, not synthesized area
 energy:              event-based normalized proxy, not measured power
 ```
+
+The current SoC run is grouped using the explicit workload manifest generated at
+`build/perf/workload_manifest.json`; PPA report compatibility includes its
+manifest identity. The Level 0 JSON contract and validation rules live in
+`ppa/schema/ppa_proxy_schema_v0.md` and are enforced during
+`make ppa-proxy-report`.
+
+For report/schema-only iteration after `build/perf/perf.json` already exists,
+`make ppa-proxy-from-perf` regenerates and validates the Level 0 proxy output
+without rerunning the SoC simulation.
 
 After a baseline exists, every NPU architecture iteration must report deltas
 against that baseline. Improvements and costs are both part of the decision:

@@ -54,6 +54,54 @@ workload. It is no longer the primary driver for future NPU capabilities.
 Transformer kernels and eventually a tiny decoder block will drive new
 matrix/vector/reduction/memory architecture decisions.
 
+## Baseline Stabilization Debt And Execution Order
+
+The current architecture baseline is functional, but the evaluation
+infrastructure still has deliberate early-stage debt. Work is ordered to keep
+the verified SoC/PPA path stable before adding Transformer datapath features.
+
+| Priority | Debt / action | Status |
+| --- | --- | --- |
+| `P0` | Workload semantics must be generated from the same fixture/tool path that determines firmware jobs, not maintained as an independent 68-job list. | Implemented: `emit_soc_cpu_smoke_data.py` emits `build/perf/workload_manifest.json`; generated minimal firmware emits its two-job manifest. |
+| `P0` | PPA baselines must be validated frozen `ppa_proxy.json` reports with schema, evidence, manifest and coefficient identity. | Implemented for active serial comparison: frozen Level 0 report established; legacy recorded input retained only for provenance. |
+| `P0` | Proxy validation must catch arithmetic/identity corruption, not only missing fields. | Implemented for L0: contribution totals, non-negative metrics, unique workloads and delta consistency validated. |
+| `P1` | Development should generate PPA from an existing valid perf artifact without rerunning the long SoC simulation. | Implemented: `make ppa-proxy-from-perf` is the fast derived-report target; `make ppa-proxy-report` remains the full gate. |
+| `P1` | Perf metrics currently come from hierarchical testbench sampling rather than an architectural register interface. | Planned: define counter snapshot/clear semantics and implement wrapper counter aggregation with TB-versus-CSR correlation tests. |
+| `P2` | Workload comparison identity lacks full shape, precision, activity-scope and external-memory accounting identity. | Planned before Transformer comparisons become decision evidence. |
+| `P2` | PPA evidence stops at `L0_proxy`; mapped timing/area and activity-based power do not yet exist. | Planned after L0 contracts and workloads are stable. |
+| `P3` | Current host-window memory path and simplified vector/SFU timing are bring-up structures. | Planned unified tensor-NPU evolution; do not fork CNN and Transformer cores. |
+
+Remaining scoped debt:
+
+- `job_id` is still observed/numbered at the testbench launch boundary rather
+  than carried by a firmware descriptor or future command queue ABI.
+- `report.py` still has warned order-based inference for legacy log replay; new
+  production report targets must continue supplying a manifest.
+- the C application and its fixture emitter still share an expected fixed
+  workload structure; generation removes the duplicated 68-entry list, while
+  a future job-table ABI could remove the remaining sequencing convention.
+- FC1 ping-pong highlights are workload-specific report presentation logic and
+  should not become the pattern for each new Transformer microbenchmark.
+- current traffic evidence is primarily on-chip mover traffic; external
+  memory/KV-cache accounting must be explicit before decode comparisons.
+- current host-window preload/readback memory structure and simplified
+  softmax/SFU timing are bring-up mechanisms, not a final tensor-NPU memory or
+  vector performance model.
+- the target `rtl/npu/{matrix,memory,vector,reduction,sfu,wrapper}` structure is
+  staged documentation; current verified RTL remains under `hw/`.
+- full SoC regression remains slow, so fast targets improve development
+  feedback but cannot replace full acceptance runs.
+
+Immediate implementation sequence:
+
+1. Specify wrapper-visible perf counter control/snapshot/overflow semantics
+   and cross-check a minimal RTL implementation against existing
+   testbench-sampled counters.
+2. Extend workload identity and external-memory accounting before using
+   Transformer microbench results for architecture decisions.
+3. Introduce `L1_mapped` analysis only after the Level 0 baseline is
+   reproducible and auditable.
+
 ## Current Module Ownership
 
 | Area | Ownership |

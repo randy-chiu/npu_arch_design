@@ -3065,3 +3065,52 @@ make ppa-proxy-report: PASS, generated candidate-versus-baseline JSON/HTML
 PYTHONPATH=sw/tools python -m unittest test.ppa_contract.test_ppa_contract -v: PASS, 6 tests
 make test: PASS, 37 tests, 204.151s
 ```
+
+## Session 57: Stable Manifest And Frozen Level 0 Baseline
+
+Goal:
+
+- remove report-side ownership of current firmware workload ordering;
+- make the active Level 0 baseline a validated frozen report;
+- reduce report-only iteration time without weakening the full SoC/PPA gate;
+- document remaining debt before introducing further datapath or Transformer
+  implementation.
+
+Implemented:
+
+- `sw/tools/firmware/emit_soc_cpu_smoke_data.py` now emits
+  `build/perf/workload_manifest.json` from the same enabled fixture counts
+  that build the C firmware data; the full current run emits 68 jobs and
+  carries derived `fc1` `k_chunks=1152`;
+- `sw/tools/firmware/emit_soc_cpu_smoke.py` emits a matching two-job manifest
+  for the minimal generated-firmware fallback;
+- `make perf-report` consumes the generated manifest directly rather than
+  copying a separately maintained fixed job list;
+- added active frozen baseline
+  `ppa/baselines/l0/npu_v0_a2_serial_k_stream_proxy.json`; the older
+  `npu_v0_a2_serial_k_stream.json` remains only as recorded source evidence;
+- `sw/tools/ppa/schema_check.py` now checks non-negative metrics, area/energy
+  contribution sums, duplicate workload names, and comparable delta
+  consistency in addition to required fields;
+- added `make ppa-proxy-from-perf` for derived-report work from an existing
+  valid perf artifact; `make ppa-proxy-report` still reruns the complete
+  RTL-performance path and invokes the fast target only after it succeeds;
+- recorded the baseline stabilization debt/order in `docs/project_plan.md`.
+
+Deliberately deferred:
+
+- wrapper-visible perf CSR RTL was not introduced in this batch. The next
+  implementation must first define snapshot/clear/overflow semantics and
+  compare CSR values against the current testbench-sampled reference counters
+  before changing report provenance.
+
+Validation:
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report test.ppa_contract.test_ppa_contract -v: PASS, 18 tests
+make firmware-smoke: PASS
+make perf-report: PASS, generated manifest drives 68 jobs / 7 workloads
+make ppa-proxy-from-perf: PASS, frozen baseline and candidate validation pass
+make ppa-proxy-report: PASS, full perf-to-proxy gate and validation pass
+make test: PASS, 43 tests, 204.889s
+```

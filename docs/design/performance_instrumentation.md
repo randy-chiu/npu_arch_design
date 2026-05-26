@@ -109,8 +109,10 @@ Inside `hw/soc/tb/soc_cpu_tb.sv`, the profiling block is an `always` block on
 
 `report.py` is post-processing only. It parses lines beginning with
 `PERF_JOB `, adds analytical estimates, reconstructs timeline spans from the
-phase counters, infers known multi-job workloads by job order, and writes JSON
-and HTML reports.
+phase counters, and writes JSON and HTML reports. The current build supplies
+`build/perf/workload_manifest.json`, so workload grouping uses explicit
+`job_id` declarations rather than job order. Order-based inference remains
+only as a warned fallback for legacy logs.
 
 Current workload inference recognizes 53 jobs / 7 workloads when the real MNIST
 external fixtures are present:
@@ -180,7 +182,8 @@ Each job has:
 
 | Field | Meaning |
 | --- | --- |
-| `id` | job sequence number |
+| `job_id` | Stable manifest join key; current SoC run retains one-based numbering. |
+| `id` | Legacy alias retained for old report consumers. |
 | `name` | `matmul`, `softmax`, or `unknown` |
 | `total_cycles` | measured launch-to-wrapper-done cycles |
 | `wrapper` | wrapper phase cycles |
@@ -193,6 +196,11 @@ Each job has:
 
 The schema is intentionally small and additive. New counters should be added as
 nested fields rather than breaking existing fields.
+
+The manifest contract and mismatch behavior are specified in
+`docs/design/workload_manifest.md`. The planned transition from testbench
+sampling to CPU-visible counter registers is specified in
+`docs/design/perf_counter_csr_plan.md`.
 
 ## 6. Timeline Reconstruction
 

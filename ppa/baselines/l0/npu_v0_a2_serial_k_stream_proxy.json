@@ -1,0 +1,136 @@
+{
+  "schema": "npu_ppa_proxy_report_v0",
+  "evidence_level": "L0_proxy",
+  "source_perf_report": "recorded baseline input: ppa/baselines/l0/npu_v0_a2_serial_k_stream.json",
+  "workload_manifest_id": "soc_cpu_smoke_v0",
+  "run_metadata": {
+    "baseline_kind": "frozen_validated_proxy_report",
+    "rtl_revision": "recorded_serial_k_stream_pre_ping_pong",
+    "functional_status": "recorded_rtl_counter_baseline",
+    "activity_scope": "kernel_only",
+    "generation_command": "PYTHONPATH=sw/tools python -m ppa.proxy_report --perf-json ppa/baselines/l0/npu_v0_a2_serial_k_stream.json --area-config arch/configs/ppa/area_proxy_v0_serial_k_stream.jsonc --energy-config arch/configs/ppa/energy_proxy_v0.jsonc"
+  },
+  "design": {
+    "top": "npu_subsystem",
+    "variant": "npu_v0_a2_serial_k_stream"
+  },
+  "proxy_config": {
+    "area_coefficient_version": 0,
+    "area_units": "normalized_area_units",
+    "area_coefficients": {
+      "int8_mac_lane": 100.0,
+      "stored_bit": 0.05,
+      "data_mover_lane": 25.0,
+      "wrapper_control_unit": 100.0
+    },
+    "energy_coefficient_version": 0,
+    "energy_units": "normalized_energy_units",
+    "energy_coefficients": {
+      "int8_mac_accumulate": 1.0,
+      "data_mover_read_word": 4.0,
+      "data_mover_write_word": 5.0,
+      "active_subsystem_cycle": 0.25,
+      "external_memory_byte": 20.0
+    }
+  },
+  "metric_provenance": {
+    "performance": "recorded_rtl_perf_job_counters",
+    "area": "structural_proxy_not_synthesized_area",
+    "energy": "event_proxy_not_measured_power",
+    "timing": "unavailable_until_mapped_or_physical_analysis",
+    "power": "unavailable_until_activity_based_tool_flow"
+  },
+  "area_proxy": {
+    "units": "normalized_area_units",
+    "interpretation": "structural_proxy_not_synthesized_area",
+    "config": "area_proxy_v0_serial_k_stream",
+    "resources": {
+      "int8_mac_lanes": 64,
+      "data_mover_lanes": 4,
+      "wrapper_control_units": 1,
+      "storage_bits": {
+        "a_preload_single": 512,
+        "b_preload_single": 512,
+        "spad_a": 512,
+        "spad_b": 512,
+        "accumulator": 2048,
+        "output_window": 2048,
+        "instruction_memory": 512,
+        "softmax_state": 288
+      }
+    },
+    "storage_bits_total": 6944,
+    "coefficients": {
+      "int8_mac_lane": 100.0,
+      "stored_bit": 0.05,
+      "data_mover_lane": 25.0,
+      "wrapper_control_unit": 100.0
+    },
+    "contributions": {
+      "int8_mac_lanes": 6400.0,
+      "stored_bits": 347.2,
+      "data_mover_lanes": 100.0,
+      "wrapper_control": 100.0
+    },
+    "normalized_area_units": 6947.2,
+    "excludes": [
+      "CPU",
+      "simulation boot ROM",
+      "simulation SoC SRAM",
+      "external memory energy",
+      "unmeasured wiring and clock tree"
+    ]
+  },
+  "workloads": [
+    {
+      "name": "real_mnist_cnn_fc1_full_k_stream_layer",
+      "kind": "model_layer",
+      "jobs": 16,
+      "performance": {
+        "cycles": 940544,
+        "core_matmul_cycles": 184320,
+        "data_mover_words": 2360576,
+        "provenance": "recorded_rtl_perf_job_counters"
+      },
+      "energy_proxy": {
+        "units": "normalized_energy_units",
+        "interpretation": "event_proxy_not_measured_power",
+        "events": {
+          "int8_mac_accumulate": 9437184,
+          "data_mover_read_word": 2359552,
+          "data_mover_write_word": 1024,
+          "active_subsystem_cycle": 940544,
+          "external_memory_byte": 0
+        },
+        "coefficients": {
+          "int8_mac_accumulate": 1.0,
+          "data_mover_read_word": 4.0,
+          "data_mover_write_word": 5.0,
+          "active_subsystem_cycle": 0.25,
+          "external_memory_byte": 20.0
+        },
+        "contributions": {
+          "int8_mac_accumulate": 9437184.0,
+          "data_mover_read_word": 9438208.0,
+          "data_mover_write_word": 5120.0,
+          "active_subsystem_cycle": 235136.0,
+          "external_memory_byte": 0.0
+        },
+        "normalized_energy_units": 19115648.0,
+        "normalized_energy_per_mac": 2.025567
+      },
+      "metadata": {
+        "tile_jobs": 16,
+        "k_chunks": 1152,
+        "derived_from_recorded_single_n_tile": true
+      }
+    }
+  ],
+  "highlights": [],
+  "limitations": [
+    "Normalized area units are not synthesized cell area or physical area.",
+    "Normalized energy units are not joules or measured power.",
+    "Current workload counters do not include external-memory traffic energy."
+  ],
+  "comparison": null
+}

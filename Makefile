@@ -1,4 +1,4 @@
-.PHONY: test demo digits-demo validate-arch soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke npu-core-sim npu-subsystem-elab rtl-sim soc-sim cpu-soc-sim perf-report ppa-proxy-report
+.PHONY: test demo digits-demo validate-arch soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke npu-core-sim npu-subsystem-elab rtl-sim soc-sim cpu-soc-sim perf-report ppa-proxy-from-perf ppa-proxy-report validate-ppa-proxy
 
 PYTHONPATH := sw/tools
 ARCH := arch/configs/npu_v0.jsonc
@@ -6,7 +6,7 @@ SOC := arch/configs/soc_v0.jsonc
 NPU_WRAPPER := arch/configs/npu_wrapper_v0.jsonc
 PPA_AREA_PROXY := arch/configs/ppa/area_proxy_v0.jsonc
 PPA_ENERGY_PROXY := arch/configs/ppa/energy_proxy_v0.jsonc
-PPA_BASELINE := ppa/baselines/l0/npu_v0_a2_serial_k_stream.json
+PPA_BASELINE := ppa/baselines/l0/npu_v0_a2_serial_k_stream_proxy.json
 RISCV_GCC ?= $(firstword $(shell command -v riscv-none-elf-gcc 2>/dev/null) $(shell command -v riscv32-unknown-elf-gcc 2>/dev/null) $(shell command -v riscv64-unknown-elf-gcc 2>/dev/null))
 RISCV_OBJCOPY ?= $(patsubst %-gcc,%-objcopy,$(RISCV_GCC))
 RISCV_OBJDUMP ?= $(patsubst %-gcc,%-objdump,$(RISCV_GCC))
@@ -33,10 +33,10 @@ npu-wrapper-spec:
 	python sw/tools/npu_wrapper/emit_npu_wrapper_spec.py --spec $(NPU_WRAPPER) --svh-out build/npu_wrapper/npu_v0_regs.svh --header-out build/npu_wrapper/npu_v0_regs.h
 
 firmware-data: rtl-fixtures
-	python sw/tools/firmware/emit_soc_cpu_smoke_data.py --fixtures build/rtl_fixture --out build/firmware/soc_cpu_smoke_data.h
+	python sw/tools/firmware/emit_soc_cpu_smoke_data.py --fixtures build/rtl_fixture --out build/firmware/soc_cpu_smoke_data.h --manifest-out build/perf/workload_manifest.json
 
 firmware-smoke-generated: rtl-fixtures soc-spec npu-wrapper-spec
-	python sw/tools/firmware/emit_soc_cpu_smoke.py --soc $(SOC) --wrapper $(NPU_WRAPPER) --fixtures build/rtl_fixture --out build/firmware/soc_cpu_smoke.hex
+	python sw/tools/firmware/emit_soc_cpu_smoke.py --soc $(SOC) --wrapper $(NPU_WRAPPER) --fixtures build/rtl_fixture --out build/firmware/soc_cpu_smoke.hex --manifest-out build/perf/workload_manifest.json
 
 firmware-smoke-c: rtl-fixtures soc-spec npu-wrapper-spec firmware-data
 	@test -n "$(RISCV_GCC)" || (echo "No RISC-V bare-metal GCC found. Install riscv-none-elf-gcc, riscv32-unknown-elf-gcc, or riscv64-unknown-elf-gcc."; exit 1)
@@ -128,10 +128,11 @@ perf-report: firmware-smoke
 		hw/soc/rtl/soc_cpu_top.sv \
 		hw/soc/tb/soc_cpu_tb.sv
 	vvp build/soc/soc_cpu_tb > build/perf/cpu_soc_perf.log
-	python sw/tools/perf/report.py --log build/perf/cpu_soc_perf.log --json-out build/perf/perf.json --html-out build/perf/perf_report.html
+	python sw/tools/perf/report.py --log build/perf/cpu_soc_perf.log --workload-manifest build/perf/workload_manifest.json --json-out build/perf/perf.json --html-out build/perf/perf_report.html
 
-ppa-proxy-report: perf-report
+ppa-proxy-from-perf:
 	mkdir -p build/ppa/proxy
+	PYTHONPATH=$(PYTHONPATH) python -m ppa.schema_check --json $(PPA_BASELINE)
 	PYTHONPATH=$(PYTHONPATH) python -m ppa.proxy_report \
 		--perf-json build/perf/perf.json \
 		--area-config $(PPA_AREA_PROXY) \
@@ -139,3 +140,10 @@ ppa-proxy-report: perf-report
 		--baseline-json $(PPA_BASELINE) \
 		--json-out build/ppa/proxy/ppa_proxy.json \
 		--html-out build/ppa/proxy/ppa_proxy_report.html
+	PYTHONPATH=$(PYTHONPATH) python -m ppa.schema_check --json build/ppa/proxy/ppa_proxy.json
+
+ppa-proxy-report: perf-report
+	$(MAKE) ppa-proxy-from-perf
+
+validate-ppa-proxy:
+	PYTHONPATH=$(PYTHONPATH) python -m ppa.schema_check --json build/ppa/proxy/ppa_proxy.json

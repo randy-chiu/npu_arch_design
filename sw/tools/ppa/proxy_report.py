@@ -31,11 +31,21 @@ def build_proxy_report(
         build_workload_proxy(workload, energy_cfg, performance_provenance)
         for workload in perf.get("workloads", [])
     ]
+    manifest = perf.get("workload_manifest") or {}
     report = {
         "schema": SCHEMA_NAME,
         "evidence_level": EVIDENCE_LEVEL,
         "source_perf_report": perf.get("source_log", ""),
+        "workload_manifest_id": manifest.get("id") or perf.get("workload_manifest_id"),
         "design": area_cfg["design"],
+        "proxy_config": {
+            "area_coefficient_version": int(area_cfg["version"]),
+            "area_units": area_cfg["units"],
+            "area_coefficients": area_cfg["coefficients"],
+            "energy_coefficient_version": int(energy_cfg["version"]),
+            "energy_units": energy_cfg["units"],
+            "energy_coefficients": energy_cfg["event_coefficients"],
+        },
         "metric_provenance": {
             "performance": performance_provenance,
             "area": area_cfg["interpretation"],
@@ -125,6 +135,21 @@ def build_workload_proxy(
 
 
 def build_comparison(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    compatibility = comparison_compatibility(baseline, candidate)
+    if not compatibility["comparable"]:
+        return {
+            "comparable": False,
+            "compatibility": compatibility,
+            "evidence_level": candidate["evidence_level"],
+            "baseline": baseline["design"],
+            "candidate": candidate["design"],
+            "area_delta": None,
+            "workload_deltas": [],
+            "improvements": [],
+            "costs": [
+                "Direct comparison is unavailable because baseline and candidate are incompatible."
+            ],
+        }
     baseline_area = float(baseline["area_proxy"]["normalized_area_units"])
     candidate_area = float(candidate["area_proxy"]["normalized_area_units"])
     area_delta = delta_metric(baseline_area, candidate_area, lower_is_better=True)
@@ -186,6 +211,8 @@ def build_comparison(baseline: dict[str, Any], candidate: dict[str, Any]) -> dic
         "External-memory energy is unavailable at Level 0 and is not part of this preference decision."
     )
     return {
+        "comparable": True,
+        "compatibility": compatibility,
         "evidence_level": EVIDENCE_LEVEL,
         "baseline": baseline["design"],
         "candidate": candidate["design"],
@@ -199,6 +226,40 @@ def build_comparison(baseline: dict[str, Any], candidate: dict[str, Any]) -> dic
         "workload_deltas": workload_deltas,
         "improvements": improvements,
         "costs": costs,
+    }
+
+
+def comparison_compatibility(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    issues: list[str] = []
+    if baseline.get("schema") != candidate.get("schema"):
+        issues.append("schema differs")
+    if baseline.get("evidence_level") != candidate.get("evidence_level"):
+        issues.append("evidence_level differs")
+    baseline_cfg = baseline.get("proxy_config", {})
+    candidate_cfg = candidate.get("proxy_config", {})
+    for key in (
+        "area_coefficient_version",
+        "area_units",
+        "area_coefficients",
+        "energy_coefficient_version",
+        "energy_units",
+        "energy_coefficients",
+    ):
+        if baseline_cfg.get(key) != candidate_cfg.get(key):
+            issues.append(f"proxy_config.{key} differs")
+    baseline_manifest = baseline.get("workload_manifest_id")
+    candidate_manifest = candidate.get("workload_manifest_id")
+    if baseline_manifest != candidate_manifest and (baseline_manifest or candidate_manifest):
+        issues.append("workload_manifest_id differs or is missing on one report")
+    baseline_names = {item["name"] for item in baseline.get("workloads", [])}
+    candidate_names = {item["name"] for item in candidate.get("workloads", [])}
+    common_names = sorted(baseline_names & candidate_names)
+    if not common_names:
+        issues.append("no common workload names")
+    return {
+        "comparable": not issues,
+        "issues": issues,
+        "common_workloads": common_names,
     }
 
 
@@ -305,7 +366,7 @@ def write_html(report: dict[str, Any], path: Path) -> None:
     limitations = "".join(f"<li>{html.escape(text)}</li>" for text in report["limitations"])
     comparison_html = ""
     comparison = report.get("comparison")
-    if comparison:
+    if comparison and comparison.get("comparable"):
         delta_rows = "".join(
             "<tr>"
             f"<td>{html.escape(item['name'])}</td>"
@@ -334,6 +395,22 @@ def write_html(report: dict[str, Any], path: Path) -> None:
     </table>
     <h3>Improvements</h3><ul>{benefits}</ul>
     <h3>Costs And Unknowns</h3><ul>{costs}</ul>
+  </section>"""
+    elif comparison:
+        issues = "".join(
+            f"<li>{html.escape(text)}</li>" for text in comparison["compatibility"]["issues"]
+        )
+        comparison_html = f"""
+  <section>
+    <h2>Candidate Versus Baseline</h2>
+    <p>Direct comparison is not valid for this report pair.</p>
+    <ul>{issues}</ul>
+  </section>"""
+    else:
+        comparison_html = """
+  <section>
+    <h2>Candidate Versus Baseline</h2>
+    <p>No baseline provided; <code>comparison</code> is null.</p>
   </section>"""
     highlights = "".join(
         f"<section><h2>{html.escape(item['title'])}</h2>"
@@ -404,11 +481,14 @@ def main() -> None:
     baseline_report = None
     if args.baseline_json:
         baseline = json.loads(args.baseline_json.read_text(encoding="utf-8"))
-        baseline_report = build_proxy_report(
-            baseline,
-            read_jsonc(Path(baseline["area_config"])),
-            read_jsonc(Path(baseline["energy_config"])),
-        )
+        if baseline.get("schema") == SCHEMA_NAME:
+            baseline_report = baseline
+        else:
+            baseline_report = build_proxy_report(
+                baseline,
+                read_jsonc(Path(baseline["area_config"])),
+                read_jsonc(Path(baseline["energy_config"])),
+            )
     report = build_proxy_report(
         perf,
         read_jsonc(args.area_config),

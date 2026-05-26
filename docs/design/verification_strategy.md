@@ -36,6 +36,7 @@ silently regresses.
 | NPU subsystem elaboration | `make npu-subsystem-elab` | check the primary PPA RTL boundary compiles without simulation SoC memories |
 | PPA contract | `test/ppa_contract/test_ppa_contract.py` | check PPA target/schema and Transformer manifest contracts |
 | PPA proxy report | `make ppa-proxy-report` | produce Level 0 measured-performance and normalized area/energy proxy output |
+| Fast PPA derivative | `make ppa-proxy-from-perf` | regenerate and validate proxy output from an existing perf artifact; not a substitute for the full gate |
 | Full unit gate | `make test` | Python tests and available RTL sims |
 
 ## 3. Golden And Simulator Tests
@@ -139,6 +140,12 @@ Current Level 0 entry point:
 make ppa-proxy-report
 ```
 
+For schema/report-only iteration after a successful perf run:
+
+```text
+make ppa-proxy-from-perf
+```
+
 Generated outputs:
 
 ```text
@@ -155,7 +162,7 @@ grayscale digit fixtures, real MNIST CNN `fc2` SoC smoke, the first real `fc1`
 SoC tile smoke, and full `fc1` 16-output-N-tile K-stream SoC coverage:
 
 ```text
-make test        PASS, 37 tests (including 6 PPA contract/proxy/delta/subsystem-boundary checks)
+make test        PASS, 43 tests (including manifest and strengthened PPA contract checks)
 make perf-report PASS
 matmul total cycles: 81
 matmul core matmul cycles: 10

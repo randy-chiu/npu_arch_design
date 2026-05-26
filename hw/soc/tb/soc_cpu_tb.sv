@@ -238,7 +238,8 @@ module soc_cpu_tb;
     task automatic print_perf_job;
         begin
             if (dut.u_npu_wrapper.job_op_type == SOC_NPU_JOB_OP_MATMUL) begin
-                $display("PERF_JOB {\"id\":%0d,\"name\":\"matmul\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d},\"movement\":{\"sram_read_cycles\":%0d,\"sram_write_cycles\":%0d,\"core_host_write_cycles\":%0d,\"core_host_read_cycles\":%0d,\"desc_words\":%0d,\"program_words\":%0d,\"input0_words\":%0d,\"input1_words\":%0d,\"output_words\":%0d},\"data_mover\":{\"active_cycles\":%0d,\"setup_cycles\":%0d,\"transfer_cycles\":%0d,\"stall_cycles\":%0d,\"words\":%0d,\"read_cycles\":%0d,\"write_cycles\":%0d,\"read_words\":%0d,\"write_words\":%0d}}",
+                $display("PERF_JOB {\"job_id\":%0d,\"id\":%0d,\"name\":\"matmul\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d},\"movement\":{\"sram_read_cycles\":%0d,\"sram_write_cycles\":%0d,\"core_host_write_cycles\":%0d,\"core_host_read_cycles\":%0d,\"desc_words\":%0d,\"program_words\":%0d,\"input0_words\":%0d,\"input1_words\":%0d,\"output_words\":%0d},\"data_mover\":{\"active_cycles\":%0d,\"setup_cycles\":%0d,\"transfer_cycles\":%0d,\"stall_cycles\":%0d,\"words\":%0d,\"read_cycles\":%0d,\"write_cycles\":%0d,\"read_words\":%0d,\"write_words\":%0d}}",
+                    perf_job_id,
                     perf_job_id,
                     perf_total_cycles,
                     perf_desc_read_cycles,
@@ -272,7 +273,8 @@ module soc_cpu_tb;
                     perf_dm_read_words,
                     perf_dm_write_words);
             end else if (dut.u_npu_wrapper.job_op_type == SOC_NPU_JOB_OP_MATMUL_K_STREAM) begin
-                $display("PERF_JOB {\"id\":%0d,\"name\":\"matmul_k_stream\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d},\"movement\":{\"sram_read_cycles\":%0d,\"sram_write_cycles\":%0d,\"core_host_write_cycles\":%0d,\"core_host_read_cycles\":%0d,\"desc_words\":%0d,\"program_words\":%0d,\"input0_words\":%0d,\"input1_words\":%0d,\"output_words\":%0d},\"data_mover\":{\"active_cycles\":%0d,\"setup_cycles\":%0d,\"transfer_cycles\":%0d,\"stall_cycles\":%0d,\"words\":%0d,\"read_cycles\":%0d,\"write_cycles\":%0d,\"read_words\":%0d,\"write_words\":%0d}}",
+                $display("PERF_JOB {\"job_id\":%0d,\"id\":%0d,\"name\":\"matmul_k_stream\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d},\"movement\":{\"sram_read_cycles\":%0d,\"sram_write_cycles\":%0d,\"core_host_write_cycles\":%0d,\"core_host_read_cycles\":%0d,\"desc_words\":%0d,\"program_words\":%0d,\"input0_words\":%0d,\"input1_words\":%0d,\"output_words\":%0d},\"data_mover\":{\"active_cycles\":%0d,\"setup_cycles\":%0d,\"transfer_cycles\":%0d,\"stall_cycles\":%0d,\"words\":%0d,\"read_cycles\":%0d,\"write_cycles\":%0d,\"read_words\":%0d,\"write_words\":%0d}}",
+                    perf_job_id,
                     perf_job_id,
                     perf_total_cycles,
                     perf_desc_read_cycles,
@@ -306,7 +308,8 @@ module soc_cpu_tb;
                     perf_dm_read_words,
                     perf_dm_write_words);
             end else if (dut.u_npu_wrapper.job_op_type == SOC_NPU_JOB_OP_SOFTMAX) begin
-                $display("PERF_JOB {\"id\":%0d,\"name\":\"softmax\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d},\"movement\":{\"sram_read_cycles\":%0d,\"sram_write_cycles\":%0d,\"core_host_write_cycles\":%0d,\"core_host_read_cycles\":%0d,\"desc_words\":%0d,\"program_words\":%0d,\"input0_words\":%0d,\"input1_words\":%0d,\"output_words\":%0d},\"data_mover\":{\"active_cycles\":%0d,\"setup_cycles\":%0d,\"transfer_cycles\":%0d,\"stall_cycles\":%0d,\"words\":%0d,\"read_cycles\":%0d,\"write_cycles\":%0d,\"read_words\":%0d,\"write_words\":%0d}}",
+                $display("PERF_JOB {\"job_id\":%0d,\"id\":%0d,\"name\":\"softmax\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d},\"movement\":{\"sram_read_cycles\":%0d,\"sram_write_cycles\":%0d,\"core_host_write_cycles\":%0d,\"core_host_read_cycles\":%0d,\"desc_words\":%0d,\"program_words\":%0d,\"input0_words\":%0d,\"input1_words\":%0d,\"output_words\":%0d},\"data_mover\":{\"active_cycles\":%0d,\"setup_cycles\":%0d,\"transfer_cycles\":%0d,\"stall_cycles\":%0d,\"words\":%0d,\"read_cycles\":%0d,\"write_cycles\":%0d,\"read_words\":%0d,\"write_words\":%0d}}",
+                    perf_job_id,
                     perf_job_id,
                     perf_total_cycles,
                     perf_desc_read_cycles,
@@ -340,7 +343,8 @@ module soc_cpu_tb;
                     perf_dm_read_words,
                     perf_dm_write_words);
             end else begin
-                $display("PERF_JOB {\"id\":%0d,\"name\":\"unknown\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d},\"movement\":{\"sram_read_cycles\":%0d,\"sram_write_cycles\":%0d,\"core_host_write_cycles\":%0d,\"core_host_read_cycles\":%0d,\"desc_words\":%0d,\"program_words\":%0d,\"input0_words\":%0d,\"input1_words\":%0d,\"output_words\":%0d},\"data_mover\":{\"active_cycles\":%0d,\"setup_cycles\":%0d,\"transfer_cycles\":%0d,\"stall_cycles\":%0d,\"words\":%0d,\"read_cycles\":%0d,\"write_cycles\":%0d,\"read_words\":%0d,\"write_words\":%0d}}",
+                $display("PERF_JOB {\"job_id\":%0d,\"id\":%0d,\"name\":\"unknown\",\"total_cycles\":%0d,\"wrapper\":{\"desc_read\":%0d,\"fetch_program\":%0d,\"fetch_input0\":%0d,\"fetch_input1\":%0d,\"start_core\":%0d,\"wait_core\":%0d,\"write_output\":%0d,\"done\":%0d},\"core\":{\"total\":%0d,\"fetch\":%0d,\"matmul\":%0d,\"done\":%0d},\"movement\":{\"sram_read_cycles\":%0d,\"sram_write_cycles\":%0d,\"core_host_write_cycles\":%0d,\"core_host_read_cycles\":%0d,\"desc_words\":%0d,\"program_words\":%0d,\"input0_words\":%0d,\"input1_words\":%0d,\"output_words\":%0d},\"data_mover\":{\"active_cycles\":%0d,\"setup_cycles\":%0d,\"transfer_cycles\":%0d,\"stall_cycles\":%0d,\"words\":%0d,\"read_cycles\":%0d,\"write_cycles\":%0d,\"read_words\":%0d,\"write_words\":%0d}}",
+                    perf_job_id,
                     perf_job_id,
                     perf_total_cycles,
                     perf_desc_read_cycles,

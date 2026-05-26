@@ -83,6 +83,7 @@ def main() -> None:
     parser.add_argument("--fixtures", type=Path, default=Path("build/rtl_fixture"))
     parser.add_argument("--out", type=Path, default=Path("build/firmware/soc_cpu_smoke.hex"))
     parser.add_argument("--asm-out", type=Path, default=Path("build/firmware/soc_cpu_smoke.S"))
+    parser.add_argument("--manifest-out", type=Path, default=Path("build/perf/workload_manifest.json"))
     parser.add_argument("--rom-words", type=int, default=8192)
     args = parser.parse_args()
 
@@ -144,6 +145,28 @@ def main() -> None:
 
     args.asm_out.parent.mkdir(parents=True, exist_ok=True)
     args.asm_out.write_text(program.asm(), encoding="utf-8")
+    args.manifest_out.parent.mkdir(parents=True, exist_ok=True)
+    args.manifest_out.write_text(
+        json.dumps(
+            {
+                "schema": "npu_workload_manifest_v0",
+                "manifest_id": "soc_cpu_smoke_generated_v0",
+                "run_name": "soc_cpu_smoke_generated",
+                "generated_by": "sw/tools/firmware/emit_soc_cpu_smoke.py",
+                "workload_metadata": {
+                    "operator_smoke_matmul": {"kind": "operator_smoke"},
+                    "operator_smoke_softmax": {"kind": "operator_smoke"},
+                },
+                "jobs": [
+                    {"job_id": 1, "workload": "operator_smoke_matmul", "op": "unknown", "role": "smoke"},
+                    {"job_id": 2, "workload": "operator_smoke_softmax", "op": "unknown", "role": "smoke"},
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _read_hex(path: Path) -> list[int]:

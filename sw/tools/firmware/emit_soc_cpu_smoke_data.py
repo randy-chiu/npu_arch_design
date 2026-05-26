@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -52,6 +53,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixtures", type=Path, default=Path("build/rtl_fixture"))
     parser.add_argument("--out", type=Path, default=Path("build/firmware/soc_cpu_smoke_data.h"))
+    parser.add_argument("--manifest-out", type=Path, default=Path("build/perf/workload_manifest.json"))
     args = parser.parse_args()
 
     lines = [
@@ -72,22 +74,31 @@ def main() -> None:
         lines.append("};")
         lines.append("")
 
-    _append_digits_classifier_data(lines)
-    _append_real_mnist_cnn_fc1_tile_data(lines)
-    _append_real_mnist_cnn_fc1_k_stream_data(lines)
-    _append_real_mnist_cnn_fc1_full_k_stream_data(lines)
-    _append_real_mnist_cnn_fc2_data(lines)
+    digits_jobs = _append_digits_classifier_data(lines)
+    fc1_tile_jobs = _append_real_mnist_cnn_fc1_tile_data(lines)
+    fc1_k_stream_jobs = _append_real_mnist_cnn_fc1_k_stream_data(lines)
+    fc1_full_jobs, fc1_full_k_chunks = _append_real_mnist_cnn_fc1_full_k_stream_data(lines)
+    fc2_jobs = _append_real_mnist_cnn_fc2_data(lines)
     lines.append("#endif")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _write_workload_manifest(
+        args.manifest_out,
+        digits_jobs,
+        fc1_tile_jobs if fc2_jobs else 0,
+        fc1_k_stream_jobs if fc2_jobs else 0,
+        fc1_full_jobs if fc2_jobs else 0,
+        fc1_full_k_chunks if fc2_jobs else 0,
+        fc2_jobs,
+    )
 
 
 def _read_hex(path: Path) -> list[int]:
     return [int(line.strip(), 16) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def _append_digits_classifier_data(lines: list[str]) -> None:
+def _append_digits_classifier_data(lines: list[str]) -> int:
     image_path = _REPO_ROOT / "test/assets/digits_realistic/digit_2_gray.pgm"
     inputs = classifier_inputs_from_image(image_path)
     jobs = lower_classifier_to_rtl_tiles(inputs)
@@ -106,6 +117,7 @@ def _append_digits_classifier_data(lines: list[str]) -> None:
     _append_2d_array(lines, "digits_tile_a", [job["inputs"]["A"] for job in jobs], bits=8)
     _append_2d_array(lines, "digits_tile_b", [job["inputs"]["B"] for job in jobs], bits=8)
     _append_flat_array(lines, "digits_expected_logits", _flatten(logits), bits=32)
+    return len(jobs)
 
 
 def _real_mnist_external_available() -> bool:
@@ -118,11 +130,11 @@ def _real_mnist_external_available() -> bool:
     )
 
 
-def _append_real_mnist_cnn_fc1_tile_data(lines: list[str]) -> None:
+def _append_real_mnist_cnn_fc1_tile_data(lines: list[str]) -> int:
     if not _real_mnist_external_available():
         lines.append("#define REAL_MNIST_CNN_FC1_TILE_ENABLED 0u")
         lines.append("")
-        return
+        return 0
 
     weights = load_safetensors_f32(_REPO_ROOT / MODEL_WEIGHTS_PATH)
     images = load_mnist_images(_REPO_ROOT / TEST_IMAGES_PATH)
@@ -154,13 +166,14 @@ def _append_real_mnist_cnn_fc1_tile_data(lines: list[str]) -> None:
     _append_flat_array(lines, "real_mnist_cnn_fc1_tile_a", _flatten(chunk["a_tile"]), bits=8)
     _append_flat_array(lines, "real_mnist_cnn_fc1_tile_b", _flatten(chunk["b_tile"]), bits=8)
     _append_flat_array(lines, "real_mnist_cnn_fc1_tile_expected_c", _flatten(chunk["expected_tile"]), bits=32)
+    return 1
 
 
-def _append_real_mnist_cnn_fc1_k_stream_data(lines: list[str]) -> None:
+def _append_real_mnist_cnn_fc1_k_stream_data(lines: list[str]) -> int:
     if not _real_mnist_external_available():
         lines.append("#define REAL_MNIST_CNN_FC1_K_STREAM_ENABLED 0u")
         lines.append("")
-        return
+        return 0
 
     weights = load_safetensors_f32(_REPO_ROOT / MODEL_WEIGHTS_PATH)
     images = load_mnist_images(_REPO_ROOT / TEST_IMAGES_PATH)
@@ -192,13 +205,14 @@ def _append_real_mnist_cnn_fc1_k_stream_data(lines: list[str]) -> None:
     _append_2d_array(lines, "real_mnist_cnn_fc1_k_stream_a", plan["a_stream"], bits=8)
     _append_2d_array(lines, "real_mnist_cnn_fc1_k_stream_b", plan["b_stream"], bits=8)
     _append_flat_array(lines, "real_mnist_cnn_fc1_k_stream_expected_c", _flatten(plan["expected_c"]), bits=32)
+    return 1
 
 
-def _append_real_mnist_cnn_fc1_full_k_stream_data(lines: list[str]) -> None:
+def _append_real_mnist_cnn_fc1_full_k_stream_data(lines: list[str]) -> tuple[int, int]:
     if not _real_mnist_external_available():
         lines.append("#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_ENABLED 0u")
         lines.append("")
-        return
+        return 0, 0
 
     weights = load_safetensors_f32(_REPO_ROOT / MODEL_WEIGHTS_PATH)
     images = load_mnist_images(_REPO_ROOT / TEST_IMAGES_PATH)
@@ -238,13 +252,14 @@ def _append_real_mnist_cnn_fc1_full_k_stream_data(lines: list[str]) -> None:
         [plan["expected_c"] for plan in plans],
         bits=32,
     )
+    return tile_count, first_plan["k_chunks"]
 
 
-def _append_real_mnist_cnn_fc2_data(lines: list[str]) -> None:
+def _append_real_mnist_cnn_fc2_data(lines: list[str]) -> int:
     if not _real_mnist_external_available():
         lines.append("#define REAL_MNIST_CNN_FC2_ENABLED 0u")
         lines.append("")
-        return
+        return 0
 
     weights = load_safetensors_f32(_REPO_ROOT / MODEL_WEIGHTS_PATH)
     images = load_mnist_images(_REPO_ROOT / TEST_IMAGES_PATH)
@@ -283,6 +298,90 @@ def _append_real_mnist_cnn_fc2_data(lines: list[str]) -> None:
     _append_2d_array(lines, "real_mnist_cnn_fc2_tile_b", [job["inputs"]["B"] for job in jobs], bits=8)
     _append_flat_array(lines, "real_mnist_cnn_fc2_bias_scaled", bias_scaled, bits=32)
     _append_flat_array(lines, "real_mnist_cnn_fc2_expected_scaled_logits", scaled_logits, bits=32)
+    return len(jobs)
+
+
+def _write_workload_manifest(
+    path: Path,
+    digits_jobs: int,
+    fc1_tile_jobs: int,
+    fc1_k_stream_jobs: int,
+    fc1_full_jobs: int,
+    fc1_full_k_chunks: int,
+    fc2_jobs: int,
+) -> None:
+    jobs: list[dict] = []
+
+    def add(workload: str, op: str, role: str, count: int, tiled: bool = False) -> None:
+        for tile_id in range(count):
+            item = {
+                "job_id": len(jobs) + 1,
+                "workload": workload,
+                "op": op,
+                "role": role,
+            }
+            if tiled:
+                item["tile_id"] = tile_id
+            jobs.append(item)
+
+    add("operator_smoke_matmul", "matmul", "smoke", 1)
+    add("operator_smoke_softmax", "softmax", "smoke", 1)
+    add("digits_linear_classifier", "matmul", "regression", digits_jobs, tiled=True)
+    add("real_mnist_cnn_fc1_tile0", "matmul", "regression", fc1_tile_jobs, tiled=True)
+    add(
+        "real_mnist_cnn_fc1_k_stream_smoke",
+        "matmul_k_stream",
+        "regression",
+        fc1_k_stream_jobs,
+        tiled=True,
+    )
+    add(
+        "real_mnist_cnn_fc1_full_k_stream_layer",
+        "matmul_k_stream",
+        "regression",
+        fc1_full_jobs,
+        tiled=True,
+    )
+    add("real_mnist_cnn_fc2", "matmul", "regression", fc2_jobs, tiled=True)
+    manifest = {
+        "schema": "npu_workload_manifest_v0",
+        "manifest_id": "soc_cpu_smoke_v0",
+        "run_name": "soc_cpu_smoke",
+        "generated_by": "sw/tools/firmware/emit_soc_cpu_smoke_data.py",
+        "workload_metadata": {
+            "operator_smoke_matmul": {"kind": "operator_smoke"},
+            "operator_smoke_softmax": {"kind": "operator_smoke"},
+            "digits_linear_classifier": {
+                "kind": "model",
+                "metadata": {
+                    "input": "test/assets/digits_realistic/digit_2_gray.pgm",
+                    "graph": "test/graphs/digits_classifier.json",
+                    "tile_graph": "test/graphs/digits_classifier_rtl_tile.json",
+                    "tile_jobs": digits_jobs,
+                    "description": "8x8 grayscale digit image, tiled matmul regression with CPU-side accumulation",
+                },
+            },
+            "real_mnist_cnn_fc1_tile0": {
+                "kind": "model_layer_tile",
+                "metadata": {"tile_jobs": fc1_tile_jobs},
+            },
+            "real_mnist_cnn_fc1_k_stream_smoke": {
+                "kind": "model_layer_tile",
+                "metadata": {"tile_jobs": fc1_k_stream_jobs},
+            },
+            "real_mnist_cnn_fc1_full_k_stream_layer": {
+                "kind": "model_layer",
+                "metadata": {"tile_jobs": fc1_full_jobs, "k_chunks": fc1_full_k_chunks},
+            },
+            "real_mnist_cnn_fc2": {
+                "kind": "model_layer",
+                "metadata": {"tile_jobs": fc2_jobs},
+            },
+        },
+        "jobs": jobs,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
 def _append_2d_array(lines: list[str], symbol: str, values: list, bits: int) -> None:
