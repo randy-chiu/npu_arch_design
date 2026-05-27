@@ -45,6 +45,7 @@ static int32_t real_mnist_cnn_fc2_logits_sram[REAL_MNIST_CNN_FC2_LOGITS_WORDS];
 #endif
 
 static soc_npu_job_desc_t job_desc;
+static npu_perf_snapshot_t perf_snapshot;
 
 static uint32_t ptr32(const void *ptr)
 {
@@ -83,6 +84,25 @@ static void run_job(void)
     npu_set_desc_addr(ptr32(&job_desc));
     npu_start();
     npu_wait_done();
+    npu_read_perf_snapshot(&perf_snapshot);
+    if ((perf_snapshot.status &
+         (NPU_OPSCHED_PERF_STATUS_VALID_MASK |
+          NPU_OPSCHED_PERF_STATUS_RUNNING_MASK |
+          NPU_OPSCHED_PERF_STATUS_OVERFLOW_MASK)) != NPU_OPSCHED_PERF_STATUS_VALID_MASK ||
+        perf_snapshot.job_id != job_desc.job_id ||
+        perf_snapshot.op_type != job_desc.op_type ||
+        perf_snapshot.total_cycles == 0u ||
+        perf_snapshot.core_active_cycles == 0u ||
+        perf_snapshot.data_mover_words == 0u ||
+        perf_snapshot.data_mover_read_words + perf_snapshot.data_mover_write_words !=
+            perf_snapshot.data_mover_words ||
+        ((job_desc.op_type == SOC_NPU_JOB_OP_MATMUL ||
+          job_desc.op_type == SOC_NPU_JOB_OP_MATMUL_K_STREAM) &&
+         perf_snapshot.core_matmul_cycles == 0u)) {
+        test_status_fail_code(0xa00u | (job_desc.job_id & 0xffu));
+        for (;;) {
+        }
+    }
 }
 
 static void clear_digits_logits(void)
@@ -98,6 +118,7 @@ static void run_digits_tile(uint32_t tile)
     copy_words(digits_b_tile_sram, digits_tile_b[tile], DIGITS_TILE_WORDS);
 
     job_desc.op_type = SOC_NPU_JOB_OP_MATMUL;
+    job_desc.job_id = JOB_ID_DIGITS_LINEAR_CLASSIFIER_BASE + tile;
     job_desc.program_addr = ptr32(matmul_program_sram);
     job_desc.program_words = MATMUL_PROGRAM_LEN;
     job_desc.input0_addr = ptr32(digits_a_tile_sram);
@@ -106,6 +127,7 @@ static void run_digits_tile(uint32_t tile)
     job_desc.input1_words = DIGITS_TILE_WORDS;
     job_desc.output_addr = ptr32(digits_c_tile_sram);
     job_desc.output_words = DIGITS_TILE_WORDS;
+    job_desc.k_chunks = 0u;
     run_job();
 }
 
@@ -169,6 +191,7 @@ static int run_real_mnist_cnn_fc1_tile(void)
     copy_words(real_mnist_cnn_fc1_tile_b_sram, real_mnist_cnn_fc1_tile_b, REAL_MNIST_CNN_FC1_TILE_WORDS);
 
     job_desc.op_type = SOC_NPU_JOB_OP_MATMUL;
+    job_desc.job_id = JOB_ID_REAL_MNIST_CNN_FC1_TILE0;
     job_desc.program_addr = ptr32(matmul_program_sram);
     job_desc.program_words = MATMUL_PROGRAM_LEN;
     job_desc.input0_addr = ptr32(real_mnist_cnn_fc1_tile_a_sram);
@@ -177,6 +200,7 @@ static int run_real_mnist_cnn_fc1_tile(void)
     job_desc.input1_words = REAL_MNIST_CNN_FC1_TILE_WORDS;
     job_desc.output_addr = ptr32(real_mnist_cnn_fc1_tile_c_sram);
     job_desc.output_words = REAL_MNIST_CNN_FC1_TILE_WORDS;
+    job_desc.k_chunks = 0u;
     run_job();
 
     if (!check_words(real_mnist_cnn_fc1_tile_c_sram, real_mnist_cnn_fc1_tile_expected_c,
@@ -198,6 +222,7 @@ static int run_real_mnist_cnn_fc1_k_stream(void)
     }
 
     job_desc.op_type = SOC_NPU_JOB_OP_MATMUL_K_STREAM;
+    job_desc.job_id = JOB_ID_REAL_MNIST_CNN_FC1_K_STREAM_SMOKE;
     job_desc.program_addr = ptr32(matmul_program_sram);
     job_desc.program_words = MATMUL_PROGRAM_LEN;
     job_desc.input0_addr = ptr32(real_mnist_cnn_fc1_k_stream_a_sram);
@@ -233,6 +258,7 @@ static int run_real_mnist_cnn_fc1_full_k_stream(void)
         }
 
         job_desc.op_type = SOC_NPU_JOB_OP_MATMUL_K_STREAM;
+        job_desc.job_id = JOB_ID_REAL_MNIST_CNN_FC1_FULL_K_STREAM_LAYER_BASE + tile;
         job_desc.program_addr = ptr32(matmul_program_sram);
         job_desc.program_words = MATMUL_PROGRAM_LEN;
         job_desc.input0_addr = ptr32(real_mnist_cnn_fc1_full_k_stream_a_sram);
@@ -269,6 +295,7 @@ static void run_real_mnist_cnn_fc2_tile(uint32_t tile)
     copy_words(real_mnist_cnn_fc2_b_tile_sram, real_mnist_cnn_fc2_tile_b[tile], REAL_MNIST_CNN_FC2_TILE_WORDS);
 
     job_desc.op_type = SOC_NPU_JOB_OP_MATMUL;
+    job_desc.job_id = JOB_ID_REAL_MNIST_CNN_FC2_BASE + tile;
     job_desc.program_addr = ptr32(matmul_program_sram);
     job_desc.program_words = MATMUL_PROGRAM_LEN;
     job_desc.input0_addr = ptr32(real_mnist_cnn_fc2_a_tile_sram);
@@ -277,6 +304,7 @@ static void run_real_mnist_cnn_fc2_tile(uint32_t tile)
     job_desc.input1_words = REAL_MNIST_CNN_FC2_TILE_WORDS;
     job_desc.output_addr = ptr32(real_mnist_cnn_fc2_c_tile_sram);
     job_desc.output_words = REAL_MNIST_CNN_FC2_TILE_WORDS;
+    job_desc.k_chunks = 0u;
     run_job();
 }
 
@@ -343,6 +371,7 @@ int main(void)
     copy_words(matmul_program_sram, matmul_program, MATMUL_PROGRAM_LEN);
 
     job_desc.op_type = SOC_NPU_JOB_OP_MATMUL;
+    job_desc.job_id = JOB_ID_OPERATOR_SMOKE_MATMUL;
     job_desc.program_addr = ptr32(matmul_program_sram);
     job_desc.program_words = MATMUL_PROGRAM_LEN;
     job_desc.input0_addr = ptr32(matmul_a_sram);
@@ -351,6 +380,7 @@ int main(void)
     job_desc.input1_words = MATMUL_B_LEN;
     job_desc.output_addr = ptr32(matmul_c_sram);
     job_desc.output_words = MATMUL_EXPECTED_C_LEN;
+    job_desc.k_chunks = 0u;
     run_job();
 
     if (!check_words(matmul_c_sram, matmul_expected_c, MATMUL_EXPECTED_C_LEN, 0x100u)) {
@@ -361,6 +391,7 @@ int main(void)
     copy_words(softmax_program_sram, softmax_program, SOFTMAX_PROGRAM_LEN);
 
     job_desc.op_type = SOC_NPU_JOB_OP_SOFTMAX;
+    job_desc.job_id = JOB_ID_OPERATOR_SMOKE_SOFTMAX;
     job_desc.program_addr = ptr32(softmax_program_sram);
     job_desc.program_words = SOFTMAX_PROGRAM_LEN;
     job_desc.input0_addr = ptr32(softmax_x_sram);
@@ -369,6 +400,7 @@ int main(void)
     job_desc.input1_words = 0u;
     job_desc.output_addr = ptr32(softmax_y_sram);
     job_desc.output_words = SOFTMAX_EXPECTED_Y_LEN;
+    job_desc.k_chunks = 0u;
     run_job();
 
     if (!check_low_bytes(softmax_y_sram, softmax_expected_y, SOFTMAX_EXPECTED_Y_LEN, 0x200u)) {

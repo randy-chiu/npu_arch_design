@@ -325,7 +325,7 @@ def build_highlights(
             {
                 "title": perf_highlight["title"],
                 "workload": current["name"],
-                "performance_provenance": "measured_rtl_perf_job_counters",
+                "performance_provenance": current["performance"]["provenance"],
                 "before_cycles": before_cycles,
                 "after_cycles": current["performance"]["cycles"],
                 "cycles_saved": cycles_saved,
@@ -439,8 +439,8 @@ def write_html(report: dict[str, Any], path: Path) -> None:
 </head>
 <body>
   <h1>NPU Level 0 PPA Proxy Report</h1>
-  <p class="warning"><strong>Interpretation:</strong> Performance and movement are measured from RTL
-  <code>PERF_JOB</code> counters. Area and energy are normalized proxies, not synthesized area,
+  <p class="warning"><strong>Interpretation:</strong> Performance and movement are measured from architectural
+  perf CSR snapshot values carried in <code>PERF_JOB</code>. Area and energy are normalized proxies, not synthesized area,
   watts, or joules.</p>
   <div class="metrics">
     <div class="metric">Area proxy<strong>{area['normalized_area_units']}</strong>normalized units</div>

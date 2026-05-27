@@ -8,14 +8,6 @@ static inline volatile uint32_t *mmio32(uint32_t addr)
     return (volatile uint32_t *)addr;
 }
 
-enum {
-    DMA_CTRL_OFFSET = 0x000u,
-    DMA_STATUS_OFFSET = 0x004u,
-    DMA_SRC_OFFSET = 0x008u,
-    DMA_DST_OFFSET = 0x00cu,
-    DMA_WORDS_OFFSET = 0x010u,
-};
-
 void npu_write_words(uint32_t offset, const uint32_t *values, size_t len)
 {
     volatile uint32_t *base = mmio32(SOC_NPU_WRAPPER_BASE + offset);
@@ -39,7 +31,7 @@ void npu_set_desc_addr(uint32_t addr)
 
 void npu_start(void)
 {
-    *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_CTRL) = 1u;
+    *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_CTRL) = NPU_OPSCHED_CTRL_START_MASK;
 }
 
 uint32_t npu_status(void)
@@ -49,31 +41,50 @@ uint32_t npu_status(void)
 
 void npu_wait_done(void)
 {
-    while ((npu_status() & 1u) == 0u) {
+    while ((npu_status() & NPU_OPSCHED_STATUS_DONE_MASK) == 0u) {
     }
+}
+
+void npu_read_perf_snapshot(npu_perf_snapshot_t *snapshot)
+{
+    snapshot->status = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_STATUS);
+    snapshot->job_id = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_JOB_ID);
+    snapshot->op_type = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_OP_TYPE);
+    snapshot->total_cycles = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_TOTAL_CYCLES);
+    snapshot->core_active_cycles = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_CORE_ACTIVE_CYCLES);
+    snapshot->core_matmul_cycles = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_CORE_MATMUL_CYCLES);
+    snapshot->data_mover_active_cycles = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DATA_MOVER_ACTIVE_CYCLES);
+    snapshot->data_mover_setup_cycles = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DATA_MOVER_SETUP_CYCLES);
+    snapshot->data_mover_transfer_cycles = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DATA_MOVER_TRANSFER_CYCLES);
+    snapshot->data_mover_stall_cycles = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DATA_MOVER_STALL_CYCLES);
+    snapshot->data_mover_words = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DATA_MOVER_WORDS);
+    snapshot->data_mover_read_words = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DATA_MOVER_READ_WORDS);
+    snapshot->data_mover_write_words = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DATA_MOVER_WRITE_WORDS);
+    snapshot->sram_read_words = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_SRAM_READ_WORDS);
+    snapshot->sram_write_words = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_SRAM_WRITE_WORDS);
 }
 
 void dma_copy_words(uint32_t *dst, const uint32_t *src, uint32_t len)
 {
-    *mmio32(SOC_DMA_BASE + DMA_SRC_OFFSET) = (uint32_t)(uintptr_t)src;
-    *mmio32(SOC_DMA_BASE + DMA_DST_OFFSET) = (uint32_t)(uintptr_t)dst;
-    *mmio32(SOC_DMA_BASE + DMA_WORDS_OFFSET) = len;
-    *mmio32(SOC_DMA_BASE + DMA_CTRL_OFFSET) = 1u;
-    while ((*mmio32(SOC_DMA_BASE + DMA_STATUS_OFFSET) & 1u) == 0u) {
+    *mmio32(SOC_DMA_BASE + SOC_DMA_SRC_OFFSET) = (uint32_t)(uintptr_t)src;
+    *mmio32(SOC_DMA_BASE + SOC_DMA_DST_OFFSET) = (uint32_t)(uintptr_t)dst;
+    *mmio32(SOC_DMA_BASE + SOC_DMA_WORDS_OFFSET) = len;
+    *mmio32(SOC_DMA_BASE + SOC_DMA_CTRL_OFFSET) = SOC_DMA_CTRL_START_MASK;
+    while ((*mmio32(SOC_DMA_BASE + SOC_DMA_STATUS_OFFSET) & SOC_DMA_STATUS_DONE_MASK) == 0u) {
     }
 }
 
 void test_status_pass(void)
 {
-    *mmio32(SOC_TEST_STATUS_BASE) = 1u;
+    *mmio32(SOC_TEST_STATUS_BASE) = SOC_TEST_STATUS_PASS_VALUE;
 }
 
 void test_status_fail(void)
 {
-    *mmio32(SOC_TEST_STATUS_BASE) = 0xffffffffu;
+    *mmio32(SOC_TEST_STATUS_BASE) = SOC_TEST_STATUS_FAIL_VALUE;
 }
 
 void test_status_fail_code(uint32_t code)
 {
-    *mmio32(SOC_TEST_STATUS_BASE) = 0x80000000u | code;
+    *mmio32(SOC_TEST_STATUS_BASE) = SOC_TEST_STATUS_FAIL_CODE_FLAG_VALUE | code;
 }

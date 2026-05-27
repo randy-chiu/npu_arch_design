@@ -3114,3 +3114,241 @@ make ppa-proxy-from-perf: PASS, frozen baseline and candidate validation pass
 make ppa-proxy-report: PASS, full perf-to-proxy gate and validation pass
 make test: PASS, 43 tests, 204.889s
 ```
+
+## Session 58: First Wrapper-Visible Performance Snapshot CSRs
+
+Goal:
+
+- reduce documentation drift around the immediate execution path;
+- introduce the first CPU-visible architectural perf counter subset without
+  silently changing existing `PERF_JOB`/PPA provenance;
+- correlate new RTL counters against the established testbench-sampled
+  reference.
+
+Documentation alignment:
+
+- updated `docs/target_architecture.md`,
+  `docs/design/performance_instrumentation.md`,
+  `docs/design/perf_counter_csr_plan.md`, `docs/project_plan.md`, and related
+  active entry points so the immediate sequence is now consistently:
+  perf CSR correlation, then Transformer workload/external-memory identity,
+  then later mapped/physical evidence;
+- marked the old A2 next-step checklist as historical completed work rather
+  than an active implementation queue.
+
+Implemented:
+
+- extended `arch/configs/npu_wrapper_v0.jsonc` with first-batch perf CSRs:
+  `PERF_CTRL`, `PERF_STATUS`, cycle counters for total/core/data mover, data
+  mover words, and NPU SRAM read/write words;
+- defined completed-job snapshot semantics: a new launch clears private
+  running accumulators while preserving the previous visible snapshot;
+  completion atomically replaces the snapshot; idle `PERF_CTRL.clear` removes
+  the retained snapshot; counters are 32-bit saturating with an overflow bit;
+- implemented the synthesizable accumulator/snapshot bank and MMIO read path
+  in `hw/npu_wrapper/rtl/npu_v0_opsched.sv`;
+- deliberately deferred architectural `mac_ops` and `instr_count` until
+  committed-event signals have stable contracts;
+- kept `PERF_JOB` and Level 0 report data TB-sampled, preserving the existing
+  measurement provenance during this correlation step.
+
+Verification changes:
+
+- `soc_tb` now reads the new CSR window through MMIO and verifies snapshot
+  valid/clear behavior on the legacy direct-window smoke path;
+- `soc_cpu_tb` now checks every descriptor job snapshot against its existing
+  TB reference for total, core, data-mover and SRAM-boundary summary counters;
+- the full active firmware workload still emits 68 jobs / 7 workloads and its
+  existing cycle results are unchanged.
+
+Validation:
+
+```text
+make npu-subsystem-elab: PASS
+make soc-sim: PASS, CSR MMIO read/clear smoke covered
+make cpu-soc-sim: PASS, 68 descriptor job CSR correlations covered
+make validate-arch: PASS
+make demo: PASS
+make npu-core-sim: PASS
+make ppa-proxy-report: PASS, 68 jobs / 7 workloads, Level 0 baseline comparison validated
+make test: PASS, 43 tests, 224.150s
+```
+
+Remaining next work:
+
+1. Extend workload identity with shape, precision, activity scope, and
+   explicit external-memory/KV-cache accounting before using Transformer
+   results as decision evidence.
+2. Keep report provenance TB-sampled until a separate reviewed migration to
+   CSR consumption is made.
+3. Introduce `L1_mapped` only after those workload identities are sufficiently
+   comparable.
+
+## Session 59: Pre-Transformer Contract And Perf Review
+
+Goal:
+
+- audit handwritten implementation/test/report assumptions before adding
+  Transformer workloads or extending the core surface;
+- document the current perf signal-to-CSR-to-report path for code review;
+- decide whether existing internal performance signals are removable now that
+  snapshot CSRs exist.
+
+Findings:
+
+- first-batch CSR core-cycle qualification is complete for descriptor jobs but
+  undercounts legacy direct-window execution because it only samples the
+  sustained core interval while `desc_state == DESC_WAIT_CORE`;
+- `npu_v0_opsched.sv` and `npu_v0_top.sv` independently hardcode the internal
+  core host window/control ABI and use a repeated numeric core state for perf
+  observation; these facts are not generated from `arch/configs`;
+- firmware job launch order and generated workload-manifest order remain
+  parallel conventions, while the warned report fallback and its tests retain
+  old fixed order/count inference;
+- descriptor-job CSR correlation currently inspects internal snapshot storage,
+  not CPU-visible MMIO reads; the legacy MMIO smoke covers status/total/clear
+  only;
+- DMA register offsets and test-status values are still mirrored manually
+  across RTL and firmware/test surfaces.
+
+Performance signal decision:
+
+- keep `npu_v0_data_mover.perf_*`: it feeds both the architectural CSR
+  accumulator and the existing TB report reference;
+- retain zero-valued `perf_stall` as a declared schema field until a reviewed
+  schema change or real stall modeling;
+- do not delete TB phase probes until report provenance moves to CSR summaries
+  or an explicit phase/event contract.
+
+Documentation changes:
+
+- expanded `docs/design/performance_instrumentation.md` with the data-mover
+  event, wrapper CSR aggregation, TB correlation and report-processing code
+  walk-through, along with signal-retention and report-compaction decisions;
+- updated `docs/project_plan.md` to place CSR semantics/MMIO coverage,
+  generated internal ABI, and generated job identity ahead of Transformer
+  expansion.
+
+Scope:
+
+- review/documentation only in this session; no RTL, software or test behavior
+  was changed.
+
+## Session 60: Generated Contracts And Perf CSR Repair
+
+Goal:
+
+- repair the consistency issues identified before Transformer work;
+- keep production report inputs compact and reviewable;
+- rerun the audit after implementation to identify intentional residual debt.
+
+Implemented:
+
+- moved the NPU core host windows, host control bits, DMA registers/bit fields,
+  test-status values, wrapper register fields, and report timing model inputs
+  under generated `arch/configs` ownership;
+- deleted the stale checked-in `hw/npu_wrapper/rtl/npu_v0_regs.svh` duplicate;
+  builds now consume the generated `build/npu_wrapper/npu_v0_regs.svh` only;
+- added descriptor-carried generated `job_id`, so firmware, `PERF_JOB`, and
+  the generated workload manifest share one workload identity contract;
+- exposed explicit core perf events and made wrapper CSR accumulation consume
+  those events for both descriptor and legacy launch paths, fixing legacy
+  matmul undercount and removing observation of core FSM encodings;
+- made firmware read and validate the full completed-job perf CSR snapshot over
+  MMIO after every descriptor; TB correlation remains as an independent
+  reference until report provenance is deliberately migrated;
+- changed the production report model to load architecture/SoC config values,
+  moved the named FC1 comparison baseline into generated manifest metadata,
+  and made per-job HTML content lazy/collapsed by default.
+
+Current measured result:
+
+```text
+make ppa-proxy-report: PASS
+jobs/workloads/total_cycles: 68 / 7 / 631805
+real_mnist_cnn_fc1_full_k_stream_layer: 627488 cycles
+FC1 candidate energy proxy: 19037384.0 normalized_energy_units
+serial-to-ping-pong delta: -313056 cycles, -78264.0 energy proxy units
+```
+
+The descriptor now reads one additional `job_id` word, adding one cycle per
+descriptor job relative to the previous current-result documentation.
+
+Validation:
+
+```text
+make validate-arch demo: PASS
+make npu-core-sim soc-sim npu-subsystem-elab: PASS
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report test.ppa_contract.test_ppa_contract -v: PASS, 19 tests
+make ppa-proxy-report: PASS
+make test: PASS, 44 tests, 225.539s
+git diff --check: PASS
+```
+
+Residual debt:
+
+1. `sw/tools/perf/report.py::infer_workloads()` still preserves fixed legacy
+   log ordering/counts and the recorded serial baseline when invoked without a
+   manifest. Production reporting supplies the generated manifest and does not
+   use that path.
+2. `PERF_JOB`/PPA report provenance remains TB-produced JSON; firmware now
+   proves CSR accessibility and basic validity, but switching report ingestion
+   to CSR values remains a separate reviewable change.
+3. `mac_ops`, `instr_count`, timeout, and execution-error CSRs remain deferred
+   until committed-event/error contracts exist.
+
+## Session 61: CSR-Sourced Performance Provenance And Transformer Entry
+
+Goal:
+
+- retire TB-aggregated production performance records in favor of CPU-visible
+  architectural CSR snapshot reads;
+- classify the two remaining review items before beginning Transformer work.
+
+Implemented:
+
+- extended the wrapper snapshot contract with `PERF_JOB_ID`, `PERF_OP_TYPE`,
+  `PERF_DATA_MOVER_READ_WORDS`, and `PERF_DATA_MOVER_WRITE_WORDS`;
+- made firmware read those fields through MMIO and validate identity plus
+  directional-word conservation for every descriptor job;
+- replaced the `soc_cpu_tb` production profiler output: it now observes the
+  firmware's actual CSR read responses and emits `PERF_JOB` values labeled
+  `architectural_perf_csr_snapshot`;
+- retained a reduced hierarchical event accumulator only as a CSR
+  implementation equality assertion, not as report/PPA input;
+- changed `perf.json` and PPA proxy provenance to
+  `measured_architectural_perf_csr_snapshot`;
+- stopped CSR-sourced reports from drawing unmeasured fine-grain phase or
+  overlap spans; legacy phase-rich log replay remains supported.
+
+Remaining scoped work:
+
+1. `infer_workloads()` remains only for warned legacy-log replay without a
+   manifest. Production report targets already use generated manifest identity;
+   removing fallback now would primarily be compatibility/test cleanup.
+2. `mac_ops`, `instr_count`, timeout and execution-error CSRs need stable
+   committed-event semantics. `mac_ops` becomes important before comparing
+   Transformer shapes with partially utilized matrix tiles; it is planned
+   rather than inferred from existing phase cycles.
+
+Transformer entry decision:
+
+- begin with executable INT8 prefill projection GEMM and `M=8` decode
+  skinny-GEMM proxy workloads on the existing matmul/K-stream path;
+- add manifest/report identity for scenario, shape, precision, activity scope,
+  and external/KV-cache traffic before using results for architecture choices;
+- model KV-cache bytes/token alongside decode results, then choose whether the
+  first RTL extension is command/layout support, skinny utilization, memory
+  movement, or reduction/SFU support.
+
+Validation:
+
+```text
+make npu-wrapper-spec soc-spec rtl-fixtures npu-core-sim soc-sim npu-subsystem-elab firmware-smoke-c: PASS
+make ppa-proxy-report: PASS
+perf/PPA performance provenance: measured_architectural_perf_csr_snapshot
+jobs/workloads/total_cycles: 68 / 7 / 631805
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report test.ppa_contract.test_ppa_contract -v: PASS, 21 tests
+make test: PASS, 46 tests, 226.158s
+git diff --check: PASS
+```

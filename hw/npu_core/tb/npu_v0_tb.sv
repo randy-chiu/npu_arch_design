@@ -167,7 +167,7 @@ module npu_v0_tb;
     task automatic run_core_host_lane_smoke;
         begin
             repeat (2) @(posedge clk);
-            host_write4(12'h000, 32'h0000_0011, 32'h0000_0022, 32'h0000_0033, 32'h0000_0044);
+            host_write4(RTL_HOST_A_BASE, 32'h0000_0011, 32'h0000_0022, 32'h0000_0033, 32'h0000_0044);
             @(posedge clk);
             if (dut.dram_a[0] !== 8'h11 || dut.dram_a[1] !== 8'h22 ||
                 dut.dram_a[2] !== 8'h33 || dut.dram_a[3] !== 8'h44) begin
@@ -179,7 +179,7 @@ module npu_v0_tb;
             dut.dram_c[1] = 32'h0000_0202;
             dut.dram_c[2] = 32'h0000_0303;
             dut.dram_c[3] = 32'h0000_0404;
-            host_read4_check(12'h200, 32'h0000_0101, 32'h0000_0202, 32'h0000_0303, 32'h0000_0404);
+            host_read4_check(RTL_HOST_C_BASE, 32'h0000_0101, 32'h0000_0202, 32'h0000_0303, 32'h0000_0404);
         end
     endtask
 endmodule

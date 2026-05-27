@@ -16,7 +16,8 @@ core. Its current responsibilities are:
 - launch the core;
 - wait for core completion;
 - read core output windows and write output back to SRAM;
-- publish `done/busy/idle` status.
+- publish `done/busy/idle` status;
+- expose a first job-scoped performance snapshot CSR bank.
 
 The wrapper is not yet a full scheduler, command queue, DMA, or interrupt
 controller. It is the place where those features should be introduced
@@ -47,9 +48,29 @@ Key registers:
 | `IRQ_ENABLE` | `0x00c` | CPU RW | reserved for interrupt flow |
 | `IRQ_STATUS` | `0x010` | CPU RW | reserved for interrupt flow |
 | `DESC_ADDR` | `0x020` | CPU write | absolute SRAM address of job descriptor |
+| `PERF_CTRL` | `0x040` | CPU write | bit 0 clears retained perf snapshot while idle |
+| `PERF_STATUS` | `0x044` | CPU read | bit 0 valid, bit 1 running, bit 2 overflow |
+| `PERF_TOTAL_CYCLES` | `0x048` | CPU read | completed job elapsed cycles |
+| `PERF_CORE_ACTIVE_CYCLES` | `0x04c` | CPU read | completed job core active cycles |
+| `PERF_CORE_MATMUL_CYCLES` | `0x050` | CPU read | completed job matmul cycles |
+| `PERF_DATA_MOVER_*` | `0x054` - `0x064` | CPU read | completed job mover cycle/word counters |
+| `PERF_SRAM_*_WORDS` | `0x068` - `0x06c` | CPU read | completed job NPU SRAM-boundary traffic |
+| `PERF_JOB_ID` / `PERF_OP_TYPE` | `0x070` - `0x074` | CPU read | completed descriptor identity |
+| `PERF_DATA_MOVER_READ_WORDS` / `PERF_DATA_MOVER_WRITE_WORDS` | `0x078` - `0x07c` | CPU read | completed directional mover traffic |
 
 Legacy A/B/C/X/Y/program windows are retained for older direct-window smoke
 tests. New firmware should use the descriptor path.
+
+The first perf CSR bank uses internal running accumulators and a completed-job
+snapshot. A new launch does not destroy the previous visible snapshot; normal
+descriptor completion atomically publishes the new one. Counters saturate at
+32 bits and report overflow through `PERF_STATUS`. `mac_ops`, uop counts, and
+phase-detail counters remain outside this first stable CSR contract.
+
+第一批 perf CSR 使用“内部运行计数 + 已完成 job 快照”的结构。新 job 启动时不会破坏
+上一个可见快照，descriptor 完成后才原子发布新值。计数器为 32 位饱和计数，并通过
+`PERF_STATUS` 报告 overflow；`mac_ops`、uop 数量和更细的 phase counter 暂不进入
+本批合同。
 
 ## 3. Descriptor Contract
 
@@ -69,6 +90,8 @@ Current layout:
 | 6 | `input1_words` | input1 word count |
 | 7 | `output_addr` | SRAM output buffer |
 | 8 | `output_words` | output word count |
+| 9 | `k_chunks` | K-stream chunk count; zero for non-stream operators |
+| 10 | `job_id` | generated workload identity emitted in `PERF_JOB` |
 
 The wrapper assumes word-aligned 32-bit addresses and currently truncates
 transfer lengths through 8-bit counters in the movement path. This is acceptable
@@ -117,6 +140,11 @@ The wrapper converts descriptor movement into NPU core host addresses:
 | X | `0x300` - `0x307` | softmax input X |
 | Y | `0x380` - `0x387` | softmax output Y |
 | program | `0x400` - `0x40f` | encoded uop `instr_mem` |
+
+The internal map and accumulator/bank control bits are owned by
+`arch/configs/npu_v0.jsonc` under `rtl.host_map` and `rtl.control_bits`; both
+the core and wrapper consume the generated RTL include rather than restating
+these address values.
 
 This host window is an internal preload/readback path. It is not the long-term
 NPU memory architecture.
@@ -204,12 +232,12 @@ Current transfer timing is:
 cycles ~= setup_cycles + ceil(words / words_per_cycle)
 ```
 
-With `WORDS_PER_CYCLE=4` and `SETUP_CYCLES=0`, the verified launch-to-done
-baseline is:
+With `WORDS_PER_CYCLE=4` and `SETUP_CYCLES=0`, and with the descriptor ABI
+including the generated `job_id` word, the verified launch-to-done baseline is:
 
 ```text
-matmul total cycles: 81
-softmax total cycles: 30
+matmul total cycles: 82
+softmax total cycles: 31
 ```
 
 当前传输时序为：
@@ -221,8 +249,8 @@ cycles ~= setup_cycles + ceil(words / words_per_cycle)
 对于 `WORDS_PER_CYCLE=4`、`SETUP_CYCLES=0`，当前验证过的 NPU job 基线为：
 
 ```text
-matmul total cycles: 81
-softmax total cycles: 30
+matmul total cycles: 82
+softmax total cycles: 31
 ```
 
 ## 8. Full FC1 Data-Movement Improvement Plan / 完整 FC1 数据搬运改进计划
@@ -408,7 +436,7 @@ Current measured result for the full FC1 single-N-tile smoke:
 
 ```text
 before ping-pong: 58784 total cycles
-after ping-pong:  39217 total cycles
+after ping-pong:  39218 total cycles
 data_mover.words: 147536 unchanged
 core.matmul:      11520 unchanged
 ```
@@ -427,9 +455,10 @@ These should be added before larger programs or untrusted descriptors are used.
 
 ## 12. Next Work
 
-Immediate next work:
+Immediate next work after the perf CSR snapshot implementation:
 
-1. Add a perf regression assertion for the K-streaming ping-pong result.
+1. Extend workload identity and external-memory accounting for Transformer
+   comparison evidence.
 2. Render overlapped prefetch and compute spans more explicitly in the perf
    report timeline.
 3. Consider nonzero setup/stall modeling after the current `4 words/cycle`

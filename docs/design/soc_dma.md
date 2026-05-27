@@ -36,7 +36,9 @@ DMA 的目标不是替代 NPU wrapper/data mover，也不改变 NPU job 内部 c
 
 ## 2. Register Contract / 寄存器合同
 
-The DMA is memory-mapped in `arch/configs/soc_v0.jsonc`:
+The DMA base address, register offsets, and control/status bit fields are
+owned by `arch/configs/soc_v0.jsonc`; `make soc-spec` emits the constants
+consumed by RTL and firmware:
 
 ```text
 SOC_DMA_BASE = 0x4000_0000

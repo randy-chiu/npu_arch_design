@@ -18,14 +18,15 @@ build/perf/perf.json
 build/perf/perf_report.html
 ```
 
-The current report consumes `PERF_JOB` JSON lines printed by `soc_cpu_tb`.
-The schema is intentionally small: each job has total cycles plus nested module
-phase counters. Later RTL modules can add more nested counters without changing
-the basic report flow.
+The current report consumes `PERF_JOB` JSON lines printed by `soc_cpu_tb` from
+the values firmware actually reads through the wrapper perf CSR MMIO window.
+Each record is labeled `architectural_perf_csr_snapshot` and contains the
+stable completed-job summary used by PPA reporting.
 
 The report reads `workload_manifest.json` and emits a `workloads` section for
-the current firmware smoke sequence. Each `PERF_JOB` carries canonical
-`job_id`; the manifest fixes the workload semantics independently of line
+the current firmware smoke sequence. Each `PERF_JOB` carries the canonical
+`job_id` consumed from its descriptor; generated firmware `JOB_ID_*` constants
+and manifest entries share one emitter, so semantics do not depend on line
 order. Invocation without a manifest is retained for legacy logs only and
 prints a warning before order-based inference.
 
@@ -46,28 +47,15 @@ prints a warning before order-based inference.
 
 ## Counter Placement
 
-The current perf counters are testbench-side instrumentation. They do not add
-architectural performance-counter registers to the CPU-visible RTL yet, and they
-do not insert counters into every module.
+The wrapper accumulates completed-job snapshot CSRs. Firmware reads `status`,
+`job_id`, `op_type`, cycle counters, mover read/write words, and SRAM boundary
+words after each descriptor. `soc_cpu_tb` observes those CPU read responses and
+serializes them as `PERF_JOB`; the report and PPA tools therefore consume
+architectural CSR values rather than TB-constructed metric values.
 
-`hw/soc/tb/soc_cpu_tb.sv` samples visible RTL state once per clock:
-
-- job start is detected when firmware writes `NPU_OPSCHED_CTRL.start`;
-- wrapper phase cycles are counted from `u_npu_wrapper.desc_state`;
-- core phase cycles are counted from `u_npu_wrapper.u_npu.state` while the
-  wrapper has launched or is waiting for the core;
-- SRAM movement cycles are counted from wrapper `sram_req/sram_we`;
-- core host-window write cycles are counted from wrapper `desc_host_we`;
-- core host-window read cycles are currently inferred during
-  `DESC_WRITE_OUTPUT`;
-- at `DESC_DONE`, the testbench prints one `PERF_JOB` JSON line with stable
-  `job_id` and legacy `id`.
-
-This keeps the bring-up RTL clean while the performance taxonomy is still
-changing. The tradeoff is that the counters are simulation/reporting counters,
-not software-readable hardware counters. When the phase definitions stabilize,
-the same taxonomy should be moved into an optional RTL perf-counter block or
-debug CSR window.
+The TB also accumulates a minimal event reference from core/mover/SRAM signals
+and asserts equivalence with snapshot storage. That path is verification-only:
+it neither prints production records nor establishes report provenance.
 
 ## How One Job Is Timed
 
@@ -77,39 +65,27 @@ descriptor job:
 ```text
 CPU MMIO write CTRL.start
 -> wrapper descriptor/program/input/output FSM
--> wrapper reaches DESC_DONE
--> testbench prints PERF_JOB
+-> wrapper publishes completed snapshot
+-> firmware reads PERF_* CSRs
+-> testbench records those bus-read CSR values as PERF_JOB
 ```
 
-The testbench starts counting when it sees the CPU bus write
-`NPU_OPSCHED_CTRL` with the start bit set. From that point onward, every clock
-while `perf_active` is true contributes one `total_cycles` count. The same
-clock can also contribute to more specific counters:
+The architectural CSR bank starts counting when it accepts
+`NPU_OPSCHED_CTRL.start`. Stable report fields are:
 
-| Counter | How it is counted |
+| Counter | CSR source |
 | --- | --- |
-| `wrapper.*` | one bucket selected by `u_npu_wrapper.desc_state` |
-| `core.*` | selected by `u_npu_wrapper.u_npu.state` while wrapper is starting/waiting for the core |
-| `movement.sram_read_cycles` | wrapper `sram_req && !sram_we` |
-| `movement.sram_write_cycles` | wrapper `sram_req && sram_we` |
-| `movement.desc/program/input/output_words` | SRAM requests classified by current wrapper state |
-| `movement.core_host_write_cycles` | wrapper writes the NPU core host window |
-| `movement.core_host_read_cycles` | inferred during wrapper output writeback |
+| `total_cycles` | `PERF_TOTAL_CYCLES` |
+| `core.total`, `core.matmul` | `PERF_CORE_ACTIVE_CYCLES`, `PERF_CORE_MATMUL_CYCLES` |
+| `data_mover.*cycles` | `PERF_DATA_MOVER_*_CYCLES` |
+| `data_mover.words/read_words/write_words` | `PERF_DATA_MOVER_*WORDS` |
+| `sram.read_words/write_words` | `PERF_SRAM_*_WORDS` |
 
-There are no explicit timestamp packets in the RTL today. The testbench samples
-hierarchical signals once per clock and prints a JSON summary when the wrapper
-enters `DESC_DONE`.
+There are no architectural timestamp/phase packets today. Formal production
+reports show stable summary values; detailed wrapper/core phase timelines from
+hierarchical TB sampling are intentionally no longer treated as measurements.
 
-The report then reconstructs lanes from counters:
-
-- wrapper spans are laid out in the wrapper FSM order;
-- core spans are offset to the wrapper `wait_core` position;
-- the data-mover lane is currently copied from wrapper program/input/output
-  movement phases;
-- the CPU lane is synthetic: one cycle for `MMIO start`, then poll/wait until
-  the job ends.
-
-This means the report measures launch-to-wrapper-done time for NPU jobs. It
+This means the report measures launch-to-wrapper-completion time for NPU jobs. It
 does not yet measure CPU staging before `CTRL.start`, CPU accumulation between
 tile jobs, or CPU result checking after wrapper completion.
 
@@ -117,17 +93,12 @@ tile jobs, or CPU result checking after wrapper completion.
 
 The first report is tied to the CPU-controlled SoC smoke simulation. It measures
 the interval from CPU firmware writing `CTRL.start` to the NPU wrapper finishing
-the job. The HTML report currently shows:
+the job. The production HTML report currently shows:
 
-- a cycle timeline with `CPU firmware`, `NPU wrapper`, `Data mover`, and
-  `NPU core` lanes;
+- CSR-sourced completed-job summary values and workload aggregation;
 - a workload summary table for grouped operator/model runs;
-- active work spans as solid blocks;
-- wait/blocked spans as patterned blocks;
 - per-job total cycles;
-- wrapper phase counters;
-- core phase counters;
-- data-movement annotations inside the wrapper phase timeline;
+- data-movement summary counters from the mover snapshot fields;
 - raw JSON for debugging and future tooling.
 
 Current wrapper phases:
@@ -186,7 +157,7 @@ A2.0 movement profile:
 | `matmul` | 153 | 64 | 144 | 64 |
 | `softmax` | 33 | 8 | 24 | 8 |
 
-For matmul, data movement still dominates the 81-cycle job. The core matmul
+For matmul, data movement still dominates the 82-cycle job. The core matmul
 phase is only 10 cycles, while input/program movement and output writeback now
 use the `WORDS_PER_CYCLE=4` NPU-side path. This remains the main evidence for
 later A2 work on data mover counters, scratchpad banking, and overlap.
@@ -195,11 +166,11 @@ Current model profiles:
 
 | Workload | Jobs | Total cycles | Notes |
 | --- | ---: | ---: | --- |
-| `digits_linear_classifier` | 16 matmul tiles | 1296 | `8x64 * 64x16` lowered into 16 current-RTL-compatible `8x8x8` jobs |
-| `real_mnist_cnn_fc1_tile0` | 1 matmul tile | 81 | First nonzero original CNN `fc1` quantized tile, `K=56`, `N=0`; SoC tile checkpoint, not full layer |
-| `real_mnist_cnn_fc1_k_stream_smoke` | 1 K-stream job | 236 | Four selected real `fc1` K chunks accumulated inside one descriptor; validates K streaming, not full layer |
-| `real_mnist_cnn_fc1_full_k_stream_tile0` | 1 K-stream job | 58784 | Full first `fc1` output N tile, `k_chunks=1152`, A/B streams staged in enlarged simulation SRAM |
-| `real_mnist_cnn_fc2` | 32 matmul tiles | 2592 | Original CNN `fc2: 128 -> 10` quantized view lowered into 32 current-RTL-compatible `8x8x8` jobs |
+| `digits_linear_classifier` | 16 matmul tiles | 1312 | `8x64 * 64x16` lowered into 16 current-RTL-compatible `8x8x8` jobs |
+| `real_mnist_cnn_fc1_tile0` | 1 matmul tile | 82 | First nonzero original CNN `fc1` quantized tile, `K=56`, `N=0`; SoC tile checkpoint, not full layer |
+| `real_mnist_cnn_fc1_k_stream_smoke` | 1 K-stream job | 186 | Four selected real `fc1` K chunks accumulated inside one descriptor; validates K streaming, not full layer |
+| `real_mnist_cnn_fc1_full_k_stream_layer` | 16 K-stream jobs | 627488 | Full `fc1` layer; each output-N descriptor has `k_chunks=1152`, compared against named serial baseline |
+| `real_mnist_cnn_fc2` | 32 matmul tiles | 2624 | Original CNN `fc2: 128 -> 10` quantized view lowered into 32 current-RTL-compatible `8x8x8` jobs |
 
 The model profile currently counts only NPU job intervals. CPU-side work between
 jobs, including copying tile tensors, accumulating partial sums, and argmax, is
@@ -235,9 +206,9 @@ buffer/prefetch behavior. The working plan is in `docs/data_mover_a2.md`.
 
 ## Timeline Semantics
 
-The timeline is a reconstruction from the counters emitted by `soc_cpu_tb`.
-For the current sequential wrapper FSM this is exact enough to show ordering and
-overlap:
+Legacy phase-rich records can still be rendered by the report parser for
+historical log replay. Production CSR-sourced records intentionally do not
+claim detailed wrapper/core phase measurement. Historical reconstruction used:
 
 ```text
 CPU firmware:  MMIO start -> poll/wait for done
@@ -268,9 +239,9 @@ mover state directly and may no longer match wrapper phase boundaries.
   wrapper wait overlapping core execution.
 - Core vector operations are still single-cycle RTL tasks, so softmax timing is
   not a realistic vector/SFU pipeline model yet.
-- Counters are collected in the testbench through hierarchy. This is useful for
-  bring-up, but synthesizable performance counters should later move into RTL
-  registers.
+- Report counters are read from synthesizable wrapper snapshot CSRs by
+  firmware; the testbench hierarchy observer is retained only as an
+  implementation-correlation check.
 
 ## Extension Points
 

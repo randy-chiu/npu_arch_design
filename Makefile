@@ -128,7 +128,7 @@ perf-report: firmware-smoke
 		hw/soc/rtl/soc_cpu_top.sv \
 		hw/soc/tb/soc_cpu_tb.sv
 	vvp build/soc/soc_cpu_tb > build/perf/cpu_soc_perf.log
-	python sw/tools/perf/report.py --log build/perf/cpu_soc_perf.log --workload-manifest build/perf/workload_manifest.json --json-out build/perf/perf.json --html-out build/perf/perf_report.html
+	python sw/tools/perf/report.py --log build/perf/cpu_soc_perf.log --workload-manifest build/perf/workload_manifest.json --arch-config $(ARCH) --soc-config $(SOC) --json-out build/perf/perf.json --html-out build/perf/perf_report.html
 
 ppa-proxy-from-perf:
 	mkdir -p build/ppa/proxy

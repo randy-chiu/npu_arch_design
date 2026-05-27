@@ -439,10 +439,11 @@ data_mover.words: 147536
 core.matmul cycles: 11520
 ```
 
-Full FC1 single-N-tile after overlap:
+Full FC1 single-N-tile after overlap, after the descriptor acquired its
+generated `job_id` word:
 
 ```text
-total_cycles: 39217
+total_cycles: 39218
 data_mover.transfer_cycles: 36884
 data_mover.words: 147536
 core.matmul cycles: 11520

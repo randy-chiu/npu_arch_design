@@ -24,12 +24,6 @@ module soc_dma #(
 );
     `include "soc_v0_addr.svh"
 
-    localparam logic [11:0] DMA_CTRL_OFFSET   = 12'h000;
-    localparam logic [11:0] DMA_STATUS_OFFSET = 12'h004;
-    localparam logic [11:0] DMA_SRC_OFFSET    = 12'h008;
-    localparam logic [11:0] DMA_DST_OFFSET    = 12'h00c;
-    localparam logic [11:0] DMA_WORDS_OFFSET  = 12'h010;
-
     logic        busy;
     logic        done;
     logic [31:0] src_addr;
@@ -52,10 +46,14 @@ module soc_dma #(
     always_comb begin
         bus_rdata = 32'h0000_0000;
         case (bus_addr)
-            DMA_STATUS_OFFSET: bus_rdata = {29'h0, !busy, busy, done};
-            DMA_SRC_OFFSET: bus_rdata = src_addr;
-            DMA_DST_OFFSET: bus_rdata = dst_addr;
-            DMA_WORDS_OFFSET: bus_rdata = words;
+            SOC_DMA_STATUS_OFFSET[11:0]: begin
+                bus_rdata[SOC_DMA_STATUS_DONE_BIT] = done;
+                bus_rdata[SOC_DMA_STATUS_BUSY_BIT] = busy;
+                bus_rdata[SOC_DMA_STATUS_IDLE_BIT] = !busy;
+            end
+            SOC_DMA_SRC_OFFSET[11:0]: bus_rdata = src_addr;
+            SOC_DMA_DST_OFFSET[11:0]: bus_rdata = dst_addr;
+            SOC_DMA_WORDS_OFFSET[11:0]: bus_rdata = words;
             default: bus_rdata = 32'h0000_0000;
         endcase
     end
@@ -87,16 +85,16 @@ module soc_dma #(
         end else begin
             if (bus_req && bus_we && !busy) begin
                 case (bus_addr)
-                    DMA_CTRL_OFFSET: begin
-                        if (bus_wdata[0]) begin
+                    SOC_DMA_CTRL_OFFSET[11:0]: begin
+                        if (bus_wdata[SOC_DMA_CTRL_START_BIT]) begin
                             busy <= (words != 32'h0000_0000);
                             done <= (words == 32'h0000_0000);
                             index <= 32'h0000_0000;
                         end
                     end
-                    DMA_SRC_OFFSET: src_addr <= bus_wdata;
-                    DMA_DST_OFFSET: dst_addr <= bus_wdata;
-                    DMA_WORDS_OFFSET: words <= bus_wdata;
+                    SOC_DMA_SRC_OFFSET[11:0]: src_addr <= bus_wdata;
+                    SOC_DMA_DST_OFFSET[11:0]: dst_addr <= bus_wdata;
+                    SOC_DMA_WORDS_OFFSET[11:0]: words <= bus_wdata;
                     default: begin
                     end
                 endcase

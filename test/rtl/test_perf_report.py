@@ -5,10 +5,62 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 from typing import Optional
 
-from perf.report import parse_perf_log, write_html, write_json
+from perf.report import build_highlights, load_measurement_model, parse_perf_log, write_html, write_json
 
 
 class PerfReportTests(unittest.TestCase):
+    def test_production_measurement_model_comes_from_arch_configs(self):
+        model = load_measurement_model(
+            Path("arch/configs/npu_v0.jsonc"),
+            Path("arch/configs/soc_v0.jsonc"),
+        )
+        self.assertEqual(model["matmul_tile"], [8, 8, 8])
+        self.assertEqual(model["data_mover_words_per_cycle"], 4)
+
+    def test_csr_records_mark_architectural_report_provenance(self):
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "csr.log"
+            log_path.write_text(
+                'PERF_JOB {"source":"architectural_perf_csr_snapshot","job_id":1,"id":1,'
+                '"name":"matmul","total_cycles":82,"core":{"total":17,"matmul":10},'
+                '"data_mover":{"active_cycles":52,"setup_cycles":0,"transfer_cycles":52,'
+                '"stall_cycles":0,"words":208,"read_words":144,"write_words":64},'
+                '"sram":{"read_words":155,"write_words":64}}\n',
+                encoding="utf-8",
+            )
+
+            report = parse_perf_log(log_path)
+
+        self.assertEqual(
+            report["source"]["performance"],
+            "measured_architectural_perf_csr_snapshot",
+        )
+        self.assertEqual(report["workloads"][0]["data_mover"]["read_words"], 144)
+        self.assertEqual([lane["module"] for lane in report["jobs"][0]["timeline"]], ["CPU firmware"])
+
+    def test_csr_highlight_does_not_claim_unmeasured_overlap_span(self):
+        highlights = build_highlights(
+            [
+                {
+                    "name": "real_mnist_cnn_fc1_full_k_stream_layer",
+                    "jobs": 1,
+                    "job_ids": [1],
+                    "total_cycles": 39218,
+                    "core_matmul_cycles": 11520,
+                    "data_mover": {"words": 147536, "transfer_cycles": 36884},
+                    "metadata": {
+                        "comparison_baseline": {
+                            "id": "npu_v0_a2_serial_k_stream_proxy",
+                            "cycles_per_job": 58784,
+                        }
+                    },
+                }
+            ],
+            [{"source": "architectural_perf_csr_snapshot", "job_id": 1, "timeline": []}],
+        )
+
+        self.assertIsNone(highlights[0]["overlap_cycles"])
+
     def test_firmware_fixture_tool_emits_manifest_from_job_counts(self):
         tool_path = Path("sw/tools/firmware/emit_soc_cpu_smoke_data.py")
         spec = importlib.util.spec_from_file_location("emit_soc_cpu_smoke_data", tool_path)
@@ -149,7 +201,8 @@ class PerfReportTests(unittest.TestCase):
             self.assertIn("Workload Summary", html_path.read_text(encoding="utf-8"))
             self.assertIn("Cycle timeline", html_path.read_text(encoding="utf-8"))
             self.assertIn("Movement model", html_path.read_text(encoding="utf-8"))
-            self.assertIn("Data mover phases", html_path.read_text(encoding="utf-8"))
+            self.assertIn("renderPhaseTimeline(section", html_path.read_text(encoding="utf-8"))
+            self.assertIn('document.createElement("details")', html_path.read_text(encoding="utf-8"))
             self.assertIn("highlights", json_path.read_text(encoding="utf-8"))
             self.assertIn("wrapper reads job descriptor words from SRAM", html_path.read_text(encoding="utf-8"))
 

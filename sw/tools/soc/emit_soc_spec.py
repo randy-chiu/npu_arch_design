@@ -28,6 +28,7 @@ def main() -> None:
     entries.extend(bus_entries)
     mover_entries = _npu_data_mover_entries(spec.get("npu_data_mover", {}))
     entries.extend(mover_entries)
+    entries.extend(_peripheral_entries(spec.get("peripherals", {})))
     for name in ("boot_rom", "sram", "npu_wrapper", "dma", "uart", "test_status"):
         region = memory_map[name]
         prefix = f"SOC_{name.upper()}"
@@ -156,6 +157,24 @@ def _npu_data_mover_entries(mover: dict[str, Any]) -> list[tuple[str, int]]:
         ("SOC_NPU_DATA_MOVER_WORDS_PER_CYCLE", words_per_cycle),
         ("SOC_NPU_DATA_MOVER_SETUP_CYCLES", setup_cycles),
     ]
+
+
+def _peripheral_entries(peripherals: dict[str, Any]) -> list[tuple[str, int]]:
+    entries: list[tuple[str, int]] = []
+    dma = peripherals.get("dma", {}).get("registers", {})
+    for name, register in dma.items():
+        if isinstance(register, dict):
+            entries.append((f"SOC_DMA_{name.upper()}_OFFSET", int(register["offset"])))
+            for field_name, field in register.get("fields", {}).items():
+                bit = int(field["bit"])
+                entries.append((f"SOC_DMA_{name.upper()}_{field_name.upper()}_BIT", bit))
+                entries.append((f"SOC_DMA_{name.upper()}_{field_name.upper()}_MASK", 1 << bit))
+        else:
+            entries.append((f"SOC_DMA_{name.upper()}_OFFSET", int(register)))
+    test_status = peripherals.get("test_status", {})
+    for name, value in test_status.items():
+        entries.append((f"SOC_TEST_STATUS_{name.upper()}_VALUE", int(value)))
+    return entries
 
 
 def _emit_linker_script(memory_map: dict[str, Any]) -> str:

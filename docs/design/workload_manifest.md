@@ -42,9 +42,10 @@ The JSON document requires:
 }
 ```
 
-`job_id` is the stable join key. The existing SoC testbench uses its
-historical one-based job numbering and now emits both canonical `job_id` and
-legacy `id`. Optional `tile_id` records a job's position inside tiled
+`job_id` is the stable join key. Fixture generation emits matching firmware
+`JOB_ID_*` constants and manifest entries; firmware carries the identity in
+`soc_npu_job_desc_t`, and the testbench emits both canonical `job_id` and
+legacy `id` from the consumed descriptor. Optional `tile_id` records a job's position inside tiled
 workloads. Optional `workload_metadata` defines one shared `kind` and metadata
 object for each workload rather than repeating it for every tile.
 

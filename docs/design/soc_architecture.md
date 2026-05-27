@@ -209,8 +209,10 @@ Legacy debug windows still exist under the NPU wrapper register space for older
 - provides clock/reset;
 - waits for `test_status`;
 - fails on CPU trap or timeout;
-- collects performance counters by observing existing RTL hierarchy;
-- prints `PERF_JOB` JSON lines for `make perf-report`.
+- cross-checks wrapper perf CSR snapshots against minimal observed
+  descriptor-job reference counters;
+- captures firmware's CPU-visible CSR read responses and prints those values as
+  `PERF_JOB` JSON lines for `make perf-report`.
 
 The testbench should remain observation-oriented. Functional behavior should be
 driven by firmware, not by direct testbench pokes into the NPU.
@@ -233,14 +235,16 @@ driven by firmware, not by direct testbench pokes into the NPU.
   engine.
 - UART is reserved but not implemented.
 - Interrupts are provisioned in wrapper registers but firmware still polls.
-- Performance counters are testbench-side, not CPU-visible CSRs.
+- Current report/PPA performance provenance is the CPU-visible completed-job
+  wrapper perf CSR snapshot; TB event correlation is verification-only.
 
 ## 10. Next Design Work
 
-Near-term SoC work should support A2 without overbuilding:
+Near-term SoC work should support the PPA/Transformer evaluation path without
+overbuilding:
 
-- add explicit data mover counters and optional debug registers;
+- preserve architectural CSR report provenance and validation correlation;
 - add DMA counters and error bits;
-- model SRAM bandwidth and later bank conflicts;
+- add external-memory accounting needed by Transformer comparisons;
 - keep descriptor ABI stable while the internal data mover changes;
 - decide when IRQ replaces polling in the firmware loop.

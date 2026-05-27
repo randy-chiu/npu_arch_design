@@ -167,9 +167,25 @@
     // 8x8 matmul, and 8-element softmax approximation.
     "top_module": "npu_v0_top",
     "matmul_tile": [8, 8, 8],
+    "matmul_array_control_cycles": 4,
     "softmax_vector_len": 8,
     "host_data_width_bits": 32,
-    "host_addr_width_bits": 12
+    "host_addr_width_bits": 12,
+    "host_map": {
+      "a": {"base_word": 0, "words": 64},
+      "b": {"base_word": 256, "words": 64},
+      "c": {"base_word": 512, "words": 64},
+      "x": {"base_word": 768, "words": 8},
+      "y": {"base_word": 896, "words": 8},
+      "program": {"base_word": 1024, "words": 16},
+      "control": {"base_word": 1280, "words": 1}
+    },
+    "control_bits": {
+      "accumulate_enable": 0,
+      "accumulator_clear": 1,
+      "host_write_bank": 2,
+      "compute_bank_select": 3
+    }
   },
 
   "verification": {

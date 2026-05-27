@@ -11,6 +11,26 @@ void npu_start(void);
 void npu_wait_done(void);
 uint32_t npu_status(void);
 
+typedef struct {
+    uint32_t status;
+    uint32_t job_id;
+    uint32_t op_type;
+    uint32_t total_cycles;
+    uint32_t core_active_cycles;
+    uint32_t core_matmul_cycles;
+    uint32_t data_mover_active_cycles;
+    uint32_t data_mover_setup_cycles;
+    uint32_t data_mover_transfer_cycles;
+    uint32_t data_mover_stall_cycles;
+    uint32_t data_mover_words;
+    uint32_t data_mover_read_words;
+    uint32_t data_mover_write_words;
+    uint32_t sram_read_words;
+    uint32_t sram_write_words;
+} npu_perf_snapshot_t;
+
+void npu_read_perf_snapshot(npu_perf_snapshot_t *snapshot);
+
 void dma_copy_words(uint32_t *dst, const uint32_t *src, uint32_t len);
 
 void test_status_pass(void);

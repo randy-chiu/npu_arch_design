@@ -14,11 +14,13 @@
   "registers": {
     "ctrl": {
       "offset": 0,
-      "description": "bit 0 write-1-to-start"
+      "description": "bit 0 write-1-to-start",
+      "fields": {"start": {"bit": 0}}
     },
     "status": {
       "offset": 4,
-      "description": "bit 0 done, bit 1 busy, bit 2 idle"
+      "description": "bit 0 done, bit 1 busy, bit 2 idle",
+      "fields": {"done": {"bit": 0}, "busy": {"bit": 1}, "idle": {"bit": 2}}
     },
     "version": {
       "offset": 8,
@@ -26,15 +28,83 @@
     },
     "irq_enable": {
       "offset": 12,
-      "description": "bit 0 interrupt enable"
+      "description": "bit 0 interrupt enable",
+      "fields": {"enable": {"bit": 0}}
     },
     "irq_status": {
       "offset": 16,
-      "description": "bit 0 interrupt pending, write 1 to clear"
+      "description": "bit 0 interrupt pending, write 1 to clear",
+      "fields": {"pending": {"bit": 0}}
     },
     "desc_addr": {
       "offset": 32,
       "description": "SRAM address of npu_job_desc for descriptor-driven launch"
+    },
+    "perf_ctrl": {
+      "offset": 64,
+      "description": "bit 0 write-1-to-clear retained performance snapshot while idle",
+      "fields": {"clear": {"bit": 0}}
+    },
+    "perf_status": {
+      "offset": 68,
+      "description": "bit 0 snapshot valid, bit 1 counter window running, bit 2 counter overflow",
+      "fields": {"valid": {"bit": 0}, "running": {"bit": 1}, "overflow": {"bit": 2}}
+    },
+    "perf_total_cycles": {
+      "offset": 72,
+      "description": "last completed launch-to-completion cycle count"
+    },
+    "perf_core_active_cycles": {
+      "offset": 76,
+      "description": "last completed core active cycle count"
+    },
+    "perf_core_matmul_cycles": {
+      "offset": 80,
+      "description": "last completed core matmul cycle count"
+    },
+    "perf_data_mover_active_cycles": {
+      "offset": 84,
+      "description": "last completed data mover active cycle count"
+    },
+    "perf_data_mover_setup_cycles": {
+      "offset": 88,
+      "description": "last completed data mover setup cycle count"
+    },
+    "perf_data_mover_transfer_cycles": {
+      "offset": 92,
+      "description": "last completed data mover valid-transfer cycle count"
+    },
+    "perf_data_mover_stall_cycles": {
+      "offset": 96,
+      "description": "last completed data mover stalled cycle count"
+    },
+    "perf_data_mover_words": {
+      "offset": 100,
+      "description": "last completed count of valid on-chip words moved"
+    },
+    "perf_sram_read_words": {
+      "offset": 104,
+      "description": "last completed count of NPU SRAM-boundary read words including descriptor reads"
+    },
+    "perf_sram_write_words": {
+      "offset": 108,
+      "description": "last completed count of NPU SRAM-boundary write words"
+    },
+    "perf_job_id": {
+      "offset": 112,
+      "description": "descriptor job identity captured with the last completed snapshot"
+    },
+    "perf_op_type": {
+      "offset": 116,
+      "description": "descriptor operation type captured with the last completed snapshot"
+    },
+    "perf_data_mover_read_words": {
+      "offset": 120,
+      "description": "last completed count of data mover SRAM-to-core-host words"
+    },
+    "perf_data_mover_write_words": {
+      "offset": 124,
+      "description": "last completed count of data mover core-host-to-SRAM words"
     }
   },
 

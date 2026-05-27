@@ -3,31 +3,46 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 import warnings
 from pathlib import Path
 
 
 PERF_PREFIX = "PERF_JOB "
-PHASE0_MATMUL_M = 8
-PHASE0_MATMUL_N = 8
-PHASE0_MATMUL_K = 8
-PHASE0_MATMUL_ARRAY_CONTROL_CYCLES = 4
-PHASE0_DATA_MOVER_WORDS_PER_CYCLE = 4
-PHASE0_DATA_MOVER_SETUP_CYCLES = 1
+DEFAULT_MODEL = {
+    "matmul_tile": [8, 8, 8],
+    "matmul_array_control_cycles": 4,
+    "data_mover_words_per_cycle": 4,
+    "data_mover_setup_cycles_per_segment": 1,
+}
 
 
-def add_estimates(job: dict) -> dict:
+def load_measurement_model(arch_path: Path, soc_path: Path) -> dict:
+    arch = _read_jsonc(arch_path)
+    soc = _read_jsonc(soc_path)
+    return {
+        "matmul_tile": [int(value) for value in arch["rtl"]["matmul_tile"]],
+        "matmul_array_control_cycles": int(arch["rtl"]["matmul_array_control_cycles"]),
+        "data_mover_words_per_cycle": int(soc["npu_data_mover"]["words_per_cycle"]),
+        "data_mover_setup_cycles_per_segment": int(
+            soc["npu_data_mover"]["model_setup_cycles_per_segment"]
+        ),
+    }
+
+
+def add_estimates(job: dict, model: dict = DEFAULT_MODEL) -> dict:
     if job.get("name") != "matmul":
         return job
 
-    scalar_compute = PHASE0_MATMUL_M * PHASE0_MATMUL_N * PHASE0_MATMUL_K
-    ideal_array_compute = PHASE0_MATMUL_K
-    conservative_array_compute = ideal_array_compute + PHASE0_MATMUL_ARRAY_CONTROL_CYCLES
+    matmul_m, matmul_n, matmul_k = model["matmul_tile"]
+    scalar_compute = matmul_m * matmul_n * matmul_k
+    ideal_array_compute = matmul_k
+    conservative_array_compute = ideal_array_compute + model["matmul_array_control_cycles"]
     measured_compute = int(job.get("core", {}).get("matmul", 0))
     non_matmul_cycles = int(job["total_cycles"]) - measured_compute
 
     job["estimates"] = {
-        "matmul_shape": [PHASE0_MATMUL_M, PHASE0_MATMUL_N, PHASE0_MATMUL_K],
+        "matmul_shape": [matmul_m, matmul_n, matmul_k],
         "scalar_compute_cycles": scalar_compute,
         "ideal_array_compute_cycles": ideal_array_compute,
         "conservative_array_compute_cycles": conservative_array_compute,
@@ -41,7 +56,7 @@ def ceil_div(value: int, divisor: int) -> int:
     return (value + divisor - 1) // divisor
 
 
-def add_movement_estimates(job: dict) -> dict:
+def add_movement_estimates(job: dict, model: dict = DEFAULT_MODEL) -> dict:
     movement = job.get("movement")
     if not movement:
         return job
@@ -63,12 +78,14 @@ def add_movement_estimates(job: dict) -> dict:
         movement.get("core_host_read_cycles", 0)
     )
     data_mover = job.get("data_mover", {})
-    ideal_burst_cycles = ceil_div(total_words, PHASE0_DATA_MOVER_WORDS_PER_CYCLE)
+    words_per_cycle = model["data_mover_words_per_cycle"]
+    setup_cycles = model["data_mover_setup_cycles_per_segment"]
+    ideal_burst_cycles = ceil_div(total_words, words_per_cycle)
     conservative_burst_cycles = sum(
-        ceil_div(value, PHASE0_DATA_MOVER_WORDS_PER_CYCLE)
+        ceil_div(value, words_per_cycle)
         for value in words.values()
         if value > 0
-    ) + active_segments * PHASE0_DATA_MOVER_SETUP_CYCLES
+    ) + active_segments * setup_cycles
 
     job["movement_estimates"] = {
         "total_words": total_words,
@@ -76,8 +93,8 @@ def add_movement_estimates(job: dict) -> dict:
         "measured_host_window_cycles": measured_host_window_cycles,
         "measured_data_mover_transfer_cycles": int(data_mover.get("transfer_cycles", 0)),
         "measured_data_mover_words": int(data_mover.get("words", 0)),
-        "model_words_per_cycle": PHASE0_DATA_MOVER_WORDS_PER_CYCLE,
-        "model_setup_cycles_per_segment": PHASE0_DATA_MOVER_SETUP_CYCLES,
+        "model_words_per_cycle": words_per_cycle,
+        "model_setup_cycles_per_segment": setup_cycles,
         "ideal_burst_cycles": ideal_burst_cycles,
         "conservative_burst_cycles": conservative_burst_cycles,
     }
@@ -85,6 +102,23 @@ def add_movement_estimates(job: dict) -> dict:
 
 
 def add_timeline(job: dict) -> dict:
+    cpu_lane = {
+        "module": "CPU firmware",
+        "spans": [
+            {"label": "MMIO start", "start": 0, "end": 1, "cycles": 1, "kind": "work"},
+            {
+                "label": "Poll/wait for done",
+                "start": 1,
+                "end": int(job["total_cycles"]),
+                "cycles": max(0, int(job["total_cycles"]) - 1),
+                "kind": "wait",
+            },
+        ],
+    }
+    if job.get("source") == "architectural_perf_csr_snapshot":
+        job["timeline"] = [cpu_lane]
+        return job
+
     wrapper_order = [
         ("desc_read", "Descriptor read", "work"),
         ("fetch_program", "Program fetch", "work"),
@@ -181,19 +215,7 @@ def add_timeline(job: dict) -> dict:
                 )
 
     job["timeline"] = [
-        {
-            "module": "CPU firmware",
-            "spans": [
-                {"label": "MMIO start", "start": 0, "end": 1, "cycles": 1, "kind": "work"},
-                {
-                    "label": "Poll/wait for done",
-                    "start": 1,
-                    "end": int(job["total_cycles"]),
-                    "cycles": max(0, int(job["total_cycles"]) - 1),
-                    "kind": "wait",
-                },
-            ],
-        },
+        cpu_lane,
         {"module": "NPU wrapper", "spans": wrapper_spans},
         {"module": "Data mover", "spans": data_mover_spans},
         {"module": "NPU core", "spans": core_spans},
@@ -201,16 +223,16 @@ def add_timeline(job: dict) -> dict:
     return job
 
 
-def parse_perf_log(path: Path, manifest_path: Path | None = None) -> dict:
+def parse_perf_log(path: Path, manifest_path: Path | None = None, model: dict = DEFAULT_MODEL) -> dict:
     jobs = []
     with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line.startswith(PERF_PREFIX):
                 jobs.append(
-                    add_timeline(
-                        add_movement_estimates(add_estimates(json.loads(line[len(PERF_PREFIX) :])))
-                    )
+                        add_timeline(add_movement_estimates(add_estimates(
+                            json.loads(line[len(PERF_PREFIX) :]), model
+                        ), model))
                 )
     if not jobs:
         raise ValueError(f"no {PERF_PREFIX.strip()} records found in {path}")
@@ -225,9 +247,15 @@ def parse_perf_log(path: Path, manifest_path: Path | None = None) -> dict:
         )
         workloads = infer_workloads(jobs)
     highlights = build_highlights(workloads, jobs)
+    performance_source = (
+        "measured_architectural_perf_csr_snapshot"
+        if all(job.get("source") == "architectural_perf_csr_snapshot" for job in jobs)
+        else "measured_rtl_perf_job_counters"
+    )
     return {
         "schema": "npu_perf_report_v0",
         "source_log": str(path),
+        "source": {"performance": performance_source},
         "workload_manifest": (
             {
                 "schema": workload_manifest["schema"],
@@ -269,6 +297,31 @@ def load_workload_manifest(path: Path) -> dict:
             raise ValueError(f"{path}: workload manifest has invalid or duplicate job_id {job_id!r}")
         seen.add(job_id)
     return manifest
+
+
+def _read_jsonc(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    return json.loads("\n".join(_strip_line_comment(line) for line in text.splitlines()))
+
+
+def _strip_line_comment(line: str) -> str:
+    in_string = False
+    escaped = False
+    for i in range(len(line) - 1):
+        ch = line[i]
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if not in_string and line[i : i + 2] == "//":
+            return line[:i]
+    return line
 
 
 def _job_id(job: dict, require_explicit: bool = False) -> int:
@@ -336,23 +389,27 @@ def build_highlights(workloads: list[dict], jobs: list[dict]) -> list[dict]:
     fc1_full = workload_by_name.get("real_mnist_cnn_fc1_full_k_stream_layer")
     if not fc1_full:
         fc1_full = workload_by_name.get("real_mnist_cnn_fc1_full_k_stream_tile0")
-    if fc1_full:
-        old_serial_baseline = 58784 * int(fc1_full.get("jobs", 1))
+    baseline = fc1_full.get("metadata", {}).get("comparison_baseline") if fc1_full else None
+    if fc1_full and baseline:
+        old_serial_baseline = int(baseline["cycles_per_job"]) * int(fc1_full.get("jobs", 1))
         total_cycles = int(fc1_full["total_cycles"])
         cycles_saved = old_serial_baseline - total_cycles
         improvement_pct = (cycles_saved * 100.0 / old_serial_baseline) if old_serial_baseline else 0.0
-        overlap_cycles = 0
+        overlap_cycles = None
         for job in jobs:
             if _job_id(job) in fc1_full.get("job_ids", []):
                 for lane in job.get("timeline", []):
                     if lane.get("module") == "Data mover":
                         for span in lane.get("spans", []):
                             if span.get("label") == "K prefetch overlap":
+                                if overlap_cycles is None:
+                                    overlap_cycles = 0
                                 overlap_cycles += int(span.get("cycles", 0))
         highlights.append(
             {
                 "title": "FC1 K-stream ping-pong overlap",
                 "workload": fc1_full["name"],
+                "baseline_id": baseline["id"],
                 "before_cycles": old_serial_baseline,
                 "after_cycles": total_cycles,
                 "cycles_saved": cycles_saved,
@@ -464,6 +521,10 @@ def infer_workloads(jobs: list[dict]) -> list[dict]:
                         "weights": "test/external/mnist_cnn/mnist-cnn.safetensors",
                         "tile_jobs": remaining_before_fc2,
                         "k_chunks": 1152,
+                        "comparison_baseline": {
+                            "id": "npu_v0_a2_serial_k_stream_proxy",
+                            "cycles_per_job": 58784,
+                        },
                         "description": (
                             "Full quantized fc1 layer across all 16 output N tiles"
                             if remaining_before_fc2 == 16
@@ -605,6 +666,11 @@ def write_html(report: dict, path: Path) -> None:
       border-radius: 8px;
       padding: 16px;
     }}
+    details.job summary {{
+      cursor: pointer;
+      list-style: none;
+    }}
+    details.job summary::-webkit-details-marker {{ display: none; }}
     .highlight {{
       background: var(--panel);
       border: 1px solid var(--line);
@@ -1106,7 +1172,7 @@ def write_html(report: dict, path: Path) -> None:
             <div class="highlight-item"><div class="label">Before</div><div class="value">${{h.before_cycles}} cycles</div></div>
             <div class="highlight-item"><div class="label">After</div><div class="value">${{h.after_cycles}} cycles</div></div>
             <div class="highlight-item"><div class="label">Saved</div><div class="value">${{h.cycles_saved}} cycles (${{h.improvement_pct}}%)</div></div>
-            <div class="highlight-item"><div class="label">Overlap</div><div class="value">${{h.overlap_cycles}} cycles</div></div>
+            ${{h.overlap_cycles === null ? "" : `<div class="highlight-item"><div class="label">Overlap</div><div class="value">${{h.overlap_cycles}} cycles</div></div>`}}
             <div class="highlight-item"><div class="label">Core matmul</div><div class="value">${{h.core_matmul_cycles}} cycles</div></div>
             <div class="highlight-item"><div class="label">Moved words</div><div class="value">${{h.data_mover_words}}</div></div>
           </div>
@@ -1147,20 +1213,26 @@ def write_html(report: dict, path: Path) -> None:
     }}
 
     jobs.forEach((job) => {{
-      const section = document.createElement("article");
+      const section = document.createElement("details");
       section.className = "job";
       section.innerHTML = `
+        <summary>
         <div class="job-head">
           <h2>#${{job.id}} ${{job.name}}</h2>
-          <div class="subtle">${{job.total_cycles}} cycles</div>
+          <div class="subtle">${{job.total_cycles}} cycles - open detail</div>
         </div>
+        </summary>
       `;
-      renderTimeline(section, job);
-      renderEstimates(section, job);
-      renderMovementEstimates(section, job);
-      renderPhaseTimeline(section, "Wrapper phases", job.timeline[1], job.total_cycles, timelineColors["NPU wrapper"]);
-      renderPhaseTimeline(section, "Data mover phases", job.timeline[2], job.total_cycles, timelineColors["Data mover"]);
-      renderPhaseTimeline(section, "Core phases", job.timeline[3], job.total_cycles, timelineColors["NPU core"]);
+      section.addEventListener("toggle", () => {{
+        if (!section.open || section.dataset.rendered) return;
+        renderTimeline(section, job);
+        renderEstimates(section, job);
+        renderMovementEstimates(section, job);
+        job.timeline.slice(1).forEach((laneData) => {{
+          renderPhaseTimeline(section, `${{laneData.module}} phases`, laneData, job.total_cycles, timelineColors[laneData.module]);
+        }});
+        section.dataset.rendered = "true";
+      }});
       root.appendChild(section);
     }});
   </script>
@@ -1174,11 +1246,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate NPU cycle report UI from simulation log.")
     parser.add_argument("--log", required=True, type=Path)
     parser.add_argument("--workload-manifest", type=Path)
+    parser.add_argument("--arch-config", type=Path)
+    parser.add_argument("--soc-config", type=Path)
     parser.add_argument("--json-out", required=True, type=Path)
     parser.add_argument("--html-out", required=True, type=Path)
     args = parser.parse_args()
 
-    report = parse_perf_log(args.log, args.workload_manifest)
+    if args.arch_config is None or args.soc_config is None:
+        model = DEFAULT_MODEL
+    else:
+        model = load_measurement_model(args.arch_config, args.soc_config)
+    report = parse_perf_log(args.log, args.workload_manifest, model)
     write_json(report, args.json_out)
     write_html(report, args.html_out)
     print(f"Wrote {args.json_out}")

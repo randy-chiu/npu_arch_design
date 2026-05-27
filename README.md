@@ -107,7 +107,7 @@ hand-coded in multiple places:
 | Spec | Owns |
 | --- | --- |
 | [arch/configs/npu_v0.jsonc](arch/configs/npu_v0.jsonc) | NPU core architecture shape, ISA/uop constants, tensor dimensions |
-| [arch/configs/npu_wrapper_v0.jsonc](arch/configs/npu_wrapper_v0.jsonc) | CPU-visible NPU wrapper register map and legacy debug windows |
+| [arch/configs/npu_wrapper_v0.jsonc](arch/configs/npu_wrapper_v0.jsonc) | CPU-visible NPU wrapper register map, perf snapshot CSRs, and legacy debug windows |
 | [arch/configs/soc_v0.jsonc](arch/configs/soc_v0.jsonc) | CPU reset vector, SoC memory map, boot image path, CPU/NPU descriptor ABI |
 | [arch/configs/ppa/area_proxy_v0.jsonc](arch/configs/ppa/area_proxy_v0.jsonc) | Level 0 structural area-proxy resources and normalized coefficients |
 | [arch/configs/ppa/energy_proxy_v0.jsonc](arch/configs/ppa/energy_proxy_v0.jsonc) | Level 0 event-energy proxy coefficients and matmul event derivation |
@@ -178,11 +178,16 @@ build/perf/perf.json
 build/perf/perf_report.html
 ```
 
+The wrapper exposes completed-job performance snapshot CSRs for identity,
+total/core/data-mover/SRAM-word counters. Firmware reads those CSRs through
+MMIO; `PERF_JOB` and Level 0 PPA consume the captured read values, while RTL
+regression keeps a separate event-reference check.
+
 `make ppa-proxy-report` is the current PPA entry point. It intentionally
 reports:
 
 ```text
-performance/traffic: measured from RTL PERF_JOB counters
+performance/traffic: measured from architectural perf CSR snapshot values
 area:                structural normalized proxy, not synthesized area
 energy:              event-based normalized proxy, not measured power
 ```

@@ -62,24 +62,27 @@ the verified SoC/PPA path stable before adding Transformer datapath features.
 
 | Priority | Debt / action | Status |
 | --- | --- | --- |
-| `P0` | Workload semantics must be generated from the same fixture/tool path that determines firmware jobs, not maintained as an independent 68-job list. | Implemented: `emit_soc_cpu_smoke_data.py` emits `build/perf/workload_manifest.json`; generated minimal firmware emits its two-job manifest. |
+| `P0` | Workload semantics must be generated from the same fixture/tool path that determines firmware jobs, not maintained as an independent 68-job list. | Implemented for report correlation: fixture generation emits both manifest entries and firmware `JOB_ID_*` values; `job_id` is carried by each descriptor rather than inferred from launch order. |
 | `P0` | PPA baselines must be validated frozen `ppa_proxy.json` reports with schema, evidence, manifest and coefficient identity. | Implemented for active serial comparison: frozen Level 0 report established; legacy recorded input retained only for provenance. |
 | `P0` | Proxy validation must catch arithmetic/identity corruption, not only missing fields. | Implemented for L0: contribution totals, non-negative metrics, unique workloads and delta consistency validated. |
 | `P1` | Development should generate PPA from an existing valid perf artifact without rerunning the long SoC simulation. | Implemented: `make ppa-proxy-from-perf` is the fast derived-report target; `make ppa-proxy-report` remains the full gate. |
-| `P1` | Perf metrics currently come from hierarchical testbench sampling rather than an architectural register interface. | Planned: define counter snapshot/clear semantics and implement wrapper counter aggregation with TB-versus-CSR correlation tests. |
+| `P1` | Perf metrics currently come from hierarchical testbench sampling rather than an architectural register interface. | Implemented: firmware reads completed-job CSR snapshots, `PERF_JOB`/PPA consume those bus-read values with architectural provenance, and TB event sampling remains validation-only. |
+| `P1` | Internal core host-window/control layout is duplicated as handwritten RTL constants across wrapper and core. | Implemented: internal host/control map is defined in `arch/configs/npu_v0.jsonc` and emitted into the shared RTL spec include. |
+| `P1` | Firmware job identity and workload-manifest correlation must not depend on parallel launch-order inference. | Implemented: generated `JOB_ID_*` values populate descriptor `job_id`, and TB reports the consumed identity. |
 | `P2` | Workload comparison identity lacks full shape, precision, activity-scope and external-memory accounting identity. | Planned before Transformer comparisons become decision evidence. |
 | `P2` | PPA evidence stops at `L0_proxy`; mapped timing/area and activity-based power do not yet exist. | Planned after L0 contracts and workloads are stable. |
 | `P3` | Current host-window memory path and simplified vector/SFU timing are bring-up structures. | Planned unified tensor-NPU evolution; do not fork CNN and Transformer cores. |
 
 Remaining scoped debt:
 
-- `job_id` is still observed/numbered at the testbench launch boundary rather
-  than carried by a firmware descriptor or future command queue ABI.
 - `report.py` still has warned order-based inference for legacy log replay; new
   production report targets must continue supplying a manifest.
-- the C application and its fixture emitter still share an expected fixed
-  workload structure; generation removes the duplicated 68-entry list, while
-  a future job-table ABI could remove the remaining sequencing convention.
+- detailed wrapper/core phase timelines are no longer production measurements;
+  add an architectural trace/event contract only if Transformer analysis
+  requires reviewed fine-grain overlap visualization.
+- C firmware still contains workload-specific launch/control code; generated
+  descriptor identity now prevents report misclassification, while a future
+  generic command-list executor may reduce control-code duplication.
 - FC1 ping-pong highlights are workload-specific report presentation logic and
   should not become the pattern for each new Transformer microbenchmark.
 - current traffic evidence is primarily on-chip mover traffic; external
@@ -94,12 +97,14 @@ Remaining scoped debt:
 
 Immediate implementation sequence:
 
-1. Specify wrapper-visible perf counter control/snapshot/overflow semantics
-   and cross-check a minimal RTL implementation against existing
-   testbench-sampled counters.
-2. Extend workload identity and external-memory accounting before using
+1. Extend workload identity and external-memory accounting before using
    Transformer microbench results for architecture decisions.
-3. Introduce `L1_mapped` analysis only after the Level 0 baseline is
+2. Decide the first Transformer-supported executable baseline: tiled INT8
+   projection GEMM/skinny-GEMM using existing matmul, plus model-only
+   KV-cache traffic accounting.
+3. Keep `mac_ops`/`instr_count`/timeout-error CSR extensions planned until
+   Transformer operator/event contracts identify what must be committed.
+4. Introduce `L1_mapped` analysis only after the Level 0 baseline is
    reproducible and auditable.
 
 ## Current Module Ownership
@@ -213,7 +218,8 @@ Exit condition:
 
 ### TR0: Transformer Workload Baseline
 
-Status: planned in parallel with PPA1 once the proxy contract is stable.
+Status: ready to start after CSR-sourced Level 0 reporting; initial manifest
+exists, executable projection/traffic identity extension is next.
 
 Purpose:
 
@@ -227,6 +233,16 @@ Initial coverage:
 - RMSNorm and FFN projections;
 - KV-cache traffic microbenchmarks;
 - a small decoder-only block after the kernel metrics are stable.
+
+Execution order:
+
+1. extend manifest/report identity for scenario, shape, precision, activity
+   scope, and external/KV-cache traffic;
+2. execute INT8 prefill projection GEMM and `M=8` decode skinny-GEMM proxy on
+   existing matmul/K-stream RTL;
+3. add model-only KV-cache bytes/token and external-energy contribution;
+4. select command-list/layout, skinny utilization, memory-interface, or
+   reduction/SFU RTL work from measured evidence.
 
 ### W1: Digits Classifier Workload
 

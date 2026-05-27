@@ -200,11 +200,11 @@ It verifies:
 ```text
 jobs: 53
 workloads: 7
-total_cycles: 43482
-real_mnist_cnn_fc1_tile0: 1 job, 81 cycles
-real_mnist_cnn_fc1_k_stream_smoke: 1 job, 185 cycles
-real_mnist_cnn_fc1_full_k_stream_tile0: 1 job, 39217 cycles
-real_mnist_cnn_fc2: 32 jobs, 2592 cycles
+total_cycles: 43535
+real_mnist_cnn_fc1_tile0: 1 job, 82 cycles
+real_mnist_cnn_fc1_k_stream_smoke: 1 job, 186 cycles
+real_mnist_cnn_fc1_full_k_stream_tile0: 1 job, 39218 cycles
+real_mnist_cnn_fc2: 32 jobs, 2624 cycles
 ```
 
 After extending full `fc1` from one output N tile to all 16 output N tiles,
@@ -213,11 +213,11 @@ After extending full `fc1` from one output N tile to all 16 output N tiles,
 ```text
 jobs: 68
 workloads: 7
-total_cycles: 631737
-real_mnist_cnn_fc1_tile0: 1 job, 81 cycles
-real_mnist_cnn_fc1_k_stream_smoke: 1 job, 185 cycles
-real_mnist_cnn_fc1_full_k_stream_layer: 16 jobs, 627472 cycles
-real_mnist_cnn_fc2: 32 jobs, 2592 cycles
+total_cycles: 631805
+real_mnist_cnn_fc1_tile0: 1 job, 82 cycles
+real_mnist_cnn_fc1_k_stream_smoke: 1 job, 186 cycles
+real_mnist_cnn_fc1_full_k_stream_layer: 16 jobs, 627488 cycles
+real_mnist_cnn_fc2: 32 jobs, 2624 cycles
 ```
 
 Next steps:

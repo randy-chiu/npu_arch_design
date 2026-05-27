@@ -6,6 +6,10 @@ module npu_v0_top #(
     input  logic        start,
     input  logic        op,          // Reserved. Phase 0 execution is driven by uops.
     output logic        done,
+    output logic        perf_active,
+    output logic        perf_fetch_active,
+    output logic        perf_matmul_active,
+    output logic        perf_done_active,
 
     input  logic [CORE_HOST_LANES-1:0] host_we,
     input  logic [11:0] host_addr,
@@ -35,10 +39,10 @@ module npu_v0_top #(
     logic signed [15:0] vec_buf [0:RTL_SOFTMAX_LEN-1];
     logic signed [15:0] scalar_max;
     logic [15:0]        scalar_sum;
-    logic [31:0]        instr_mem [0:15];
+    logic [31:0]        instr_mem [0:RTL_HOST_PROGRAM_WORDS-1];
 
     state_t state;
-    logic [3:0] pc;
+    logic [$clog2(RTL_HOST_PROGRAM_WORDS)-1:0] pc;
     logic [31:0] instr;
     logic [3:0] opcode;
     logic [3:0] arg0;
@@ -71,6 +75,10 @@ module npu_v0_top #(
     assign opcode = instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB];
     assign arg0 = instr[UOP_ARG0_MSB:UOP_ARG0_LSB];
     assign arg1 = instr[UOP_ARG1_MSB:UOP_ARG1_LSB];
+    assign perf_active = start || state != ST_IDLE;
+    assign perf_fetch_active = state == ST_FETCH;
+    assign perf_matmul_active = state == ST_MATMUL;
+    assign perf_done_active = state == ST_DONE;
 
     matmul_array #(
         .M(RTL_MATMUL_M),
@@ -103,7 +111,7 @@ module npu_v0_top #(
                 dram_y[idx] <= '0;
                 vec_buf[idx] <= '0;
             end
-            for (idx = 0; idx < 16; idx = idx + 1) begin
+            for (idx = 0; idx < RTL_HOST_PROGRAM_WORDS; idx = idx + 1) begin
                 instr_mem[idx] <= '0;
             end
             matmul_accumulate_enable <= 1'b0;
@@ -113,27 +121,31 @@ module npu_v0_top #(
             for (host_lane_idx = 0; host_lane_idx < CORE_HOST_LANES; host_lane_idx = host_lane_idx + 1) begin
                 if (host_we[host_lane_idx]) begin
                     host_lane_addr = host_addr + host_lane_idx[11:0];
-                    if (host_lane_addr < 12'h040) begin
+                    if (host_lane_addr >= RTL_HOST_A_BASE &&
+                        host_lane_addr < RTL_HOST_A_BASE + RTL_HOST_A_WORDS) begin
                         if (host_write_bank) begin
-                            dram_a_bank1[host_lane_addr[5:0]] <= host_wdata[(host_lane_idx * 32) +: 8];
+                            dram_a_bank1[host_lane_addr - RTL_HOST_A_BASE] <= host_wdata[(host_lane_idx * 32) +: 8];
                         end else begin
-                            dram_a[host_lane_addr[5:0]] <= host_wdata[(host_lane_idx * 32) +: 8];
+                            dram_a[host_lane_addr - RTL_HOST_A_BASE] <= host_wdata[(host_lane_idx * 32) +: 8];
                         end
-                    end else if (host_lane_addr >= 12'h100 && host_lane_addr < 12'h140) begin
+                    end else if (host_lane_addr >= RTL_HOST_B_BASE &&
+                                 host_lane_addr < RTL_HOST_B_BASE + RTL_HOST_B_WORDS) begin
                         if (host_write_bank) begin
-                            dram_b_bank1[host_lane_addr[5:0]] <= host_wdata[(host_lane_idx * 32) +: 8];
+                            dram_b_bank1[host_lane_addr - RTL_HOST_B_BASE] <= host_wdata[(host_lane_idx * 32) +: 8];
                         end else begin
-                            dram_b[host_lane_addr[5:0]] <= host_wdata[(host_lane_idx * 32) +: 8];
+                            dram_b[host_lane_addr - RTL_HOST_B_BASE] <= host_wdata[(host_lane_idx * 32) +: 8];
                         end
-                    end else if (state == ST_IDLE && host_lane_addr >= 12'h300 && host_lane_addr < 12'h308) begin
-                        dram_x[host_lane_addr[2:0]] <= host_wdata[(host_lane_idx * 32) +: 8];
-                    end else if (state == ST_IDLE && host_lane_addr >= 12'h400 && host_lane_addr < 12'h410) begin
-                        instr_mem[host_lane_addr[3:0]] <= host_wdata[(host_lane_idx * 32) +: 32];
-                    end else if (host_lane_addr == 12'h500) begin
-                        matmul_accumulate_enable <= host_wdata[(host_lane_idx * 32)];
-                        host_write_bank <= host_wdata[(host_lane_idx * 32) + 2];
-                        compute_bank_select <= host_wdata[(host_lane_idx * 32) + 3];
-                        if (host_wdata[(host_lane_idx * 32) + 1]) begin
+                    end else if (state == ST_IDLE && host_lane_addr >= RTL_HOST_X_BASE &&
+                                 host_lane_addr < RTL_HOST_X_BASE + RTL_HOST_X_WORDS) begin
+                        dram_x[host_lane_addr - RTL_HOST_X_BASE] <= host_wdata[(host_lane_idx * 32) +: 8];
+                    end else if (state == ST_IDLE && host_lane_addr >= RTL_HOST_PROGRAM_BASE &&
+                                 host_lane_addr < RTL_HOST_PROGRAM_BASE + RTL_HOST_PROGRAM_WORDS) begin
+                        instr_mem[host_lane_addr - RTL_HOST_PROGRAM_BASE] <= host_wdata[(host_lane_idx * 32) +: 32];
+                    end else if (host_lane_addr == RTL_HOST_CONTROL_BASE) begin
+                        matmul_accumulate_enable <= host_wdata[(host_lane_idx * 32) + RTL_CTRL_ACCUMULATE_ENABLE_BIT];
+                        host_write_bank <= host_wdata[(host_lane_idx * 32) + RTL_CTRL_HOST_WRITE_BANK_BIT];
+                        compute_bank_select <= host_wdata[(host_lane_idx * 32) + RTL_CTRL_COMPUTE_BANK_SELECT_BIT];
+                        if (host_wdata[(host_lane_idx * 32) + RTL_CTRL_ACCUMULATOR_CLEAR_BIT]) begin
                             for (idx = 0; idx < RTL_MATMUL_ELEMS; idx = idx + 1) begin
                                 acc_buf[idx] <= '0;
                             end
@@ -148,10 +160,12 @@ module npu_v0_top #(
         host_rdata = '0;
         for (host_read_lane_idx = 0; host_read_lane_idx < CORE_HOST_LANES; host_read_lane_idx = host_read_lane_idx + 1) begin
             host_read_lane_addr = host_addr + host_read_lane_idx[11:0];
-            if (host_read_lane_addr >= 12'h200 && host_read_lane_addr < 12'h240) begin
-                host_rdata[(host_read_lane_idx * 32) +: 32] = dram_c[host_read_lane_addr[5:0]];
-            end else if (host_read_lane_addr >= 12'h380 && host_read_lane_addr < 12'h388) begin
-                host_rdata[(host_read_lane_idx * 32) +: 32] = {24'h0, dram_y[host_read_lane_addr[2:0]]};
+            if (host_read_lane_addr >= RTL_HOST_C_BASE &&
+                host_read_lane_addr < RTL_HOST_C_BASE + RTL_HOST_C_WORDS) begin
+                host_rdata[(host_read_lane_idx * 32) +: 32] = dram_c[host_read_lane_addr - RTL_HOST_C_BASE];
+            end else if (host_read_lane_addr >= RTL_HOST_Y_BASE &&
+                         host_read_lane_addr < RTL_HOST_Y_BASE + RTL_HOST_Y_WORDS) begin
+                host_rdata[(host_read_lane_idx * 32) +: 32] = {24'h0, dram_y[host_read_lane_addr - RTL_HOST_Y_BASE]};
             end
         end
     end

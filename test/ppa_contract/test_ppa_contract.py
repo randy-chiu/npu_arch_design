@@ -48,6 +48,7 @@ class PPAContractTests(unittest.TestCase):
     def test_proxy_report_labels_modeled_metrics_and_uses_measured_events(self):
         perf = {
             "source_log": "synthetic.log",
+            "source": {"performance": "measured_architectural_perf_csr_snapshot"},
             "workloads": [
                 {
                     "name": "real_mnist_cnn_fc1_full_k_stream_tile0",
@@ -82,7 +83,7 @@ class PPAContractTests(unittest.TestCase):
         self.assertEqual(report["evidence_level"], "L0_proxy")
         self.assertEqual(report["area_proxy"]["storage_bits_total"], 7968)
         self.assertEqual(report["area_proxy"]["normalized_area_units"], 6998.4)
-        self.assertEqual(workload["performance"]["provenance"], "measured_rtl_perf_job_counters")
+        self.assertEqual(workload["performance"]["provenance"], "measured_architectural_perf_csr_snapshot")
         self.assertEqual(workload["energy_proxy"]["events"]["int8_mac_accumulate"], 1152 * 512)
         self.assertEqual(workload["energy_proxy"]["events"]["data_mover_read_word"], 147472)
         self.assertEqual(

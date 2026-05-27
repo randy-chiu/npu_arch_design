@@ -68,6 +68,7 @@ Driver functions:
 | `npu_start()` | write `CTRL.start` |
 | `npu_status()` | read wrapper status |
 | `npu_wait_done()` | poll `STATUS.done` |
+| `npu_read_perf_snapshot()` | read completed-job summary CSRs |
 | `test_status_pass/fail` | write simulation status register |
 
 The driver still includes legacy `npu_write_words` and `npu_read_words` helpers
@@ -84,12 +85,14 @@ For each job, firmware performs:
 4. Write `DESC_ADDR`.
 5. Write `CTRL.start`.
 6. Poll `STATUS.done`.
-7. Check output buffer in SRAM.
+7. Read and sanity-check the completed-job perf snapshot.
+8. Check output buffer in SRAM.
 
 Matmul descriptor fields:
 
 ```text
 op_type      = SOC_NPU_JOB_OP_MATMUL
+job_id       = generated JOB_ID_* value
 program_addr = matmul_program_sram
 input0_addr  = matmul_a_sram
 input1_addr  = matmul_b_sram
@@ -100,6 +103,7 @@ Softmax descriptor fields:
 
 ```text
 op_type      = SOC_NPU_JOB_OP_SOFTMAX
+job_id       = generated JOB_ID_* value
 program_addr = softmax_program_sram
 input0_addr  = softmax_x_sram
 input1_addr  = 0
@@ -164,7 +168,8 @@ The firmware writes `test_status`:
 - no cache coherency concerns are modeled;
 - no dynamic allocator or runtime job queue;
 - program/tensor staging is hardcoded for smoke tests;
-- CPU-side staging/check cycles are not yet included in the perf timeline.
+- CPU-side staging/check cycles are not included in the completed-job perf
+  snapshot.
 
 ## 10. Next Work
 
@@ -172,6 +177,7 @@ Near-term software/hardware interaction work:
 
 - add driver timeout around `npu_wait_done`;
 - expose wrapper error/status code once RTL supports it;
-- decide whether perf counters become CPU-readable debug CSRs;
+- preserve firmware/report consumption of completed-job perf snapshot CSRs and
+  extend it only with stable architectural counters;
 - keep descriptor ABI stable while A2 data mover internals change;
 - later add IRQ-driven completion path.

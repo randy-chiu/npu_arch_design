@@ -55,7 +55,7 @@ Every `workloads[]` item requires `name`, `performance`, and `energy_proxy`.
 | `performance.cycles` | RTL-simulation cycles over the declared job boundary. |
 | `performance.core_matmul_cycles` | RTL-sampled core matmul cycles. |
 | `performance.data_mover_words` | RTL-sampled on-chip mover words. |
-| `performance.provenance` | Usually `measured_rtl_perf_job_counters`; identifies testbench/RTL provenance. |
+| `performance.provenance` | Production value is `measured_architectural_perf_csr_snapshot`; legacy replay may retain `measured_rtl_perf_job_counters`. |
 | `energy_proxy.events` | Event counts used by the model, including MAC work and mover traffic. |
 | `energy_proxy.coefficients` | Normalized energy/event coefficients. |
 | `energy_proxy.normalized_energy_units` | Normalized event-energy total; not joules. |

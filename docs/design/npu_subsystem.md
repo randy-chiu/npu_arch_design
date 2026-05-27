@@ -59,9 +59,10 @@ harness，但不得默认把当前多 MiB 的仿真 SRAM 综合进主要 NPU 结
 
 ## 5. Follow-Up / 后续工作
 
-1. Add ASIC flow inputs for `npu_subsystem_top`.
-2. Decide local buffer macro-accounting policy before publishing area claims.
-3. Add activity harness/capture window for kernel-scoped power analysis.
-4. Introduce stable debug/perf counter visibility only when the PPA flow needs
-   it; do not modify the existing functional launch contract unnecessarily.
-
+1. Preserve the implemented Level 0 proxy boundary and architectural wrapper
+   perf snapshot report provenance with TB validation correlation.
+2. Extend workload identity and external-memory accounting before Transformer
+   results become architecture decision evidence.
+3. Decide local buffer macro-accounting policy before publishing mapped or
+   physical area claims.
+4. Add activity harness/capture windows only when moving beyond `L0_proxy`.

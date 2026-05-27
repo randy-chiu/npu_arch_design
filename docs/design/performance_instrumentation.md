@@ -22,16 +22,15 @@ visible.
 
 ## 2. Current Collection Method
 
-Counters are currently collected in `hw/soc/tb/soc_cpu_tb.sv`.
+The report source is the CPU-visible completed-job snapshot implemented in
+`hw/npu_wrapper/rtl/npu_v0_opsched.sv`. Firmware reads it through MMIO after
+every descriptor job. `hw/soc/tb/soc_cpu_tb.sv` serializes those actual bus
+read responses into `PERF_JOB` JSON records labeled
+`architectural_perf_csr_snapshot`.
 
-This is testbench-side profiling:
-
-- no CPU-visible perf registers yet;
-- no synthesizable counter block yet;
-- no counter logic inserted into every RTL module;
-- the testbench observes existing hierarchical RTL signals once per cycle.
-
-This choice keeps RTL simple while phase definitions are still changing.
+The TB continues to accumulate a minimal hierarchical event reference solely
+to assert that the CSR implementation matches the event sources. It is no
+longer a production report data source.
 
 ## 3. Job Boundary
 
@@ -44,7 +43,7 @@ CPU writes NPU_OPSCHED_CTRL with bit 0 set
 End condition:
 
 ```text
-wrapper reaches DESC_DONE and PERF_JOB is printed
+wrapper reaches completion, publishes a snapshot, and firmware reads it
 ```
 
 Current measured interval starts at NPU launch, not at CPU/DMA input staging.
@@ -56,20 +55,18 @@ cycle report.
 
 ## 4. Sampled Signals
 
-| Counter group | Source signal |
+| Counter group | Architectural source |
 | --- | --- |
-| wrapper phases | `dut.u_npu_wrapper.desc_state` |
-| core phases | `dut.u_npu_wrapper.u_npu.state` |
-| SRAM read/write cycles | `dut.u_npu_wrapper.sram_req/sram_we` |
-| core host writes | `dut.u_npu_wrapper.desc_host_we` |
-| core host reads | inferred during `DESC_WRITE_OUTPUT` |
-| moved words | SRAM request counts by wrapper state |
-| explicit data mover | `dut.u_npu_wrapper.u_data_mover.perf_*` signals |
+| job identity | `PERF_JOB_ID`, `PERF_OP_TYPE` |
+| total/core cycles | `PERF_TOTAL_CYCLES`, `PERF_CORE_*_CYCLES` |
+| data mover cycles/words | `PERF_DATA_MOVER_*` |
+| data mover direction words | `PERF_DATA_MOVER_READ_WORDS`, `PERF_DATA_MOVER_WRITE_WORDS` |
+| SRAM boundary traffic | `PERF_SRAM_READ_WORDS`, `PERF_SRAM_WRITE_WORDS` |
 
 The testbench prints one JSON line:
 
 ```text
-PERF_JOB {...}
+PERF_JOB {"source":"architectural_perf_csr_snapshot", ...}
 ```
 
 `sw/tools/perf/report.py` parses these lines and generates:
@@ -82,40 +79,80 @@ build/perf/perf_report.html
 ### Current Code Walkthrough
 
 `make perf-report` does not run a separate profiler. It rebuilds the
-CPU-controlled SoC simulation, redirects the simulator stdout to
+CPU-controlled SoC simulation, redirects simulator stdout to
 `build/perf/cpu_soc_perf.log`, then runs `sw/tools/perf/report.py`.
 
-Inside `hw/soc/tb/soc_cpu_tb.sv`, the profiling block is an `always` block on
-`posedge clk`. It behaves like this:
+#### Data Mover Event Source
 
-1. When the CPU bus writes `NPU_OPSCHED_CTRL` with `wdata[0] == 1`, the
-   testbench starts a new perf job, increments `perf_job_id`, and clears all
-   counters.
-2. While `perf_active` is true, `perf_total_cycles` increments once per clock.
-3. The testbench samples `dut.u_npu_wrapper.desc_state` and increments exactly
-   one wrapper phase counter for the current state.
-4. While the wrapper is launching or waiting for the core, the testbench samples
-   `dut.u_npu_wrapper.u_npu.state` and increments the core phase counters.
-5. Wrapper SRAM requests are counted from `sram_req/sram_we`; the same request
-   is classified into descriptor/program/input/output word counters by the
-   current wrapper state.
-6. Core host-window writes are counted from `desc_host_we`; host-window reads
-   are inferred during `DESC_WRITE_OUTPUT`.
-7. The testbench also samples explicit data mover perf signals:
-   `perf_active`, `perf_setup`, `perf_transfer`, `perf_stall`, and
-   `perf_words`.
-8. When `desc_state == DESC_DONE`, the testbench prints one `PERF_JOB` JSON
-   record and closes the active job.
+`hw/npu_wrapper/rtl/npu_v0_data_mover.sv` exports the event signals consumed by
+both collection paths:
 
-`report.py` is post-processing only. It parses lines beginning with
-`PERF_JOB `, adds analytical estimates, reconstructs timeline spans from the
-phase counters, and writes JSON and HTML reports. The current build supplies
-`build/perf/workload_manifest.json`, so workload grouping uses explicit
-`job_id` declarations rather than job order. Order-based inference remains
-only as a warned fallback for legacy logs.
+| Signal | Current meaning | Consumer |
+| --- | --- | --- |
+| `perf_active` | mover is busy or accepting `start` | CSR and TB |
+| `perf_setup` | setup cycle is active | CSR and TB |
+| `perf_transfer` | one transfer beat is active | CSR and TB |
+| `perf_words` | words transferred by the active beat | CSR and TB |
+| `perf_stall` | reserved stall event; currently tied to zero | CSR and TB schema |
 
-Current workload inference recognizes 53 jobs / 7 workloads when the real MNIST
-external fixtures are present:
+These signals are not obsolete because CSRs exist. They are the RTL event
+source from which the CSR data-mover snapshot fields are accumulated.
+`perf_stall` is intentionally retained as a stable zero-valued field until
+backpressure/stall behavior is implemented or the public counter schema is
+revised.
+
+#### Wrapper CSR Aggregation
+
+`hw/npu_wrapper/rtl/npu_v0_opsched.sv` implements the software-readable
+completed-job snapshot:
+
+1. A write to `NPU_OPSCHED_CTRL.start` asserts `perf_start_event`, sets
+   `perf_running`, and clears the private `perf_work_*` accumulator bank. The
+   previous `perf_snap_*` values remain readable until completion or explicit
+   idle clear.
+2. While `perf_running` is set, the wrapper saturating-adds total cycles,
+   selected core cycles, data-mover events, and SRAM boundary words into
+   `perf_work_*`; any saturated increment latches working overflow.
+3. On `DESC_DONE`, or on a legacy idle-path `npu_done`, `perf_complete_event`
+   atomically copies working counters to `perf_snap_*`, asserts valid, and
+   exposes overflow.
+4. The MMIO read mux returns `PERF_STATUS` and `PERF_*` snapshot registers from
+   the generated register offsets.
+
+The core now exports explicit `perf_active`, `perf_fetch_active`,
+`perf_matmul_active`, and `perf_done_active` events. The CSR bank consumes
+these events rather than comparing a copied numeric internal state encoding.
+This makes legacy direct-window and descriptor launches use the same core
+counter semantics; the legacy MMIO smoke checks nonzero matmul cycles.
+
+#### Firmware Readout, Testbench Serialization And Correlation
+
+Inside the current flow:
+
+1. Firmware launches a descriptor and waits for completion.
+2. Firmware calls `npu_read_perf_snapshot()` and reads summary, identity and
+   directional mover CSRs through CPU-visible MMIO.
+3. `soc_cpu_tb` observes those bus read responses and emits one `PERF_JOB`
+   record only when the snapshot read sequence is complete.
+4. Independently, a small TB reference accumulator checks the internal
+   snapshot implementation for total/core/mover/SRAM summary equivalence.
+
+Detailed wrapper FSM and inferred host-window phases are no longer emitted as
+formal production data. A future fine-grain timeline must come from a reviewed
+architectural event/trace contract rather than restored ad hoc observation.
+
+#### Report Post-Processing
+
+`report.py` parses `PERF_JOB ` records, adds analytical estimates, and writes
+JSON and HTML. It can reconstruct timeline spans for legacy records containing
+old TB phase counters; the production
+build supplies `build/perf/workload_manifest.json`, so workload grouping uses
+explicit `job_id` declarations rather than job order. `infer_workloads()` is
+still retained as a warned legacy-log fallback and its tests still encode the
+historical fixed job ordering.
+
+The generated manifest describes 53 jobs / 7 workloads when only the earlier
+single full-`fc1`-tile external fixture is present:
 
 ```text
 operator_smoke_matmul: 1 job
@@ -128,7 +165,7 @@ real_mnist_cnn_fc2: 32 jobs
 ```
 
 After full `fc1` was extended from one output N tile to all 16 output N tiles,
-current workload inference recognizes 68 jobs / 7 workloads:
+the active generated manifest describes 68 jobs / 7 workloads:
 
 ```text
 operator_smoke_matmul: 1 job
@@ -147,7 +184,7 @@ chunk execution. The NPU-side SRAM/data-mover/core-host path moves four words
 per cycle:
 
 ```text
-total_cycles: 39217
+total_cycles: 39218
 input0_words: 73728
 input1_words: 73728
 fetch_input0 cycles: 16
@@ -162,10 +199,9 @@ data_mover write_words: 64
 计数仍主要由搬运主导，但 A/B ping-pong buffer 已经把下一 K chunk 的预取与当前
 chunk 执行重叠起来。NPU 侧 SRAM/data-mover/core-host 路径当前每拍搬运 4 word。
 
-Important consequence: the current numbers are cycle counts observed by the
-simulation testbench, not timestamp events emitted by synthesizable RTL logic.
-They are valid for bring-up and bottleneck classification, but they are not yet
-CPU-readable hardware counters.
+Important consequence: the stable summary values in the current report and
+PPA proxy are values consumed through wrapper snapshot CSRs. The TB equality
+check is now an implementation regression, not the measurement provenance.
 
 The SoC now has a ROM-to-SRAM DMA for firmware staging. This reduces
 CPU-controlled simulation finish time, but it does not change the NPU job
@@ -186,21 +222,20 @@ Each job has:
 | `id` | Legacy alias retained for old report consumers. |
 | `name` | `matmul`, `softmax`, or `unknown` |
 | `total_cycles` | measured launch-to-wrapper-done cycles |
-| `wrapper` | wrapper phase cycles |
+| `wrapper` | legacy-only wrapper phase cycles, when present |
 | `core` | core phase cycles |
-| `movement` | SRAM/core-host movement counters |
+| `movement` | legacy-only detailed SRAM/core-host phase counters, when present |
 | `data_mover` | explicit counters sampled from `npu_v0_data_mover` |
 | `estimates` | matmul compute model, if applicable |
 | `movement_estimates` | burst-style movement model |
-| `timeline` | reconstructed lanes and spans |
+| `timeline` | legacy-only reconstructed phase lanes, when inputs exist |
 
 The schema is intentionally small and additive. New counters should be added as
 nested fields rather than breaking existing fields.
 
 The manifest contract and mismatch behavior are specified in
-`docs/design/workload_manifest.md`. The planned transition from testbench
-sampling to CPU-visible counter registers is specified in
-`docs/design/perf_counter_csr_plan.md`.
+`docs/design/workload_manifest.md`. The CPU-visible counter contract and
+validation reference boundary are specified in `docs/design/perf_counter_csr_plan.md`.
 
 ## 6. Timeline Reconstruction
 
@@ -213,23 +248,19 @@ The report builds lanes:
 | `Data mover` | currently reconstructed from wrapper movement phases |
 | `NPU core` | core phase counters offset to wrapper core-wait position |
 
-Current data mover lane is still placed on the wrapper fetch/write phases, but
-the numeric counters now come from explicit `npu_v0_data_mover` perf signals.
-For `matmul_k_stream`, the report also renders a `K prefetch overlap` span
-inside the wrapper `wait_core` interval. This makes the ping-pong behavior
-visible as timeline overlap instead of only as aggregate cycle reduction. A
-future report step can use explicit setup/stall counters to render finer
-subspans directly.
+For legacy phase-rich records, the data mover lane is placed on wrapper
+fetch/write phases and `matmul_k_stream` records can render a `K prefetch
+overlap` span. Production CSR snapshots establish aggregate cycle/word
+reduction only. A future report step requires architectural trace events before
+asserting fine-grain overlap spans.
 
-当前 Data mover lane 的时间位置仍由 wrapper fetch/write phase 放置，但数值计数
-已经来自 `npu_v0_data_mover` 的显式 perf signal。对于 `matmul_k_stream`，report
-还会在 wrapper `wait_core` 区间内渲染 `K prefetch overlap` span，让 ping-pong
-行为在 timeline 上可见，而不只是通过总 cycle 下降间接体现。后续可以继续用显式
-setup/stall counter 渲染更细的子阶段。
+旧 phase-rich 记录仍可按 wrapper fetch/write phase 回放 Data mover timeline
+与 `K prefetch overlap` span。正式 CSR snapshot 目前只声明 aggregate
+cycle/word 结果；若后续需要正式展示重叠子阶段，应先定义架构化 trace event。
 
 ## 7. Report Panels
 
-Current HTML panels:
+Legacy phase-rich HTML panels can include:
 
 - summary metrics;
 - cycle timeline;
@@ -240,8 +271,11 @@ Current HTML panels:
 - core phase timeline;
 - raw JSON.
 
-The UI should prefer timeline views over plain tables because the main question
-is whether phases overlap or block each other.
+Production CSR-sourced reports show summary/highlight information and keep
+per-job details compact; complete raw JSON remains available for audit. The
+FC1 overlap
+highlight obtains its named serial comparison baseline from workload-manifest
+metadata instead of embedding that baseline in rendering logic.
 
 ## 8. Movement Model
 
@@ -293,32 +327,42 @@ input1 和 output；descriptor read 不计入 data mover work。
 - CPU staging/check work is not measured.
 - DMA staging work is not measured yet.
 - CPU polling is modeled as one synthetic wait span.
-- Data mover lane placement is still reconstructed from wrapper phases, though
-  numeric counters now come from explicit data mover signals.
+- Fine-grain data mover/wrapper/core timeline placement is not an
+  architectural measurement and is omitted from CSR-sourced production jobs.
 - SRAM `ready`/stall cycles are not separated.
-- Core host-window reads are inferred by wrapper state.
-- Counters are not software-readable.
+- The TB-versus-CSR equality checker reads internal snapshot storage only as a
+  verification reference; firmware and report consume MMIO-visible values.
 - No global multi-job timeline yet.
 
 ## 10. Counter Placement Policy
 
 Short term:
 
-- keep rapidly changing counters in `soc_cpu_tb`;
-- expose enough hierarchy for testbench sampling;
-- keep `PERF_JOB` JSON additive.
+- add only stable, reviewable completed-job metrics to the CSR snapshot;
+- keep `PERF_JOB` JSON additive and label the architectural CSR provenance.
 
-Medium term:
+Current transition:
 
-- move stable counters into an optional RTL perf-counter/debug block;
-- expose CPU-readable counters through wrapper debug CSRs;
-- keep simulation report able to consume either testbench or RTL counter source.
+- expose the stable job summary and identity through wrapper perf CSRs;
+- cross-check snapshot implementation against minimal TB event references;
+- consume firmware MMIO-read CSR values as report/PPA performance provenance.
+
+Signal retention review:
+
+| Signal group | Remove now? | Reason |
+| --- | --- | --- |
+| `npu_v0_data_mover.perf_*` | No | It is the RTL event source feeding the CSR bank and validation reference. |
+| `mover_perf_stall` | No, but document as zero | It preserves the first-batch counter schema while no stall behavior exists. |
+| TB detailed wrapper/core phase sampling | Removed from production path | It has no architectural timeline contract. |
+| TB direct hierarchical access to `perf_snap_*` | Retain for validation | It independently checks the CSR implementation and is not report input. |
 
 ## 11. Next Work
 
-Next performance work should match A2:
+Next performance work follows the stabilized Level 0/PPA execution order:
 
-1. Drive the `Data mover` lane from explicit setup/transfer/stall counters.
-2. Add DMA staging counters if staging should appear in the global timeline.
-3. Add burst-mode comparison against the movement model.
-4. Later add scratchpad bank conflict and core input-stall counters.
+1. Extend workload identity and external-memory accounting for Transformer
+   comparisons.
+2. Retire order-based inference once legacy-log
+   replay is no longer required.
+3. Define committed `mac_ops`/`instr_count` or error/timeout events only when
+   Transformer execution requires those architectural counters.

@@ -79,6 +79,14 @@ def main() -> None:
     fc1_k_stream_jobs = _append_real_mnist_cnn_fc1_k_stream_data(lines)
     fc1_full_jobs, fc1_full_k_chunks = _append_real_mnist_cnn_fc1_full_k_stream_data(lines)
     fc2_jobs = _append_real_mnist_cnn_fc2_data(lines)
+    jobs = _build_workload_jobs(
+        digits_jobs,
+        fc1_tile_jobs if fc2_jobs else 0,
+        fc1_k_stream_jobs if fc2_jobs else 0,
+        fc1_full_jobs if fc2_jobs else 0,
+        fc2_jobs,
+    )
+    _append_job_id_defines(lines, jobs)
     lines.append("#endif")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -91,6 +99,7 @@ def main() -> None:
         fc1_full_jobs if fc2_jobs else 0,
         fc1_full_k_chunks if fc2_jobs else 0,
         fc2_jobs,
+        jobs,
     )
 
 
@@ -309,40 +318,10 @@ def _write_workload_manifest(
     fc1_full_jobs: int,
     fc1_full_k_chunks: int,
     fc2_jobs: int,
+    jobs: list[dict] | None = None,
 ) -> None:
-    jobs: list[dict] = []
-
-    def add(workload: str, op: str, role: str, count: int, tiled: bool = False) -> None:
-        for tile_id in range(count):
-            item = {
-                "job_id": len(jobs) + 1,
-                "workload": workload,
-                "op": op,
-                "role": role,
-            }
-            if tiled:
-                item["tile_id"] = tile_id
-            jobs.append(item)
-
-    add("operator_smoke_matmul", "matmul", "smoke", 1)
-    add("operator_smoke_softmax", "softmax", "smoke", 1)
-    add("digits_linear_classifier", "matmul", "regression", digits_jobs, tiled=True)
-    add("real_mnist_cnn_fc1_tile0", "matmul", "regression", fc1_tile_jobs, tiled=True)
-    add(
-        "real_mnist_cnn_fc1_k_stream_smoke",
-        "matmul_k_stream",
-        "regression",
-        fc1_k_stream_jobs,
-        tiled=True,
-    )
-    add(
-        "real_mnist_cnn_fc1_full_k_stream_layer",
-        "matmul_k_stream",
-        "regression",
-        fc1_full_jobs,
-        tiled=True,
-    )
-    add("real_mnist_cnn_fc2", "matmul", "regression", fc2_jobs, tiled=True)
+    if jobs is None:
+        jobs = _build_workload_jobs(digits_jobs, fc1_tile_jobs, fc1_k_stream_jobs, fc1_full_jobs, fc2_jobs)
     manifest = {
         "schema": "npu_workload_manifest_v0",
         "manifest_id": "soc_cpu_smoke_v0",
@@ -371,7 +350,14 @@ def _write_workload_manifest(
             },
             "real_mnist_cnn_fc1_full_k_stream_layer": {
                 "kind": "model_layer",
-                "metadata": {"tile_jobs": fc1_full_jobs, "k_chunks": fc1_full_k_chunks},
+                "metadata": {
+                    "tile_jobs": fc1_full_jobs,
+                    "k_chunks": fc1_full_k_chunks,
+                    "comparison_baseline": {
+                        "id": "npu_v0_a2_serial_k_stream_proxy",
+                        "cycles_per_job": 58784
+                    },
+                },
             },
             "real_mnist_cnn_fc2": {
                 "kind": "model_layer",
@@ -382,6 +368,50 @@ def _write_workload_manifest(
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+def _build_workload_jobs(
+    digits_jobs: int,
+    fc1_tile_jobs: int,
+    fc1_k_stream_jobs: int,
+    fc1_full_jobs: int,
+    fc2_jobs: int,
+) -> list[dict]:
+    jobs: list[dict] = []
+
+    def add(workload: str, op: str, role: str, count: int, tiled: bool = False) -> None:
+        for tile_id in range(count):
+            item = {
+                "job_id": len(jobs) + 1,
+                "workload": workload,
+                "op": op,
+                "role": role,
+            }
+            if tiled:
+                item["tile_id"] = tile_id
+            jobs.append(item)
+
+    add("operator_smoke_matmul", "matmul", "smoke", 1)
+    add("operator_smoke_softmax", "softmax", "smoke", 1)
+    add("digits_linear_classifier", "matmul", "regression", digits_jobs, tiled=True)
+    add("real_mnist_cnn_fc1_tile0", "matmul", "regression", fc1_tile_jobs, tiled=True)
+    add("real_mnist_cnn_fc1_k_stream_smoke", "matmul_k_stream", "regression", fc1_k_stream_jobs, tiled=True)
+    add("real_mnist_cnn_fc1_full_k_stream_layer", "matmul_k_stream", "regression", fc1_full_jobs, tiled=True)
+    add("real_mnist_cnn_fc2", "matmul", "regression", fc2_jobs, tiled=True)
+    return jobs
+
+
+def _append_job_id_defines(lines: list[str], jobs: list[dict]) -> None:
+    first_by_workload: dict[str, int] = {}
+    for job in jobs:
+        first_by_workload.setdefault(job["workload"], job["job_id"])
+    lines.append("")
+    lines.append("/* Descriptor job identity values also consumed by workload_manifest.json. */")
+    for workload, first_id in first_by_workload.items():
+        macro = workload.upper()
+        suffix = "_BASE" if sum(job["workload"] == workload for job in jobs) > 1 else ""
+        lines.append(f"#define JOB_ID_{macro}{suffix} {first_id}u")
+    lines.append("")
 
 
 def _append_2d_array(lines: list[str], symbol: str, values: list, bits: int) -> None:

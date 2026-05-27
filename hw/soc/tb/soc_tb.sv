@@ -5,6 +5,12 @@ module soc_tb;
 
     localparam logic [31:0] NPU_WRAPPER_CTRL = SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_CTRL;
     localparam logic [31:0] NPU_WRAPPER_STATUS = SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_STATUS;
+    localparam logic [31:0] NPU_WRAPPER_PERF_CTRL = SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_CTRL;
+    localparam logic [31:0] NPU_WRAPPER_PERF_STATUS = SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_STATUS;
+    localparam logic [31:0] NPU_WRAPPER_PERF_TOTAL_CYCLES =
+        SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_TOTAL_CYCLES;
+    localparam logic [31:0] NPU_WRAPPER_PERF_CORE_MATMUL_CYCLES =
+        SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_CORE_MATMUL_CYCLES;
     localparam logic [31:0] NPU_WRAPPER_A_BASE = SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_A_BASE;
     localparam logic [31:0] NPU_WRAPPER_B_BASE = SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_B_BASE;
     localparam logic [31:0] NPU_WRAPPER_C_BASE = SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_C_BASE;
@@ -56,11 +62,13 @@ module soc_tb;
         rst_n = 1'b1;
 
         run_cpu_controlled_matmul();
+        check_and_clear_perf_snapshot();
         run_cpu_controlled_softmax();
-        bus_write(SOC_TEST_STATUS_BASE, 32'h0000_0001);
+        bus_write(SOC_TEST_STATUS_BASE, SOC_TEST_STATUS_PASS_VALUE);
         bus_read(SOC_TEST_STATUS_BASE, actual_status);
 
-        if (actual_status !== 32'h0000_0001 || sim_status !== 32'h0000_0001) begin
+        if (actual_status !== SOC_TEST_STATUS_PASS_VALUE ||
+            sim_status !== SOC_TEST_STATUS_PASS_VALUE) begin
             $display("FAIL test status read=%h sim=%h expected=00000001", actual_status, sim_status);
             $fatal(1);
         end
@@ -108,12 +116,52 @@ module soc_tb;
         begin
             timeout = 2000;
             status = 32'h0;
-            while (timeout > 0 && status[0] != 1'b1) begin
+            while (timeout > 0 && status[NPU_OPSCHED_STATUS_DONE_BIT] != 1'b1) begin
                 bus_read(NPU_WRAPPER_STATUS, status);
                 timeout = timeout - 1;
             end
-            if (status[0] != 1'b1) begin
+            if (status[NPU_OPSCHED_STATUS_DONE_BIT] != 1'b1) begin
                 $display("FAIL opsched timeout status=%h", status);
+                $fatal(1);
+            end
+        end
+    endtask
+
+    task automatic check_and_clear_perf_snapshot;
+        logic [31:0] perf_status;
+        logic [31:0] perf_total_cycles;
+        logic [31:0] perf_core_matmul_cycles;
+        begin
+            bus_read(NPU_WRAPPER_PERF_STATUS, perf_status);
+            bus_read(NPU_WRAPPER_PERF_TOTAL_CYCLES, perf_total_cycles);
+            bus_read(NPU_WRAPPER_PERF_CORE_MATMUL_CYCLES, perf_core_matmul_cycles);
+            if ((perf_status &
+                 (NPU_OPSCHED_PERF_STATUS_VALID_MASK |
+                  NPU_OPSCHED_PERF_STATUS_RUNNING_MASK |
+                  NPU_OPSCHED_PERF_STATUS_OVERFLOW_MASK)) !== NPU_OPSCHED_PERF_STATUS_VALID_MASK ||
+                perf_total_cycles == 32'h0000_0000 ||
+                perf_core_matmul_cycles == 32'h0000_0000) begin
+                $display(
+                    "FAIL perf CSR readback status=%h total=%0d matmul=%0d",
+                    perf_status,
+                    perf_total_cycles,
+                    perf_core_matmul_cycles
+                );
+                $fatal(1);
+            end
+            bus_write(NPU_WRAPPER_PERF_CTRL, NPU_OPSCHED_PERF_CTRL_CLEAR_MASK);
+            bus_read(NPU_WRAPPER_PERF_STATUS, perf_status);
+            bus_read(NPU_WRAPPER_PERF_TOTAL_CYCLES, perf_total_cycles);
+            if ((perf_status &
+                 (NPU_OPSCHED_PERF_STATUS_VALID_MASK |
+                  NPU_OPSCHED_PERF_STATUS_RUNNING_MASK |
+                  NPU_OPSCHED_PERF_STATUS_OVERFLOW_MASK)) !== 32'h0000_0000 ||
+                perf_total_cycles !== 32'h0000_0000) begin
+                $display(
+                    "FAIL perf CSR clear status=%h total=%0d",
+                    perf_status,
+                    perf_total_cycles
+                );
                 $fatal(1);
             end
         end
@@ -136,7 +184,7 @@ module soc_tb;
                 bus_write(NPU_WRAPPER_PROGRAM_BASE + (i * 4), matmul_program[i]);
             end
 
-            bus_write(NPU_WRAPPER_CTRL, 32'h0000_0001);
+            bus_write(NPU_WRAPPER_CTRL, NPU_OPSCHED_CTRL_START_MASK);
             wait_opsched_done();
 
             for (i = 0; i < MATMUL_OUTPUT_COUNT; i = i + 1) begin
@@ -169,7 +217,7 @@ module soc_tb;
                 bus_write(NPU_WRAPPER_PROGRAM_BASE + (i * 4), softmax_program[i]);
             end
 
-            bus_write(NPU_WRAPPER_CTRL, 32'h0000_0001);
+            bus_write(NPU_WRAPPER_CTRL, NPU_OPSCHED_CTRL_START_MASK);
             wait_opsched_done();
 
             for (i = 0; i < SOFTMAX_OUTPUT_COUNT; i = i + 1) begin

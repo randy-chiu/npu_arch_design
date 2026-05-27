@@ -94,3 +94,35 @@ synthesized, but it must be reported as a distinct contribution.
 4. Use resulting workload gaps and PPA baselines to select the first
    Transformer-driven RTL extension.
 
+## 7. Post-CSR Baseline Decision / CSR 基线后的执行顺序
+
+The production performance path now reads architectural completed-job CSR
+snapshots. Transformer support should start without adding speculative RTL
+operators:
+
+1. Extend the workload manifest identity with `scenario` (`prefill`/`decode`),
+   logical shape, precision, activity scope, and external/KV-cache traffic
+   fields.
+2. Add executable INT8 projection proxies using the existing matmul and
+   K-stream execution path:
+   - prefill projection GEMM, tiled into current `8x8x8` jobs;
+   - decode skinny-GEMM proxy with `M=8`, explicitly labeled as an array
+     utilization proxy rather than true single-token GEMV.
+3. Add model-only KV-cache read/write traffic accounting alongside decode
+   results before treating latency/energy as architecture evidence.
+4. Use measured projection utilization and modeled KV traffic to choose the
+   first RTL extension.
+
+Candidate RTL extensions, in evidence order:
+
+| Candidate | Triggering evidence | Do not implement before |
+| --- | --- | --- |
+| descriptor/command-list support for repeated tiles and tensor layout | projection jobs are dominated by CPU/control/staging or descriptor traffic | executable projection manifests and traffic identity |
+| skinny-GEMM/GEMV utilization support such as valid-row/valid-column handling | decode proxy shows poor useful-MAC ratio on the `8x8` array | compare prefill versus decode proxy results |
+| KV-cache/external movement accounting or interface support | modeled decode bytes/token dominates event energy | external traffic fields are reportable |
+| RMSNorm/reduction/SFU extension | a tiny block cannot be represented using current operators | projection and traffic baselines are stable |
+
+`mac_ops`, `instr_count`, and execution error/timeout CSRs remain planned
+contracts. `mac_ops` becomes high priority before comparing shapes whose useful
+work differs from fully occupied `8x8x8` tiles; it should count committed useful
+MAC work rather than infer it from observed matmul phase cycles.

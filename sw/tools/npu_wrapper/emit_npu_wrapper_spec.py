@@ -28,9 +28,16 @@ def main() -> None:
 
 def _entries(spec: dict[str, Any]) -> list[tuple[str, int]]:
     entries: list[tuple[str, int]] = []
-    for group_name in ("registers", "windows"):
-        for name, item in spec[group_name].items():
-            entries.append((f"NPU_OPSCHED_{name.upper()}", int(item["offset"])))
+    for name, item in spec["registers"].items():
+        entries.append((f"NPU_OPSCHED_{name.upper()}", int(item["offset"])))
+        for field_name, field in item.get("fields", {}).items():
+            prefix = f"NPU_OPSCHED_{name.upper()}_{field_name.upper()}"
+            bit = int(field["bit"])
+            entries.append((f"{prefix}_BIT", bit))
+            entries.append((f"{prefix}_MASK", 1 << bit))
+    for name, item in spec["windows"].items():
+        entries.append((f"NPU_OPSCHED_{name.upper()}", int(item["offset"])))
+        entries.append((f"NPU_OPSCHED_{name.upper()}_SIZE_BYTES", int(item["size_bytes"])))
     return entries
 
 

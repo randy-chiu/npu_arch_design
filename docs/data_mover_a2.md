@@ -170,11 +170,13 @@ Current important files:
 - `hw/npu_wrapper/rtl/npu_v0_data_mover.sv`: new structural data mover;
 - `hw/npu_wrapper/rtl/npu_v0_opsched.sv`: wrapper now routes program/input/output
   linear transfers through the data mover;
-- `sw/tools/perf/report.py`: report has `Data mover` timeline lane and
-  `Movement model` panel;
-- `hw/soc/tb/soc_cpu_tb.sv`: perf counters are still testbench-side sampling.
+- `sw/tools/perf/report.py`: report consumes CSR-sourced summary counters; old
+  phase-rich log records can still render historical timeline panels;
+- `hw/soc/tb/soc_cpu_tb.sv`: emits report records from firmware's perf CSR
+  reads and retains TB event counters as validation-only correlation.
 
-Next implementation order:
+Historical implementation order below has been completed by the current A2
+baseline; current priorities are tracked in `docs/project_plan.md`.
 
 1. Add configurable data mover timing parameters:
    `WORDS_PER_CYCLE` and `SETUP_CYCLES`.

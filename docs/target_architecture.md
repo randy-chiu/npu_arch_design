@@ -287,12 +287,13 @@ Only after A1-A4 are measured:
 
 Recommended next implementation sequence:
 
-1. Generate a Level 0 proxy report from existing RTL `PERF_JOB` counters,
-   structural resource assumptions, and replaceable event-energy
-   coefficients.
-2. Use the already implemented matrix-array, wider movement, and ping-pong
-   behavior as the first PPA comparison/reference cases.
-3. Define Transformer micro-workload manifests for GEMM/GEMV, RMSNorm,
+1. Preserve the established Level 0 baseline while moving stable job summary
+   counters into wrapper-visible snapshot CSRs and correlating them against
+   current testbench samples.
+2. Extend workload identity and external-memory accounting so Transformer
+   results can be compared without hiding precision, shape, or KV/weight
+   traffic assumptions.
+3. Define executable Transformer micro-workload paths for GEMM/GEMV, RMSNorm,
    attention, and KV-cache traffic, splitting prefill from decode.
 4. Add lightweight mapped-area/timing estimation with Yosys/ABC and a public
    Liberty library when the proxy identifies variants worth ranking.

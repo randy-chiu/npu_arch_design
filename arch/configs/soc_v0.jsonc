@@ -26,6 +26,7 @@
     "sram_npu_lanes": 4,
     "words_per_cycle": 4,
     "setup_cycles": 0,
+    "model_setup_cycles_per_segment": 1,
     "description": "NPU-side SRAM/data-mover/core-host movement shape. words_per_cycle must be in 1..min(core_host_lanes, sram_npu_lanes). Lane i maps to word address base + i."
   },
 
@@ -66,6 +67,33 @@
     "rom_init_hex": "build/firmware/soc_cpu_smoke.hex"
   },
 
+  "peripherals": {
+    "dma": {
+      "registers": {
+        "ctrl": {
+          "offset": 0,
+          "fields": {"start": {"bit": 0}}
+        },
+        "status": {
+          "offset": 4,
+          "fields": {
+            "done": {"bit": 0},
+            "busy": {"bit": 1},
+            "idle": {"bit": 2}
+          }
+        },
+        "src": 8,
+        "dst": 12,
+        "words": 16
+      }
+    },
+    "test_status": {
+      "pass": 1,
+      "fail": 4294967295,
+      "fail_code_flag": 2147483648
+    }
+  },
+
   "abi": {
     "npu_job_desc": {
       "description": "CPU firmware produces this descriptor in SRAM. The NPU wrapper consumes it through DESC_ADDR, fetches program/input buffers, runs the NPU core, and writes output buffers back to SRAM.",
@@ -79,7 +107,8 @@
         {"name": "input1_words", "word": 6},
         {"name": "output_addr", "word": 7},
         {"name": "output_words", "word": 8},
-        {"name": "k_chunks", "word": 9}
+        {"name": "k_chunks", "word": 9},
+        {"name": "job_id", "word": 10}
       ],
       "op_types": {
         "matmul": 1,

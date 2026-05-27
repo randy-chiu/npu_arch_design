@@ -146,6 +146,9 @@ build/npu_wrapper/npu_v0_regs.h
 | `0x00c` | `IRQ_ENABLE` | interrupt enable, reserved for later |
 | `0x010` | `IRQ_STATUS` | interrupt status, reserved for later |
 | `0x020` | `DESC_ADDR` | SRAM 中 `npu_job_desc` 的地址 |
+| `0x040` | `PERF_CTRL` | bit 0 clears retained completed-job perf snapshot while idle |
+| `0x044` | `PERF_STATUS` | bit 0 valid, bit 1 running, bit 2 overflow |
+| `0x048` - `0x06c` | `PERF_*` counters | completed-job cycle and SRAM/data-mover word snapshot |
 
 旧的 A/B/C/X/Y/program windows 还保留，用于 `soc-sim` legacy wrapper smoke。
 但 CPU firmware-controlled 路径已经转向 descriptor/SRAM launch，不再依赖逐
@@ -177,6 +180,8 @@ typedef struct {
     uint32_t input1_words;
     uint32_t output_addr;    // SRAM address of C or Y
     uint32_t output_words;
+    uint32_t k_chunks;       // K-stream chunk count, otherwise 0
+    uint32_t job_id;         // generated workload/report identity
 } soc_npu_job_desc_t;
 ```
 
@@ -189,8 +194,9 @@ CPU firmware 负责：
 5. 写 `DESC_ADDR`。
 6. 写 `CTRL.start`。
 7. 轮询 `STATUS.done`。
-8. 从 SRAM output buffer 读结果并校验。
-9. 写 `test_status` 报告仿真 PASS/FAIL。
+8. 通过 MMIO 读取 completed-job `PERF_*` snapshot 并验证基本有效性。
+9. 从 SRAM output buffer 读结果并校验。
+10. 写 `test_status` 报告仿真 PASS/FAIL。
 
 NPU wrapper 负责：
 
@@ -397,30 +403,31 @@ build/perf/perf.json
 build/perf/perf_report.html
 ```
 
-`soc_cpu_tb` 会按 NPU job 输出 `PERF_JOB` JSON line。当前 HTML report 已包含
-cycle timeline：横轴是 cycle 时间，纵轴是 `CPU firmware`、`NPU wrapper`、
-`Data mover`、`NPU core`，实色块表示 active work，斜纹块表示 wait/blocked。
-当前统计 wrapper 的 descriptor/program/input/core/output 阶段、data mover
-load/store 阶段，以及 core 的 fetch/matmul/done 阶段。详细现状、限制和扩展点见：
+`soc_cpu_tb` 会按 NPU job 输出 `PERF_JOB` JSON line。正式记录来自 firmware
+读取到的 CSR snapshot summary。HTML report 保留 summary/workload 展示；只有
+回放包含旧 phase fields 的历史日志时才渲染细相位 timeline。详细现状、限制和
+扩展点见：
 
 ```text
 sw/tools/perf/README.md
 ```
 
-当前 cycle 统计是 testbench-side profiling，不是 CPU 可读的正式硬件 perf
-counter。`soc_cpu_tb` 每个 clock 观察已有 RTL 信号：
+当前报告中的稳定 cycle/traffic 统计来自 CPU-readable completed-job perf
+snapshot CSR。firmware 逐 job 通过 MMIO 读取 snapshot，`soc_cpu_tb` 捕获这些
+CPU read responses 并打印 `PERF_JOB`；同时它仍维护最小 reference 计数用于验证
+CSR 实现：
 
 - CPU 写 `NPU_OPSCHED_CTRL.start` 时开始一个 job；
-- 根据 `u_npu_wrapper.desc_state` 累加 wrapper phase cycles；
-- 根据 `u_npu_wrapper.u_npu.state` 累加 core phase cycles；
-- 根据 wrapper `sram_req/sram_we` 统计 SRAM NPU-port read/write cycles；
-- 根据 wrapper/core host-window 访问信号统计 preload/readback cycles；
-- wrapper 进入 `DESC_DONE` 时打印一条 `PERF_JOB` JSON。
+- 根据 core/data-mover 事件和 SRAM boundary 活动生成验证 reference；
+- 与完成快照的 summary fields 逐 job 对照；
+- firmware 读完 `PERF_*` snapshot 时，将读取到的值打印为一条
+  `PERF_JOB` JSON。
 
-这样做的原因是当前 perf taxonomy 还在快速变化，把计数点放在 testbench 里
-可以避免过早污染 CPU-visible RTL。后续当 data mover、scratchpad bank、uop
-prefetch 等模块稳定后，应把同一套统计语义下沉为可选 RTL perf-counter block
-或 debug CSR window。
+第一批 CSR 只纳入稳定的 job summary：`total_cycles`、core
+active/matmul cycles、data-mover active/setup/transfer/stall cycles 与 words、
+directional read/write words、SRAM read/write words，以及 `job_id/op_type`。
+它使用运行累加器加完成快照，32-bit 饱和并带 overflow
+status；`mac_ops`、uop count 和更细的 phase counter 仍待事件合同稳定后再纳入。
 
 ## 9. Current Limitations
 
@@ -432,7 +439,7 @@ prefetch 等模块稳定后，应把同一套统计语义下沉为可选 RTL per
 - program stream 仍主要由 Phase 0 fixture/tooling 生成，尚未把 operator 模板、
   compiler lowering 和 assembler 完整拆到正式目录。
 - boot ROM 仍加载完整 firmware image，没有 flash loader。
-- IRQ、performance counter、错误码、timeout、command queue 还未完善。
+- IRQ、扩展 performance counter、错误码、timeout、command queue 还未完善。
 
 这些限制是有意保留的。当前优先级是先固定 CPU/NPU 交互协议，再逐步替换内部
 实现。

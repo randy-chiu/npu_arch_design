@@ -88,13 +88,16 @@ It verifies:
 - NPU core computes matmul and softmax;
 - wrapper writes output to SRAM;
 - firmware validates outputs;
+- each descriptor job's first-batch wrapper perf CSR snapshot matches the
+  existing testbench-sampled reference counters;
 - `test_status` reports PASS.
 
 This is the most important functional closed loop.
 
 ## 7. Perf Report Test
 
-`make perf-report` runs the CPU SoC simulation and captures `PERF_JOB` lines.
+`make perf-report` runs the CPU SoC simulation and captures `PERF_JOB` lines
+serialized from the CSR snapshot values firmware reads through MMIO.
 
 It verifies:
 
@@ -102,7 +105,8 @@ It verifies:
 - performance JSON can be generated;
 - HTML report can be generated;
 - cycle baselines can be inspected;
-- UI lanes remain useful after architecture changes.
+- CSR summary/provenance remains usable after architecture changes; legacy
+  phase-rich log replay remains parser-compatible.
 
 `test/rtl/test_perf_report.py` also unit-tests parser/report generation with a
 small synthetic log.
@@ -162,17 +166,17 @@ grayscale digit fixtures, real MNIST CNN `fc2` SoC smoke, the first real `fc1`
 SoC tile smoke, and full `fc1` 16-output-N-tile K-stream SoC coverage:
 
 ```text
-make test        PASS, 43 tests (including manifest and strengthened PPA contract checks)
+make test        PASS, 46 tests (including manifest and strengthened PPA contract checks)
 make perf-report PASS
-matmul total cycles: 81
+matmul total cycles: 82
 matmul core matmul cycles: 10
-softmax total cycles: 30
-digits_linear_classifier: 16 jobs, 1296 cycles
-real_mnist_cnn_fc1_tile0: 1 job, 81 cycles
-real_mnist_cnn_fc1_k_stream_smoke: 1 job, 185 cycles
-real_mnist_cnn_fc1_full_k_stream_layer: 16 jobs, 627472 cycles
-real_mnist_cnn_fc2: 32 jobs, 2592 cycles
-perf summary: 68 jobs, 7 workloads, 631737 total cycles
+softmax total cycles: 31
+digits_linear_classifier: 16 jobs, 1312 cycles
+real_mnist_cnn_fc1_tile0: 1 job, 82 cycles
+real_mnist_cnn_fc1_k_stream_smoke: 1 job, 186 cycles
+real_mnist_cnn_fc1_full_k_stream_layer: 16 jobs, 627488 cycles
+real_mnist_cnn_fc2: 32 jobs, 2624 cycles
+perf summary: 68 jobs, 7 workloads, 631805 total cycles
 ```
 
 Current Level 0 proxy output, based on the same RTL performance report:
@@ -180,17 +184,17 @@ Current Level 0 proxy output, based on the same RTL performance report:
 ```text
 npu_subsystem structural area proxy: 6998.4 normalized_area_units
 npu_subsystem local-state storage:    7968 bits
-operator_smoke_matmul energy proxy:   1428.25 normalized_energy_units
+operator_smoke_matmul energy proxy:   1428.5 normalized_energy_units
 real_mnist_cnn_fc1_full_k_stream_layer:
-  measured cycles:                    627472
+  measured cycles:                    627488
   measured data_mover.words:          2360576
   derived int8 MAC operations:        9437184
-  event-energy proxy:                 19037380.0 normalized_energy_units
+  event-energy proxy:                 19037384.0 normalized_energy_units
 ```
 
-For the ping-pong comparison, RTL counters show `313072` saved cycles with
+For the ping-pong comparison, RTL counters show `313056` saved cycles with
 MAC work and moved words unchanged. The Level 0 model attributes only
-`78268.0 normalized_energy_units` of modeled reduction to the shorter active
+`78264.0 normalized_energy_units` of modeled reduction to the shorter active
 duration; it does not claim measured power or external-memory energy savings.
 
 The current named baseline comparison in `make ppa-proxy-report` is:
@@ -200,15 +204,21 @@ baseline:  npu_v0_a2_serial_k_stream
 candidate: npu_v0_a2_ping_pong
 workload:  real_mnist_cnn_fc1_full_k_stream_layer
 
-measured cycles:       940544 -> 627472, -313072 (-33.286%), improvement
+measured cycles:       940544 -> 627488, -313056 (-33.285%), improvement
 measured mover words:  2360576 -> 2360576, invariant
 derived MAC work:      9437184 -> 9437184, invariant
-energy proxy:          19115648.0 -> 19037380.0, -78268.0 (-0.409%), improvement
+energy proxy:          19115648.0 -> 19037384.0, -78264.0 (-0.409%), improvement
 area proxy:            6947.2 -> 6998.4, +51.2 (+0.737%), cost
 ```
 
 This is the intended report shape for future NPU iterations: improvements and
 resource/energy costs remain visible together.
+
+The wrapper-visible perf snapshot CSR is now the report/PPA performance
+provenance. The descriptor-carried generated `job_id` adds one descriptor-read
+cycle per job, yielding `68 jobs / 7 workloads / 631805 total cycles`;
+`soc_cpu_tb` additionally checks each CSR snapshot against its validation-only
+event reference.
 
 Current explicit data mover counters for one full `fc1` K-stream output N tile:
 
@@ -220,7 +230,7 @@ data_mover.write_words: 64
 core.matmul cycles: 11520
 ```
 
-The full FC1 single-N-tile total cycle count dropped from 58784 to 39217 after
+The full FC1 single-N-tile total cycle count dropped from 58784 to 39218 after
 K-streaming A/B ping-pong overlap. The data mover words and core matmul cycles
 stay stable, which is the intended proof that the change overlaps movement with
 compute rather than skipping work.
@@ -259,6 +269,17 @@ Near-term verification gaps:
 - timeout/error tests for wrapper stuck-core behavior once timeout exists;
 - descriptor validation/error tests once wrapper exposes errors;
 - larger transfer tests after counter widths are expanded.
+
+First-batch perf CSR coverage now present:
+
+- `soc_tb` reads `PERF_STATUS`/`PERF_TOTAL_CYCLES` through MMIO after a
+  completed legacy job and checks idle clear behavior;
+- `soc_cpu_tb` correlates each descriptor job's completed snapshot for total,
+  core, data-mover and SRAM-boundary counters against validation-only TB
+  reference samples;
+- firmware reads snapshot identity and summary fields through MMIO, and
+  `PERF_JOB`/Level 0 PPA output consume those read values with
+  `measured_architectural_perf_csr_snapshot` provenance.
 
 ## 11. Test Update Rule
 

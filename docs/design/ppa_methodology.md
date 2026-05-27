@@ -51,7 +51,7 @@ appear in one report, but must not be confused.
 
 | Level | Method | Current role | Claim boundary |
 | --- | --- | --- | --- |
-| `L0_proxy` | RTL `PERF_JOB` counters plus structural resources and parameterized event-energy coefficients | immediate architecture comparison | cycles/traffic measured; area/energy normalized proxies only |
+| `L0_proxy` | Architectural perf CSR snapshot values in `PERF_JOB` plus structural resources and parameterized event-energy coefficients | immediate architecture comparison | cycles/traffic measured; area/energy normalized proxies only |
 | `L1_mapped` | Yosys/ABC mapping with a public Liberty library; optionally OpenSTA | lightweight ASIC area/timing trend | pre-layout mapped estimate |
 | `L2_power` | mapped netlist/library plus workload activity | workload-sensitive on-chip energy trend | pre-layout activity-driven estimate |
 | `L3_physical` | OpenROAD/OpenLane placement, CTS, routing, parasitic-aware reports | selected-variant validation | public-process physical estimate, not signoff |
