@@ -11,7 +11,7 @@ must be evaluated against Transformer-shaped workloads.
 
 Integration details for adding Transformer fixtures, generated firmware data,
 workload manifest entries, perf report metadata, and PPA proxy fields are in
-`docs/design/transformer_workload_integration.md`. This document defines the
+`docs/design/transformer/workload_integration.md`. This document defines the
 workload progression and metrics; the integration document defines how those
 workloads enter the existing verified NPU path.
 
@@ -175,3 +175,9 @@ claim about full model-scale Transformer performance.
 当前第一版可执行 Transformer baseline 故意很小，只使用当前 RTL 已支持的
 K-stream matmul。它的作用是验证 workload 生成、firmware 执行、perf report 和 PPA
 proxy 证据链，不代表完整模型规模性能结论。
+
+The v1 workload surface also defines golden/model-only entries under
+`workloads/transformer/micro/` for `qkv_projection`, `qk_matmul`,
+`softmax_row`, `attn_pv`, `rmsnorm_row`, `ffn_up_down`, and
+`kv_cache_read_write`. These entries prepare manifest, golden, and PPA fields
+before the corresponding vector/reduction/SFU/KV streamer RTL is accepted.

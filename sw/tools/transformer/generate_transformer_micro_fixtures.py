@@ -13,6 +13,7 @@ from transformer.golden import (
     deterministic_i8_matrix,
     tile_k_stream,
 )
+from transformer.micro_golden import classify_matrix_shape
 
 
 TRANSFORMER_SPEC_PATH = Path("workloads/manifests/transformer/transformer_micro_v0.jsonc")
@@ -54,7 +55,7 @@ def generate_transformer_micro_fixtures(spec_path: Path = TRANSFORMER_SPEC_PATH)
     for index, workload in enumerate(spec["workloads"]):
         if workload["op"] == "matmul" and workload["status"] == "planned_current_matmul_extension":
             executable.append(_generate_matmul_workload(workload, precision, seed=index + 1))
-        elif workload["op"] == "memory_traffic":
+        else:
             model_only.append(_model_only_metadata(workload, precision))
     return {
         "spec_name": spec["name"],
@@ -83,10 +84,14 @@ def _generate_matmul_workload(workload: dict[str, Any], precision: dict[str, str
         "scenario": workload["scenario"],
         "logical_op": workload.get("logical_op", workload["op"]),
         "logical_shape": {"m": m_dim, "n": n_dim, "k": k_dim},
+        "workload_family": _workload_family(workload),
+        "shape_class": classify_matrix_shape(m_dim, n_dim, k_dim),
         "rtl_tile_shape": {"m": TILE_M, "n": TILE_N, "k": TILE_K},
         "precision": precision,
         "activity_scope": workload["activity_scope"],
         "external_memory": workload["external_memory"],
+        "kv_read_bytes": int(workload["external_memory"].get("kv_cache_read_bytes", 0)),
+        "kv_write_bytes": int(workload["external_memory"].get("kv_cache_write_bytes", 0)),
         "k_chunks": tiled["k_chunks"],
         "tile_jobs": 1,
     }
@@ -105,16 +110,41 @@ def _generate_matmul_workload(workload: dict[str, Any], precision: dict[str, str
 
 
 def _model_only_metadata(workload: dict[str, Any], precision: dict[str, str]) -> dict[str, Any]:
+    shape = workload["shape"]
+    metadata = {
+        "scenario": workload["scenario"],
+        "logical_op": workload.get("logical_op", workload["op"]),
+        "logical_shape": shape,
+        "workload_family": _workload_family(workload),
+        "precision": precision,
+        "activity_scope": workload["activity_scope"],
+        "external_memory": workload["external_memory"],
+        "kv_read_bytes": int(workload["external_memory"].get("kv_cache_read_bytes", 0)),
+        "kv_write_bytes": int(workload["external_memory"].get("kv_cache_write_bytes", 0)),
+        "model_only": True,
+        "status": workload["status"],
+    }
+    if workload["op"] == "matmul":
+        metadata["shape_class"] = classify_matrix_shape(
+            int(shape["m"]),
+            int(shape["n"]),
+            int(shape["k"]),
+        )
+    if workload["op"] == "memory_traffic":
+        external = workload["external_memory"]
+        metadata["bytes_per_token"] = int(external.get("kv_cache_read_bytes", 0)) + int(
+            external.get("kv_cache_write_bytes", 0)
+        )
     return {
         "name": f"transformer_{workload['name']}",
         "kind": "transformer_model_only",
-        "metadata": {
-            "scenario": workload["scenario"],
-            "logical_op": workload["op"],
-            "logical_shape": workload["shape"],
-            "precision": precision,
-            "activity_scope": workload["activity_scope"],
-            "external_memory": workload["external_memory"],
-            "model_only": True,
-        },
+        "metadata": metadata,
     }
+
+
+def _workload_family(workload: dict[str, Any]) -> str:
+    if workload["scenario"] == "transformer_prefill":
+        return "transformer_prefill"
+    if workload["scenario"] == "transformer_decode":
+        return "transformer_decode"
+    return "transformer_micro"

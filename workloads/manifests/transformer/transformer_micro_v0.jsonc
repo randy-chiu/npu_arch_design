@@ -6,9 +6,28 @@
   "precision_baseline": {
     "activation": "int8",
     "weight": "int8",
-    "accumulator": "int32"
+    "accumulator": "int32",
+    "kv_cache": "int8"
   },
+  "tiny_shape": {"seq_len": 16, "hidden": 64, "heads": 4, "head_dim": 16, "ffn_hidden": 256},
   "workloads": [
+    {
+      "name": "qkv_projection",
+      "scenario": "transformer_prefill",
+      "op": "matmul",
+      "logical_op": "qkv_projection",
+      "shape": {"m": 16, "n": 64, "k": 64},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 1024,
+        "activation_write_bytes": 3072,
+        "weight_read_bytes": 12288,
+        "kv_cache_read_bytes": 0,
+        "kv_cache_write_bytes": 0
+      },
+      "status": "golden_model_only_v1",
+      "metrics": ["cycles", "mac_ops", "matrix_utilization", "energy_per_mac"]
+    },
     {
       "name": "prefill_gemm_tiny",
       "scenario": "transformer_prefill",
@@ -25,6 +44,57 @@
       },
       "status": "planned_current_matmul_extension",
       "metrics": ["cycles", "mac_ops", "words_moved", "energy_per_mac"]
+    },
+    {
+      "name": "qk_matmul",
+      "scenario": "transformer_prefill",
+      "op": "matmul",
+      "logical_op": "qk_attention_score",
+      "shape": {"m": 16, "n": 16, "k": 16},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 512,
+        "activation_write_bytes": 1024,
+        "weight_read_bytes": 0,
+        "kv_cache_read_bytes": 256,
+        "kv_cache_write_bytes": 0
+      },
+      "status": "golden_model_only_v1",
+      "metrics": ["cycles", "mac_ops", "kv_read_bytes", "energy_per_token"]
+    },
+    {
+      "name": "softmax_row",
+      "scenario": "transformer_prefill",
+      "op": "softmax_row",
+      "logical_op": "softmax_row_micro_kernel",
+      "shape": {"elements": 16},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 64,
+        "activation_write_bytes": 32,
+        "weight_read_bytes": 0,
+        "kv_cache_read_bytes": 0,
+        "kv_cache_write_bytes": 0
+      },
+      "status": "golden_model_only_v1",
+      "metrics": ["softmax_cycles", "reduction_cycles", "sfu_cycles", "accuracy"]
+    },
+    {
+      "name": "attn_pv",
+      "scenario": "transformer_prefill",
+      "op": "matmul",
+      "logical_op": "attention_probability_value",
+      "shape": {"m": 16, "n": 16, "k": 16},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 512,
+        "activation_write_bytes": 512,
+        "weight_read_bytes": 0,
+        "kv_cache_read_bytes": 256,
+        "kv_cache_write_bytes": 0
+      },
+      "status": "golden_model_only_v1",
+      "metrics": ["cycles", "mac_ops", "kv_read_bytes", "energy_per_token"]
     },
     {
       // Current RTL-compatible decode approximation. Real single-token decode
@@ -49,20 +119,38 @@
       "metrics": ["cycles", "mac_ops", "words_moved", "energy_per_decode_step_estimate"]
     },
     {
-      "name": "rmsnorm_tiny",
+      "name": "rmsnorm_row",
       "scenario": "transformer_decode",
-      "op": "rmsnorm",
-      "shape": {"elements": 256},
+      "op": "rmsnorm_row",
+      "logical_op": "rmsnorm_row_micro_kernel",
+      "shape": {"elements": 64},
       "activity_scope": "kernel_only",
       "external_memory": {
-        "activation_read_bytes": 256,
-        "activation_write_bytes": 256,
-        "weight_read_bytes": 512,
+        "activation_read_bytes": 64,
+        "activation_write_bytes": 64,
+        "weight_read_bytes": 64,
         "kv_cache_read_bytes": 0,
         "kv_cache_write_bytes": 0
       },
-      "status": "requires_future_operator_contract",
-      "metrics": ["cycles", "accuracy", "energy_per_decode_step_estimate"]
+      "status": "golden_model_only_v1",
+      "metrics": ["rmsnorm_cycles", "reduction_cycles", "sfu_cycles", "accuracy"]
+    },
+    {
+      "name": "ffn_up_down",
+      "scenario": "transformer_decode",
+      "op": "matmul",
+      "logical_op": "ffn_up_down",
+      "shape": {"m": 1, "n": 256, "k": 64},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 64,
+        "activation_write_bytes": 256,
+        "weight_read_bytes": 16384,
+        "kv_cache_read_bytes": 0,
+        "kv_cache_write_bytes": 0
+      },
+      "status": "golden_model_only_v1",
+      "metrics": ["cycles", "mac_ops", "gemv_utilization", "energy_per_decode_step_estimate"]
     },
     {
       // Model-only decode memory workload. It tracks the cost of repeatedly
@@ -83,6 +171,23 @@
         "kv_cache_write_bytes": 512
       },
       "status": "model_only_initially",
+      "metrics": ["read_bytes_per_token", "write_bytes_per_token", "estimated_external_memory_energy"]
+    },
+    {
+      "name": "kv_cache_read_write",
+      "scenario": "transformer_decode",
+      "op": "memory_traffic",
+      "logical_op": "kv_cache_read_write",
+      "shape": {"seq_len": 32, "heads": 4, "head_dim": 16, "bytes_per_elem": 1},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 0,
+        "activation_write_bytes": 0,
+        "weight_read_bytes": 0,
+        "kv_cache_read_bytes": 2048,
+        "kv_cache_write_bytes": 128
+      },
+      "status": "model_only_v1",
       "metrics": ["read_bytes_per_token", "write_bytes_per_token", "estimated_external_memory_energy"]
     }
   ]

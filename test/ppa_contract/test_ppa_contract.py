@@ -209,6 +209,18 @@ class PPAContractTests(unittest.TestCase):
                     "total_cycles": 128,
                     "core_matmul_cycles": 20,
                     "data_mover": {"words": 512, "read_words": 448, "write_words": 64},
+                    "transformer_metrics": {
+                        "effective_mac_ops": 1024,
+                        "matrix_utilization": 0.8,
+                        "gemv_utilization": None,
+                        "skinny_gemm_utilization": 0.8,
+                        "kv_read_bytes": 0,
+                        "kv_write_bytes": 0,
+                        "bytes_per_token": None,
+                        "softmax_cycles": 0,
+                        "rmsnorm_cycles": 0,
+                        "sfu_cycles": 0,
+                    },
                     "metadata": {
                         "external_memory": {
                             "activation_read_bytes": 128,
@@ -246,6 +258,9 @@ class PPAContractTests(unittest.TestCase):
         kv = report["workloads"][1]
 
         self.assertEqual(prefill["energy_proxy"]["events"]["external_memory_byte"], 512)
+        self.assertEqual(prefill["energy_proxy"]["events"]["int8_mac_accumulate"], 1024)
+        self.assertEqual(prefill["performance"]["matrix_utilization"], 0.8)
+        self.assertEqual(prefill["performance"]["skinny_gemm_utilization"], 0.8)
         self.assertEqual(
             prefill["energy_proxy"]["contribution_groups"]["modeled_external_memory"],
             512 * 20.0,

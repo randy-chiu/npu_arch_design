@@ -45,7 +45,7 @@ wrapper、NPU core、firmware、compiler artifacts 串成真实软硬件闭环�
   SRAM 或 `test_status`；
 - `soc_cpu_top` 仍是最重要的功能闭环路径，但仅作为系统参考 PPA 边界；
 - 面积、功耗、能耗和 Transformer workload 规则见
-  `docs/design/ppa_methodology.md` 与 `docs/design/transformer_workloads.md`。
+  `docs/design/ppa_methodology.md` 与 `docs/design/transformer/workloads.md`。
 
 ## 2. 顶层 SoC 框架
 
@@ -218,7 +218,7 @@ program 或 tensor words，并通过 NPU core host window 写入 core 内部 mem
 当前 host-window preload/readback 是 A0/A1 bring-up 机制，不是最终 NPU
 memory architecture。具体来说：
 
-- `instr_mem`、`spad_a`、`spad_b`、`spad_x`、`acc_buf`、`spad_y` 都是
+- `instr_mem`、`spad_a`、`spad_b`、`spad_x`、accumulator file、`spad_y` 都是
   NPU core 内部小 memory/register array；
 - wrapper 先从 SoC SRAM 读 descriptor、program 和 tensor，再通过 core
   host window 逐 word 写入这些内部 memory；
@@ -258,7 +258,7 @@ Phase 0 的可验证计算核心。
 | `dram_y` | Softmax output |
 | `instr_mem` | encoded micro-op program |
 | `spad_a/spad_b` | matmul scratchpad |
-| `acc_buf` | matmul accumulator/output staging |
+| accumulator file | matmul accumulator/output staging |
 | `vec_buf` | vector/SFU staging |
 
 核心状态机：
@@ -302,7 +302,7 @@ for i in M:
 8 * 8 * 8 = 512 MAC cycles
 ```
 
-A1 已经新增 `hw/npu_core/rtl/matmul_array.sv`，把 `UOP_MATMUL` 的内部执行路径
+A1 已经新增 `hw/npu_core/rtl/matrix/matmul_array.sv`，把 `UOP_MATMUL` 的内部执行路径
 替换为 8x8 output-parallel array-style engine。当前 measured matmul compute
 phase 已从 512 cycles 降到约 10 cycles；完整 job 仍包含 wrapper descriptor、
 program/input fetch、output writeback 和 CPU polling。新老 matmul 实现的详细

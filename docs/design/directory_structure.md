@@ -7,14 +7,19 @@ stabilization:
 
 | Path | Status | Ownership |
 | --- | --- | --- |
-| `hw/npu_core/` | `current_impl` | `npu_v0_top.sv`, current local memories, uop execution, matmul array and softmax path |
+| `hw/npu_core/rtl/` | `current_impl` | `npu_v0_top.sv`, current local memories, uop execution, and staged Transformer NPU v1 module directories |
+| `hw/npu_core/rtl/matrix/` | `current_impl` | current matmul array plus standalone accumulator-file module |
+| `hw/npu_core/rtl/{vector,reduction,sfu,memory,scheduler,kv_cache}/` | `planned_v1` | staged module ownership directories with README contracts |
 | `hw/npu_wrapper/` | `current_impl` | CPU-visible wrapper, descriptor scheduler and data mover |
 | `hw/soc/` | `current_impl` | CPU-controlled SoC verification path |
 | `sw/tools/`, `sw/soc_cpu/` | `current_impl` | generation tools, firmware/runtime and reports |
 | `workloads/`, `ppa/`, `arch/` | active contract paths | workload identity, PPA schema/baselines and source-of-truth configurations |
 
-This round does not move `hw/` into `rtl/` because the current Makefile,
-firmware smoke, and PPA boundary depend on those verified paths.
+This round does not move `hw/` into a top-level `rtl/` tree because the current
+Makefile, firmware smoke, and PPA boundary depend on those verified paths.
+Within `hw/npu_core/rtl/`, module-level directories now mirror the intended v1
+architecture so new blocks have clear ownership before a larger top-level
+migration.
 
 ## Target Layout
 

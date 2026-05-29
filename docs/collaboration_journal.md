@@ -1602,7 +1602,7 @@ Implemented A1.0 through A1.3:
   projected total.
 - Added `docs/matmul_array_a1.md` describing the module interface, timing, and
   verification plan.
-- Added `hw/npu_core/rtl/matmul_array.sv`, an 8x8 output-parallel matmul engine
+- Added `hw/npu_core/rtl/matrix/matmul_array.sv`, an 8x8 output-parallel matmul engine
   that consumes one K slice per active cycle.
 - Updated `hw/npu_core/rtl/npu_v0_top.sv` so `UOP_MATMUL` launches the array
   engine and commits `result_flat` into `acc_buf`.
@@ -1813,7 +1813,7 @@ Implemented changes:
   - linear `in_features`, `out_features`, `weight_shape`, `bias_shape`, and
     `output_shape`;
   - the Phase 0 default quantization metadata.
-- Added `docs/design/quantization_strategy.md`:
+- Added `docs/design/v0_cnn/quantization_strategy.md`:
   - current policy is symmetric signed-int8 activation and weight quantization;
   - activation/weight are per-tensor for the first tool loop;
   - accumulators are int32;
@@ -1870,7 +1870,7 @@ Decisions:
   tracked in `docs/project_plan.md` as its own task after real MNIST CNN
   `fc1/fc2` SoC coverage is stable.
 - Quantization validation is now documented in
-  `docs/design/quantization_strategy.md`, including tool-level numerical tests,
+  `docs/design/v0_cnn/quantization_strategy.md`, including tool-level numerical tests,
   SoC RTL checks, and regression gates.
 - Full `fc1` should still not be implemented as 18432 CPU-launched
   `8x8x8` descriptor jobs. The first SoC RTL step is a real `fc1` tile
@@ -1899,7 +1899,7 @@ Implemented:
 - Docs updated:
   - `docs/project_plan.md`;
   - `docs/real_mnist_cnn_workload.md`;
-  - `docs/design/quantization_strategy.md`;
+  - `docs/design/v0_cnn/quantization_strategy.md`;
   - `docs/design/verification_strategy.md`;
   - `docs/design/performance_instrumentation.md`.
 
@@ -1931,7 +1931,7 @@ chunks and the core accumulates partial sums internally.
 Design document added:
 
 ```text
-docs/design/fc1_k_streaming_matmul.md
+docs/design/v0_cnn/fc1_k_streaming_matmul.md
 ```
 
 Key design decisions:
@@ -2015,7 +2015,7 @@ User asked to further clarify:
 
 Documentation updates:
 
-- Rewrote `docs/design/fc1_k_streaming_matmul.md` as a bilingual English/Chinese
+- Rewrote `docs/design/v0_cnn/fc1_k_streaming_matmul.md` as a bilingual English/Chinese
   design document.
 - Added the current compute parallelism:
   - physical tile remains `M=8, N=8, K=8`;
@@ -2047,7 +2047,7 @@ clarification only.
 Follow-up clarification:
 
 - Added a cycle-by-cycle `8x8 * 8x8` example to
-  `docs/design/fc1_k_streaming_matmul.md`.
+  `docs/design/v0_cnn/fc1_k_streaming_matmul.md`.
 - The example shows that each cycle fixes one `k_idx` and performs an outer
   product:
   `C[i,j] += A[i,k_idx] * B[k_idx,j]` for all 64 output coordinates in
@@ -2061,7 +2061,7 @@ User asked to continue coding from the documented K-streaming direction.
 
 Design update:
 
-- Extended `docs/design/fc1_k_streaming_matmul.md` with a bilingual planner
+- Extended `docs/design/v0_cnn/fc1_k_streaming_matmul.md` with a bilingual planner
   section.
 - Documented that compiler-side planning now produces `k_chunks`, `k_offsets`,
   packed `a_stream`/`b_stream`, and one accumulated `expected_c`.
@@ -2123,7 +2123,7 @@ Implemented:
   output comparison for the full single-N-tile result.
 - Extended `sw/tools/perf/report.py` and `test/rtl/test_perf_report.py` to
   recognize `real_mnist_cnn_fc1_full_k_stream_tile0`.
-- Updated `docs/design/fc1_k_streaming_matmul.md`,
+- Updated `docs/design/v0_cnn/fc1_k_streaming_matmul.md`,
   `docs/design/performance_instrumentation.md`, and
   `docs/design/verification_strategy.md`.
 
@@ -2175,7 +2175,7 @@ Design update:
      `SETUP_CYCLES`;
   4. add double buffering so fetch of chunk `i+1` can overlap compute of
      chunk `i`.
-- Updated `docs/design/fc1_k_streaming_matmul.md` follow-up work with the same
+- Updated `docs/design/v0_cnn/fc1_k_streaming_matmul.md` follow-up work with the same
   ordered plan.
 
 Step 1 implementation:
@@ -2519,7 +2519,7 @@ real_mnist_cnn_fc1_full_k_stream_tile0:
 
 Design documentation:
 
-- Added `docs/design/k_stream_ping_pong_buffer.md`.
+- Added `docs/design/v0_cnn/k_stream_ping_pong_buffer.md`.
 - The document explains the current serial K-streaming problem:
   `load_A + load_B + compute`.
 - It includes ASCII timelines for:
@@ -2556,7 +2556,7 @@ make test: PASS, 31 tests, 44.071s
 Next step:
 
 - Start coding K-streaming ping-pong overlap according to
-  `docs/design/k_stream_ping_pong_buffer.md`.
+  `docs/design/v0_cnn/k_stream_ping_pong_buffer.md`.
 
 ### Resume Snapshot: 2026-05-23
 
@@ -2603,12 +2603,12 @@ Important interpretation:
 Primary design doc for tomorrow:
 
 ```text
-docs/design/k_stream_ping_pong_buffer.md
+docs/design/v0_cnn/k_stream_ping_pong_buffer.md
 ```
 
 Tomorrow's recommended task order:
 
-1. Re-read `docs/design/k_stream_ping_pong_buffer.md`.
+1. Re-read `docs/design/v0_cnn/k_stream_ping_pong_buffer.md`.
 2. Inspect current core host window and buffer layout in
    `hw/npu_core/rtl/npu_v0_top.sv`.
 3. Decide the bank-select ABI:
@@ -2655,7 +2655,7 @@ bank ownership should be understood. Decision:
 Implemented:
 
 - Added bank principle and ownership explanation to
-  `docs/design/k_stream_ping_pong_buffer.md`.
+  `docs/design/v0_cnn/k_stream_ping_pong_buffer.md`.
 - Added A/B bank 1 in `hw/npu_core/rtl/npu_v0_top.sv`:
   - bank 0 keeps historical names `dram_a` / `dram_b`;
   - bank 1 uses `dram_a_bank1` / `dram_b_bank1`;
@@ -2871,7 +2871,7 @@ Documentation added or updated:
 - `docs/design/ppa_methodology.md`: public ASIC targets, measurement tops,
   area/timing/power/energy metrics, activity windows, memory accounting, and
   result contract;
-- `docs/design/transformer_workloads.md`: prefill/decode distinction,
+- `docs/design/transformer/workloads.md`: prefill/decode distinction,
   micro-kernel progression, precision and external-memory reporting
   requirements;
 - `docs/design/npu_subsystem.md`: primary PPA RTL top and external-memory
@@ -3443,3 +3443,238 @@ git diff --check: PASS
 
 The previous full all-profile SoC/PPA path remains available through
 `make cpu-soc-all` and `make ppa-l0-report WORKLOAD_PROFILE=all`.
+
+## Session 64: Transformer NPU v1 Baseline
+
+Goal:
+
+- start the formal Transformer-oriented NPU v1 baseline without attempting a
+  full LLM or fused attention pipeline;
+- keep one unified tensor NPU architecture and preserve CNN/MNIST regression;
+- define primitive uops, accumulator-file direction, GEMV/skinny utilization
+  reporting, fixed-point numerical contracts, and Transformer micro workload
+  coverage.
+
+Implemented:
+
+- added v1 architecture/spec files:
+  `docs/design/transformer/transformer_npu_v1.md`,
+  `arch/specs/transformer/v1/transformer_npu_v1.md`,
+  `arch/specs/transformer/v1/transformer_numerical_v1.md`,
+  `arch/specs/transformer/v1/csr_map_v1.md`, `arch/specs/transformer/v1/descriptor_v1.md`,
+  `arch/specs/transformer/v1/uop_isa_v1.md`, and
+  `arch/configs/npu_transformer_v1.jsonc`;
+- defined active/stall/idle semantics, v1 CSR offsets, descriptor v1 fields,
+  primitive uop list, and the distinction between primitive uop,
+  micro-kernel, macro-op expansion, and fused hardware pipeline;
+- added standalone `hw/npu_core/rtl/matrix/accumulator_file.sv` with clear,
+  write/accumulate, read, residency, read/write/clear counters, and spill
+  counter held at zero;
+- kept existing `npu_v0_top` K-stream accumulator path unchanged for this
+  first baseline step, with the accumulator-file integration refactor staged
+  after regression gates;
+- expanded Transformer micro workload definitions with golden/model-only
+  entries for `qkv_projection`, `qk_matmul`, `softmax_row`, `attn_pv`,
+  `rmsnorm_row`, `ffn_up_down`, and `kv_cache_read_write`;
+- added fixed-point Python golden helpers for softmax Q15, RMSNorm reference,
+  shape classification, and KV-cache byte accounting;
+- extended perf/PPA reports with Transformer fields:
+  matrix/GEMV/skinny-GEMM utilization, effective MACs, peak capacity, tail
+  waste, KV read/write bytes, bytes/token, and normalized proxy energy/token.
+
+Current measured quick-profile Transformer results:
+
+```text
+transformer_prefill_gemm_tiny: matrix_utilization 0.8, skinny_gemm_utilization 0.8
+transformer_decode_skinny_gemm_m8_compat: matrix_utilization 0.8, skinny_gemm_utilization 0.8
+model-only Transformer KV traffic: visible in perf/PPA as modeled manifest evidence
+```
+
+Validation:
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_transformer_micro_fixtures test.rtl.test_perf_report test.ppa_contract.test_ppa_contract test.rtl.test_transformer_npu_v1_contract -v: PASS, 32 tests
+make test: PASS, 57 tests, 25.974s
+make firmware-smoke: PASS
+make perf-report: PASS
+make ppa-proxy-report: PASS
+make cpu-soc-cnn-full: PASS, 68 descriptor jobs
+git diff --check: PASS
+```
+
+Remaining v1 work:
+
+- integrate `accumulator_file.sv` into the matrix/core datapath instead of only
+  compiling it as the standalone v1 module;
+- implement primitive vector/reduction/SFU RTL blocks and tests;
+- add true `GEMV` execution rather than only reporting GEMV/skinny utilization
+  from manifest shapes;
+- promote KV-cache streamer from spec/counters/model-only traffic to RTL path
+  only after decode traffic evidence justifies it.
+
+## Session 65: Design And RTL Directory Cleanup
+
+Goal:
+
+- clean up mixed CNN/V0 and Transformer/V1 design docs before further
+  implementation;
+- keep common SoC/wrapper/perf/PPA documents directly under `docs/design/`;
+- move CNN/V0-specific notes into their own directory;
+- move Transformer/NPU v1 design notes into a Transformer directory;
+- prepare RTL module directories for the v1 architecture blocks.
+
+Implemented:
+
+- moved Transformer design docs under `docs/design/transformer/`:
+  `transformer_npu_v1.md`, `workloads.md`, `workload_integration.md`, and
+  new `next_steps.md`;
+- moved V0/CNN-specific docs under `docs/design/v0_cnn/`:
+  `fc1_k_streaming_matmul.md`, `k_stream_ping_pong_buffer.md`, and
+  `quantization_strategy.md`;
+- moved Transformer v1 architecture specs under
+  `arch/specs/transformer/v1/`;
+- updated design/docs/spec indexes and active references to the new paths;
+- moved matrix RTL into `hw/npu_core/rtl/matrix/`;
+- added planned v1 RTL ownership directories:
+  `vector/`, `reduction/`, `sfu/`, `memory/`, `scheduler/`, and `kv_cache/`;
+- wrote the next implementation plan in
+  `docs/design/transformer/next_steps.md`.
+
+Validation:
+
+```text
+git diff --check: PASS
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_transformer_npu_v1_contract test.rtl.test_transformer_micro_fixtures test.rtl.test_perf_report -v: PASS, 22 tests
+make test: PASS, 57 tests, 26.169s
+make ppa-proxy-report: PASS
+```
+
+## Session 66: Accumulator File Integration And Vector/Reduction/SFU Design
+
+Goal:
+
+- replace the legacy internal `acc_buf` implementation in `npu_v0_top` with the
+  explicit `matrix/accumulator_file.sv` module;
+- keep existing MATMUL and MATMUL_K_STREAM behavior unchanged;
+- add detailed contracts for vector, reduction, and SFU work before writing
+  those RTL blocks.
+
+Implemented:
+
+- removed `acc_buf` storage from `hw/npu_core/rtl/npu_v0_top.sv`;
+- instantiated `hw/npu_core/rtl/matrix/accumulator_file.sv` as the single int32
+  accumulator storage for matmul and K-stream partial sums;
+- connected accumulator clear, write/accumulate, read, and local counters;
+- changed `accumulator_file` read counting to use explicit `read_enable`
+  instead of incrementing every cycle;
+- updated current design docs to describe accumulator-file storage rather than
+  `acc_buf`;
+- added detailed Transformer v1 design docs:
+  `docs/design/transformer/vector_engine_v1.md`,
+  `docs/design/transformer/reduction_engine_v1.md`, and
+  `docs/design/transformer/sfu_v1.md`.
+
+Validation:
+
+```text
+make npu-core-sim: PASS
+make cpu-soc-quick: PASS, Transformer K-stream jobs remain 118 / 84 cycles
+make cpu-soc-cnn-full: PASS, full FC1 K-stream jobs remain 39218 cycles
+make ppa-proxy-report: PASS
+make test: PASS, 57 tests, 25.404s
+git diff --check: PASS
+```
+
+Next:
+
+- start standalone vector/reduction/SFU RTL modules and directed tests from the
+  new design docs;
+- keep scheduler integration separate until primitive modules pass in isolation.
+
+## Session 67: Primitive Vector/Reduction/SFU Standalone RTL
+
+Goal:
+
+- make the v1 module plan explicit as a status table;
+- implement the softmax/RMSNorm primitive hardware set as standalone RTL before
+  connecting it to the scheduler;
+- keep the work clearly below the level of `SOFTMAX_ROW` macro-op or fused
+  attention pipeline.
+
+Implemented:
+
+- expanded `docs/design/transformer/next_steps.md` with a v1 module status
+  table covering wrapper/CSR, descriptor engine, uop scheduler, matrix,
+  accumulator file, vector, reduction, SFU, memory/data mover, KV cache, and
+  Transformer micro workloads;
+- added standalone primitive RTL:
+  - `hw/npu_core/rtl/vector/vector_engine.sv`;
+  - `hw/npu_core/rtl/reduction/reduction_engine.sv`;
+  - `hw/npu_core/rtl/sfu/sfu_lut.sv`;
+- added `hw/npu_core/tb/primitive_engines_tb.sv` covering:
+  - `VEC_SUB`, `VEC_CLAMP`, `VEC_SCALE`, `VEC_MUL`;
+  - `REDUCE_MAX`, `REDUCE_SUM`, `REDUCE_SUMSQ`;
+  - `SFU_EXP`, `SFU_RECIP`, `SFU_RSQRT`;
+- added `make primitive-engines-sim` and a Python unittest gate for that
+  target;
+- updated vector/reduction/SFU design docs and RTL directory READMEs with
+  implementation status.
+
+Validation:
+
+```text
+make primitive-engines-sim: PASS
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_transformer_npu_v1_contract test.rtl.test_transformer_micro_fixtures -v: PASS, 9 tests
+make test: PASS, 58 tests, 25.752s
+make ppa-proxy-report: PASS
+git diff --check: PASS
+```
+
+Remaining:
+
+- broaden primitive RTL tests against generated softmax/RMSNorm fixtures;
+- connect primitives to uop scheduler only after fixture coverage is stable;
+- improve SFU approximation/tolerance before using it for model accuracy
+  claims.
+
+## Session 68: Softmax/RMSNorm Primitive Sequence Fixtures
+
+Goal:
+
+- advance from isolated primitive op tests to complete standalone primitive
+  sequences for softmax and RMSNorm;
+- keep the work below scheduler integration and avoid claiming a hardware
+  `SOFTMAX_ROW` or `RMSNORM_ROW` macro-op.
+
+Implemented:
+
+- added Python golden helpers in `sw/tools/transformer/micro_golden.py` for the
+  current standalone SFU/vector contract:
+  - `sfu_exp_lut_q15()`;
+  - `recip_q24()`;
+  - `rsqrt_q24()`;
+  - `softmax_row_primitive_lut_q15()`;
+  - `rmsnorm_primitive_sequence()`;
+- extended `test/rtl/test_transformer_micro_fixtures.py` to lock the current
+  softmax and RMSNorm primitive-sequence expected values;
+- extended `hw/npu_core/tb/primitive_engines_tb.sv` with:
+  - `REDUCE_MAX -> VEC_SUB -> VEC_CLAMP -> SFU_EXP -> REDUCE_SUM -> SFU_RECIP -> VEC_SCALE`;
+  - `REDUCE_SUMSQ -> SFU_RSQRT -> VEC_SCALE`;
+- updated `docs/design/transformer/next_steps.md` and module design docs to
+  mark standalone primitive sequence coverage complete.
+
+Validation:
+
+```text
+make primitive-engines-sim: PASS
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_transformer_micro_fixtures test.rtl.test_transformer_npu_v1_contract -v: PASS, 11 tests
+make test: PASS, 60 tests, 26.801s
+make ppa-proxy-report: PASS
+```
+
+Notes:
+
+- the current softmax primitive sequence uses the bring-up SFU reciprocal
+  scaling contract `exp_q15 * recip >> 9`;
+- this is deterministic and testable, but it is not the final numerical policy
+  for model-level accuracy.

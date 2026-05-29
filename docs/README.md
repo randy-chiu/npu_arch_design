@@ -16,14 +16,11 @@
 | `design/npu_subsystem.md` | PPA 主要综合边界：wrapper/data mover/core 与外部 memory 接口 |
 | `design/npu_core.md` | NPU core、内部 memory、uop 执行、matmul array、softmax 路径的详细设计 |
 | `design/software_hardware_flow.md` | compiler/assembler/firmware/descriptor/wrapper/core 的软硬件交互流程 |
-| `design/quantization_strategy.md` | 当前 selected-layer int8 量化边界、scale 策略、bias 处理和后续升级路径 |
-| `design/fc1_k_streaming_matmul.md` | 真实 MNIST CNN `fc1` 的 K 轴 streaming matmul 软硬件合同 |
-| `design/k_stream_ping_pong_buffer.md` | K-streaming ping-pong buffer overlap 设计、当前串行瓶颈和时序图 |
 | `design/performance_instrumentation.md` | cycle 级 perf 计数、PERF_JOB、HTML timeline、counter 下沉策略 |
 | `design/verification_strategy.md` | 当前测试层级、验证入口、coverage 边界和下一步测试计划 |
 | `design/ppa_methodology.md` | 面向 ASIC 的 PPA 边界、公开工艺评估目标、功耗/面积/能耗结果合同 |
-| `design/transformer_workloads.md` | Transformer/LLM prefill 与 decode 的 workload 演进和评估指标 |
-| `design/transformer_workload_integration.md` | Transformer workload 的 fixture/golden/manifest/perf/PPA 接入设计，复用当前 NPU core/wrapper/report 路径 |
+| `design/transformer/` | Transformer-oriented NPU v1 架构、workload、集成说明和下一步计划 |
+| `design/v0_cnn/` | V0/CNN 专属 MNIST `fc1` K-streaming、ping-pong 和 selected-layer quantization 文档 |
 | `digits_classifier_workload.md` | 下一阶段真实 workload：8x8 手写数字分类闭环 |
 | `real_mnist_cnn_workload.md` | 真实开源 MNIST CNN：外部 safetensors 权重、MNIST 图片、`fc1` tile 和 `fc2` SoC RTL 验证 |
 | `target_architecture.md` | 业界架构资料提炼、长期目标 NPU 架构、分阶段扩展计划 |

@@ -4,23 +4,21 @@ This directory holds human-reviewable architecture contracts and rationale.
 Machine-consumed constants remain in `arch/configs/` and are the source for
 generated RTL/software metadata.
 
-Planned active specifications:
+Active and staged specifications:
 
 ```text
-npu_core_v0.md
-memory_system_v0.md
-instruction_set_v0.md
-dataflow_v0.md
-ppa_model_v0.md
-transformer_requirements_v0.md
+transformer/v1/transformer_npu_v1.md
+transformer/v1/transformer_numerical_v1.md
+transformer/v1/csr_map_v1.md
+transformer/v1/descriptor_v1.md
+transformer/v1/uop_isa_v1.md
 ```
 
-The current PPA and Transformer contracts begin in:
+The current PPA and Transformer design context begins in:
 
 ```text
 docs/design/ppa_methodology.md
-docs/design/transformer_workloads.md
+docs/design/transformer/transformer_npu_v1.md
+docs/design/transformer/workloads.md
+docs/design/transformer/workload_integration.md
 ```
-
-They can be promoted or split into specification files as the corresponding
-machine-readable configuration fields stabilize.

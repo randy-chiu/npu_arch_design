@@ -1,0 +1,8 @@
+{
+  "name": "attn_pv",
+  "scenario": "transformer_prefill",
+  "op": "matmul",
+  "shape": {"m": 16, "n": 16, "k": 16},
+  "status": "golden_model_only_v1",
+  "expected": "deterministic_int8_matmul_i32"
+}

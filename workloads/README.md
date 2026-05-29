@@ -15,7 +15,7 @@ locations while manifests and new Transformer work enter here. Migration of
 working fixture code should happen only when it reduces duplication or enables
 a required comparison.
 
-See `docs/design/transformer_workloads.md`.
+See `docs/design/transformer/workloads.md`.
 
 The current SoC regression's explicit job-to-workload contract is generated
 beside firmware fixture artifacts by `sw/tools/firmware/emit_soc_cpu_smoke_data.py`

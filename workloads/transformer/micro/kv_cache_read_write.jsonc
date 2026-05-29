@@ -1,0 +1,8 @@
+{
+  "name": "kv_cache_read_write",
+  "scenario": "transformer_decode",
+  "op": "memory_traffic",
+  "shape": {"seq_len": 32, "heads": 4, "head_dim": 16, "bytes_per_elem": 1},
+  "status": "model_only_v1",
+  "expected": "kv_cache_byte_accounting"
+}

@@ -213,8 +213,13 @@ class PerfReportTests(unittest.TestCase):
             report = parse_perf_log(log_path, manifest_path)
 
         self.assertEqual(report["workloads"][0]["metadata"]["scenario"], "transformer_prefill")
+        self.assertEqual(report["workloads"][0]["transformer_metrics"]["effective_mac_ops"], 1024)
+        self.assertEqual(report["workloads"][0]["transformer_metrics"]["matrix_utilization"], 0.8)
+        self.assertEqual(report["workloads"][0]["transformer_metrics"]["skinny_gemm_utilization"], 0.8)
         self.assertEqual(report["model_only_workloads"][0]["name"], "transformer_kv_cache_traffic_tiny")
         self.assertEqual(report["model_only_workloads"][0]["metadata"]["external_memory"]["kv_cache_read_bytes"], 1024)
+        self.assertIsNone(report["model_only_workloads"][0]["transformer_metrics"]["matrix_utilization"])
+        self.assertEqual(report["summary"]["transformer"]["kv_read_bytes"], 1024)
 
     def test_manifest_requires_explicit_perf_job_id(self):
         with TemporaryDirectory() as tmp:

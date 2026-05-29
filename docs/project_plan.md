@@ -154,7 +154,7 @@ Exit condition:
 
 - `docs/design/ppa_methodology.md` defines metrics, tops, memory accounting,
   activity windows, technology targets, and result interpretation;
-- `docs/design/transformer_workloads.md` defines prefill/decode kernel and
+- `docs/design/transformer/workloads.md` defines prefill/decode kernel and
   block-level workload progression;
 - PPA result schema and target configuration have stable locations;
 - a synthesizable `npu_subsystem_top` boundary exists independently of the

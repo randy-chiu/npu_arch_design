@@ -1,0 +1,435 @@
+module primitive_engines_tb;
+    localparam int LANES = 8;
+    localparam int MAX_LEN = 128;
+    localparam int DATA_WIDTH = 32;
+
+    localparam logic [2:0] VEC_ADD = 3'd0;
+    localparam logic [2:0] VEC_SUB = 3'd1;
+    localparam logic [2:0] VEC_MUL = 3'd2;
+    localparam logic [2:0] VEC_SCALE = 3'd3;
+    localparam logic [2:0] VEC_CLAMP = 3'd5;
+
+    localparam logic [1:0] REDUCE_MAX = 2'd0;
+    localparam logic [1:0] REDUCE_SUM = 2'd1;
+    localparam logic [1:0] REDUCE_SUMSQ = 2'd2;
+
+    localparam logic [1:0] SFU_EXP = 2'd0;
+    localparam logic [1:0] SFU_RECIP = 2'd1;
+    localparam logic [1:0] SFU_RSQRT = 2'd2;
+
+    logic clk;
+    logic rst_n;
+
+    logic vector_start;
+    logic [2:0] vector_op;
+    logic [LANES-1:0] vector_valid_mask;
+    logic signed [(LANES*DATA_WIDTH)-1:0] vector_a_flat;
+    logic signed [(LANES*DATA_WIDTH)-1:0] vector_b_flat;
+    logic signed [DATA_WIDTH-1:0] vector_scalar;
+    logic signed [DATA_WIDTH-1:0] vector_clamp_low;
+    logic signed [DATA_WIDTH-1:0] vector_clamp_high;
+    logic [4:0] vector_shift;
+    logic vector_done;
+    logic vector_active;
+    logic signed [(LANES*DATA_WIDTH)-1:0] vector_y_flat;
+
+    logic reduction_start;
+    logic [1:0] reduction_op;
+    logic [7:0] reduction_length;
+    logic signed [(MAX_LEN*DATA_WIDTH)-1:0] reduction_x_flat;
+    logic reduction_done;
+    logic reduction_active;
+    logic signed [63:0] reduction_result;
+
+    logic sfu_start;
+    logic [1:0] sfu_op;
+    logic signed [DATA_WIDTH-1:0] sfu_x;
+    logic sfu_done;
+    logic sfu_active;
+    logic [DATA_WIDTH-1:0] sfu_y;
+
+    vector_engine u_vector_engine (
+        .clk(clk),
+        .rst_n(rst_n),
+        .start(vector_start),
+        .op(vector_op),
+        .valid_mask(vector_valid_mask),
+        .a_flat(vector_a_flat),
+        .b_flat(vector_b_flat),
+        .scalar(vector_scalar),
+        .clamp_low(vector_clamp_low),
+        .clamp_high(vector_clamp_high),
+        .shift(vector_shift),
+        .done(vector_done),
+        .active(vector_active),
+        .y_flat(vector_y_flat)
+    );
+
+    reduction_engine u_reduction_engine (
+        .clk(clk),
+        .rst_n(rst_n),
+        .start(reduction_start),
+        .op(reduction_op),
+        .length(reduction_length),
+        .x_flat(reduction_x_flat),
+        .done(reduction_done),
+        .active(reduction_active),
+        .result(reduction_result)
+    );
+
+    sfu_lut u_sfu_lut (
+        .clk(clk),
+        .rst_n(rst_n),
+        .start(sfu_start),
+        .op(sfu_op),
+        .x(sfu_x),
+        .done(sfu_done),
+        .active(sfu_active),
+        .y(sfu_y)
+    );
+
+    initial clk = 1'b0;
+    always #5 clk = ~clk;
+
+    initial begin
+        rst_n = 1'b0;
+        vector_start = 1'b0;
+        reduction_start = 1'b0;
+        sfu_start = 1'b0;
+        vector_a_flat = '0;
+        vector_b_flat = '0;
+        reduction_x_flat = '0;
+        repeat (4) @(posedge clk);
+        rst_n = 1'b1;
+
+        run_vector_tests();
+        run_reduction_tests();
+        run_sfu_tests();
+        run_softmax_primitive_sequence_test();
+        run_rmsnorm_primitive_sequence_test();
+
+        $display("PASS primitive engine RTL tests");
+        $finish;
+    end
+
+    task automatic set_vec_a(input int lane, input logic signed [31:0] value);
+        begin
+            vector_a_flat[(lane * DATA_WIDTH) +: DATA_WIDTH] = value;
+        end
+    endtask
+
+    task automatic set_vec_b(input int lane, input logic signed [31:0] value);
+        begin
+            vector_b_flat[(lane * DATA_WIDTH) +: DATA_WIDTH] = value;
+        end
+    endtask
+
+    task automatic check_vec_y(input int lane, input logic signed [31:0] expected);
+        logic signed [31:0] actual;
+        begin
+            actual = vector_y_flat[(lane * DATA_WIDTH) +: DATA_WIDTH];
+            if (actual !== expected) begin
+                $display("FAIL vector lane %0d actual=%0d expected=%0d", lane, actual, expected);
+                $fatal(1);
+            end
+        end
+    endtask
+
+    task automatic launch_vector;
+        begin
+            vector_start = 1'b1;
+            @(posedge clk);
+            #1;
+            if (!vector_done) begin
+                $display("FAIL vector did not assert done");
+                $fatal(1);
+            end
+            vector_start = 1'b0;
+            @(posedge clk);
+        end
+    endtask
+
+    task automatic run_vector_tests;
+        integer i;
+        begin
+            vector_valid_mask = 8'hff;
+            vector_shift = 5'd1;
+            vector_scalar = 32'sd4;
+            vector_clamp_low = -32'sd10;
+            vector_clamp_high = 32'sd10;
+            for (i = 0; i < LANES; i = i + 1) begin
+                set_vec_a(i, i - 4);
+                set_vec_b(i, 2 * i);
+            end
+
+            vector_op = VEC_SUB;
+            launch_vector();
+            check_vec_y(0, -32'sd4);
+            check_vec_y(7, -32'sd11);
+
+            vector_op = VEC_CLAMP;
+            set_vec_a(0, -32'sd256);
+            set_vec_a(1, -32'sd8);
+            set_vec_a(2, 32'sd2);
+            vector_clamp_low = -32'sd8;
+            vector_clamp_high = 32'sd0;
+            launch_vector();
+            check_vec_y(0, -32'sd8);
+            check_vec_y(1, -32'sd8);
+            check_vec_y(2, 32'sd0);
+
+            vector_op = VEC_SCALE;
+            set_vec_a(0, 32'sd7);
+            vector_scalar = 32'sd4;
+            vector_shift = 5'd1;
+            launch_vector();
+            check_vec_y(0, 32'sd14);
+
+            vector_op = VEC_MUL;
+            set_vec_a(0, -32'sd3);
+            set_vec_b(0, 32'sd5);
+            launch_vector();
+            check_vec_y(0, -32'sd15);
+        end
+    endtask
+
+    task automatic set_reduce_x(input int index, input logic signed [31:0] value);
+        begin
+            reduction_x_flat[(index * DATA_WIDTH) +: DATA_WIDTH] = value;
+        end
+    endtask
+
+    task automatic launch_reduction;
+        begin
+            reduction_start = 1'b1;
+            @(posedge clk);
+            #1;
+            if (!reduction_done) begin
+                $display("FAIL reduction did not assert done");
+                $fatal(1);
+            end
+            reduction_start = 1'b0;
+            @(posedge clk);
+        end
+    endtask
+
+    task automatic run_reduction_tests;
+        begin
+            reduction_x_flat = '0;
+            set_reduce_x(0, -32'sd3);
+            set_reduce_x(1, 32'sd5);
+            set_reduce_x(2, 32'sd2);
+            set_reduce_x(3, -32'sd7);
+            reduction_length = 8'd4;
+
+            reduction_op = REDUCE_MAX;
+            launch_reduction();
+            if (reduction_result !== 64'sd5) begin
+                $display("FAIL REDUCE_MAX actual=%0d", reduction_result);
+                $fatal(1);
+            end
+
+            reduction_op = REDUCE_SUM;
+            launch_reduction();
+            if (reduction_result !== -64'sd3) begin
+                $display("FAIL REDUCE_SUM actual=%0d", reduction_result);
+                $fatal(1);
+            end
+
+            reduction_op = REDUCE_SUMSQ;
+            launch_reduction();
+            if (reduction_result !== 64'sd87) begin
+                $display("FAIL REDUCE_SUMSQ actual=%0d", reduction_result);
+                $fatal(1);
+            end
+        end
+    endtask
+
+    task automatic launch_sfu;
+        begin
+            sfu_start = 1'b1;
+            @(posedge clk);
+            #1;
+            if (!sfu_done) begin
+                $display("FAIL SFU did not assert done");
+                $fatal(1);
+            end
+            sfu_start = 1'b0;
+            @(posedge clk);
+        end
+    endtask
+
+    task automatic run_sfu_tests;
+        logic [31:0] exp0;
+        logic [31:0] exp_neg8;
+        begin
+            sfu_op = SFU_EXP;
+            sfu_x = 32'sd0;
+            launch_sfu();
+            exp0 = sfu_y;
+            if (exp0 !== 32'd32767) begin
+                $display("FAIL SFU_EXP(0) actual=%0d", exp0);
+                $fatal(1);
+            end
+
+            sfu_x = -32'sd256;
+            launch_sfu();
+            exp_neg8 = sfu_y;
+            if (exp_neg8 >= exp0 || exp_neg8 !== 32'd11) begin
+                $display("FAIL SFU_EXP(-256) actual=%0d", exp_neg8);
+                $fatal(1);
+            end
+
+            sfu_op = SFU_RECIP;
+            sfu_x = 32'sd256;
+            launch_sfu();
+            if (sfu_y !== 32'd65536) begin
+                $display("FAIL SFU_RECIP actual=%0d", sfu_y);
+                $fatal(1);
+            end
+
+            sfu_op = SFU_RSQRT;
+            sfu_x = 32'sd256;
+            launch_sfu();
+            if (sfu_y !== 32'd1048576) begin
+                $display("FAIL SFU_RSQRT actual=%0d", sfu_y);
+                $fatal(1);
+            end
+        end
+    endtask
+
+    task automatic run_softmax_primitive_sequence_test;
+        integer i;
+        logic signed [31:0] row [0:3];
+        logic signed [31:0] max_value;
+        logic [31:0] exp_values [0:3];
+        logic [31:0] reciprocal;
+        begin
+            row[0] = 32'sd32;
+            row[1] = 32'sd0;
+            row[2] = -32'sd32;
+            row[3] = -32'sd512;
+
+            reduction_x_flat = '0;
+            for (i = 0; i < 4; i = i + 1) begin
+                set_reduce_x(i, row[i]);
+            end
+            reduction_length = 8'd4;
+            reduction_op = REDUCE_MAX;
+            launch_reduction();
+            max_value = reduction_result[31:0];
+            if (max_value !== 32'sd32) begin
+                $display("FAIL softmax sequence max actual=%0d", max_value);
+                $fatal(1);
+            end
+
+            vector_a_flat = '0;
+            vector_b_flat = '0;
+            vector_valid_mask = 8'h0f;
+            for (i = 0; i < 4; i = i + 1) begin
+                set_vec_a(i, row[i]);
+                set_vec_b(i, max_value);
+            end
+            vector_op = VEC_SUB;
+            launch_vector();
+            check_vec_y(0, 32'sd0);
+            check_vec_y(1, -32'sd32);
+            check_vec_y(2, -32'sd64);
+            check_vec_y(3, -32'sd544);
+
+            vector_a_flat = vector_y_flat;
+            vector_clamp_low = -32'sd256;
+            vector_clamp_high = 32'sd0;
+            vector_op = VEC_CLAMP;
+            launch_vector();
+            check_vec_y(0, 32'sd0);
+            check_vec_y(1, -32'sd32);
+            check_vec_y(2, -32'sd64);
+            check_vec_y(3, -32'sd256);
+
+            reduction_x_flat = '0;
+            for (i = 0; i < 4; i = i + 1) begin
+                sfu_op = SFU_EXP;
+                sfu_x = vector_y_flat[(i * DATA_WIDTH) +: DATA_WIDTH];
+                launch_sfu();
+                exp_values[i] = sfu_y;
+                set_reduce_x(i, sfu_y);
+            end
+            if (exp_values[0] !== 32'd32767 || exp_values[1] !== 32'd12055 ||
+                exp_values[2] !== 32'd4435 || exp_values[3] !== 32'd11) begin
+                $display("FAIL softmax sequence exp values");
+                $fatal(1);
+            end
+
+            reduction_length = 8'd4;
+            reduction_op = REDUCE_SUM;
+            launch_reduction();
+            if (reduction_result !== 64'd49268) begin
+                $display("FAIL softmax sequence exp sum actual=%0d", reduction_result);
+                $fatal(1);
+            end
+
+            sfu_op = SFU_RECIP;
+            sfu_x = reduction_result[31:0];
+            launch_sfu();
+            reciprocal = sfu_y;
+            if (reciprocal !== 32'd340) begin
+                $display("FAIL softmax sequence reciprocal actual=%0d", reciprocal);
+                $fatal(1);
+            end
+
+            vector_a_flat = '0;
+            for (i = 0; i < 4; i = i + 1) begin
+                set_vec_a(i, exp_values[i]);
+            end
+            vector_scalar = reciprocal;
+            vector_shift = 5'd9;
+            vector_op = VEC_SCALE;
+            launch_vector();
+            check_vec_y(0, 32'sd21759);
+            check_vec_y(1, 32'sd8005);
+            check_vec_y(2, 32'sd2945);
+            check_vec_y(3, 32'sd7);
+        end
+    endtask
+
+    task automatic run_rmsnorm_primitive_sequence_test;
+        integer i;
+        logic [31:0] inv_rms;
+        begin
+            reduction_x_flat = '0;
+            for (i = 0; i < 4; i = i + 1) begin
+                set_reduce_x(i, 32'sd8);
+            end
+            reduction_length = 8'd4;
+            reduction_op = REDUCE_SUMSQ;
+            launch_reduction();
+            if (reduction_result !== 64'd256) begin
+                $display("FAIL RMSNorm sequence sumsq actual=%0d", reduction_result);
+                $fatal(1);
+            end
+
+            sfu_op = SFU_RSQRT;
+            sfu_x = reduction_result[31:0];
+            launch_sfu();
+            inv_rms = sfu_y;
+            if (inv_rms !== 32'd1048576) begin
+                $display("FAIL RMSNorm sequence rsqrt actual=%0d", inv_rms);
+                $fatal(1);
+            end
+
+            vector_a_flat = '0;
+            vector_valid_mask = 8'h0f;
+            for (i = 0; i < 4; i = i + 1) begin
+                set_vec_a(i, 32'sd8);
+            end
+            vector_scalar = inv_rms;
+            vector_shift = 5'd20;
+            vector_op = VEC_SCALE;
+            launch_vector();
+            for (i = 0; i < 4; i = i + 1) begin
+                check_vec_y(i, 32'sd8);
+            end
+        end
+    endtask
+endmodule

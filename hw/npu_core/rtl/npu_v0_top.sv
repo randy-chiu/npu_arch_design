@@ -35,7 +35,6 @@ module npu_v0_top #(
 
     logic signed [7:0]  spad_a [0:RTL_MATMUL_ELEMS-1];
     logic signed [7:0]  spad_b [0:RTL_MATMUL_ELEMS-1];
-    logic signed [31:0] acc_buf [0:RTL_MATMUL_ELEMS-1];
     logic signed [15:0] vec_buf [0:RTL_SOFTMAX_LEN-1];
     logic signed [15:0] scalar_max;
     logic [15:0]        scalar_sum;
@@ -56,9 +55,17 @@ module npu_v0_top #(
     logic [(RTL_MATMUL_ELEMS*8)-1:0]  matmul_a_flat;
     logic [(RTL_MATMUL_ELEMS*8)-1:0]  matmul_b_flat;
     logic [(RTL_MATMUL_ELEMS*32)-1:0] matmul_result_flat;
+    logic [(RTL_MATMUL_ELEMS*32)-1:0] acc_read_data_flat;
+    logic acc_clear_request;
+    logic acc_read_enable;
+    logic acc_write_enable;
+    logic [31:0] acc_read_count;
+    logic [31:0] acc_write_count;
+    logic [31:0] acc_clear_count;
+    logic [31:0] acc_residency_cycles;
+    logic [31:0] acc_spill_count;
 
     integer idx;
-    integer commit_idx;
     integer host_lane_idx;
     integer host_read_lane_idx;
     logic [11:0] host_lane_addr;
@@ -79,6 +86,12 @@ module npu_v0_top #(
     assign perf_fetch_active = state == ST_FETCH;
     assign perf_matmul_active = state == ST_MATMUL;
     assign perf_done_active = state == ST_DONE;
+    assign acc_read_enable =
+        (state == ST_FETCH) &&
+        (instr_mem[pc][UOP_OPCODE_MSB:UOP_OPCODE_LSB] == UOP_STORE) &&
+        (instr_mem[pc][UOP_ARG0_MSB:UOP_ARG0_LSB] == TENSOR_C) &&
+        (instr_mem[pc][UOP_ARG1_MSB:UOP_ARG1_LSB] == BUF_ACC);
+    assign acc_write_enable = (state == ST_MATMUL) && matmul_done;
 
     matmul_array #(
         .M(RTL_MATMUL_M),
@@ -94,6 +107,28 @@ module npu_v0_top #(
         .result_flat(matmul_result_flat)
     );
 
+    accumulator_file #(
+        .TILE_ELEMS(RTL_MATMUL_ELEMS),
+        .ACC_WIDTH(32),
+        .BANKS(2),
+        .COUNTER_WIDTH(32)
+    ) u_accumulator_file (
+        .clk(clk),
+        .rst_n(rst_n),
+        .bank_select(1'b0),
+        .clear(acc_clear_request),
+        .read_enable(acc_read_enable),
+        .write_enable(acc_write_enable),
+        .accumulate_enable(matmul_accumulate_enable),
+        .write_data_flat(matmul_result_flat),
+        .read_data_flat(acc_read_data_flat),
+        .acc_read_count(acc_read_count),
+        .acc_write_count(acc_write_count),
+        .acc_clear_count(acc_clear_count),
+        .acc_residency_cycles(acc_residency_cycles),
+        .acc_spill_count(acc_spill_count)
+    );
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             for (idx = 0; idx < RTL_MATMUL_ELEMS; idx = idx + 1) begin
@@ -104,7 +139,6 @@ module npu_v0_top #(
                 dram_c[idx] <= '0;
                 spad_a[idx] <= '0;
                 spad_b[idx] <= '0;
-                acc_buf[idx] <= '0;
             end
             for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
                 dram_x[idx] <= '0;
@@ -117,7 +151,9 @@ module npu_v0_top #(
             matmul_accumulate_enable <= 1'b0;
             host_write_bank <= 1'b0;
             compute_bank_select <= 1'b0;
+            acc_clear_request <= 1'b0;
         end else begin
+            acc_clear_request <= 1'b0;
             for (host_lane_idx = 0; host_lane_idx < CORE_HOST_LANES; host_lane_idx = host_lane_idx + 1) begin
                 if (host_we[host_lane_idx]) begin
                     host_lane_addr = host_addr + host_lane_idx[11:0];
@@ -146,9 +182,7 @@ module npu_v0_top #(
                         host_write_bank <= host_wdata[(host_lane_idx * 32) + RTL_CTRL_HOST_WRITE_BANK_BIT];
                         compute_bank_select <= host_wdata[(host_lane_idx * 32) + RTL_CTRL_COMPUTE_BANK_SELECT_BIT];
                         if (host_wdata[(host_lane_idx * 32) + RTL_CTRL_ACCUMULATOR_CLEAR_BIT]) begin
-                            for (idx = 0; idx < RTL_MATMUL_ELEMS; idx = idx + 1) begin
-                                acc_buf[idx] <= '0;
-                            end
+                            acc_clear_request <= 1'b1;
                         end
                     end
                 end
@@ -238,13 +272,6 @@ module npu_v0_top #(
 
                 ST_MATMUL: begin
                     if (matmul_done) begin
-                        for (commit_idx = 0; commit_idx < RTL_MATMUL_ELEMS; commit_idx = commit_idx + 1) begin
-                            if (matmul_accumulate_enable) begin
-                                acc_buf[commit_idx] <= acc_buf[commit_idx] + $signed(matmul_result_flat[(commit_idx * 32) +: 32]);
-                            end else begin
-                                acc_buf[commit_idx] <= $signed(matmul_result_flat[(commit_idx * 32) +: 32]);
-                            end
-                        end
                         state <= ST_FETCH;
                     end
                 end
@@ -284,7 +311,9 @@ module npu_v0_top #(
         integer s;
         begin
             if (tensor == TENSOR_C && buffer == BUF_ACC) begin
-                for (s = 0; s < RTL_MATMUL_ELEMS; s = s + 1) dram_c[s] = acc_buf[s];
+                for (s = 0; s < RTL_MATMUL_ELEMS; s = s + 1) begin
+                    dram_c[s] = $signed(acc_read_data_flat[(s * 32) +: 32]);
+                end
             end else if (tensor == TENSOR_Y && buffer == BUF_VEC) begin
                 for (s = 0; s < RTL_SOFTMAX_LEN; s = s + 1) dram_y[s] = vec_buf[s][7:0];
             end

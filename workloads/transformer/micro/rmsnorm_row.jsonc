@@ -1,0 +1,8 @@
+{
+  "name": "rmsnorm_row",
+  "scenario": "transformer_decode",
+  "op": "rmsnorm_row",
+  "shape": {"elements": 64},
+  "status": "golden_model_only_v1",
+  "expected": "fixed_point_rmsnorm_reference"
+}

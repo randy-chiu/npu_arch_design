@@ -93,7 +93,7 @@ Read these first when entering the project:
 | [docs/design/](docs/design/) | Detailed module design docs for SoC, wrapper, NPU core, perf, verification, and software/hardware flow |
 | [docs/target_architecture.md](docs/target_architecture.md) | Research-backed target NPU architecture and staged evolution plan |
 | [docs/design/ppa_methodology.md](docs/design/ppa_methodology.md) | ASIC-oriented PPA boundaries, metrics, public target assumptions, and result contract |
-| [docs/design/transformer_workloads.md](docs/design/transformer_workloads.md) | LLM prefill/decode workload progression and architecture requirements |
+| [docs/design/transformer/](docs/design/transformer/) | Transformer-oriented NPU v1 architecture, workload progression, integration notes, and next-step plan |
 | [docs/README.md](docs/README.md) | Full docs map and current status of planning/history documents |
 | [docs/work_rules.md](docs/work_rules.md) | Collaboration and source-of-truth rules |
 | [docs/collaboration_journal.md](docs/collaboration_journal.md) | Current project snapshot, next plan, important decisions, and implementation history |

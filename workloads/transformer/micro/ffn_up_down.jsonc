@@ -1,0 +1,8 @@
+{
+  "name": "ffn_up_down",
+  "scenario": "transformer_decode",
+  "op": "matmul",
+  "shape": {"m": 1, "n": 256, "k": 64},
+  "status": "golden_model_only_v1",
+  "expected": "deterministic_int8_matmul_i32"
+}

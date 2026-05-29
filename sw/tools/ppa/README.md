@@ -23,6 +23,12 @@ This is a Level 0 report: performance is measured from RTL counters; area and
 energy are explicitly normalized proxies. The report includes
 candidate-versus-baseline deltas and exposes costs as well as improvements.
 
+Transformer-oriented fields such as matrix/GEMV/skinny-GEMM utilization,
+KV-cache bytes, bytes/token, and normalized energy/token are carried through
+from `build/perf/perf.json`. Utilization is derived from measured matrix-active
+cycles plus manifest shape metadata. KV-cache traffic and external-memory
+energy remain modeled manifest evidence, not measured power.
+
 Build targets:
 
 ```text

@@ -268,7 +268,7 @@ The implementation roadmap is:
 
 1. Keep the physical MAC tile unchanged.
    The core remains `M=8, N=8, K=8`, and K-streaming continues to accumulate
-   many physical chunks in `acc_buf`.
+   many physical chunks in the core accumulator file.
 2. Replace the debug-style wrapper-to-core preload path with a real movement
    path.
    The wrapper should configure movement; the movement path should fill core
@@ -283,8 +283,8 @@ The implementation roadmap is:
    chunk `i+1` into the inactive buffer.
 
 1. 保持物理 MAC tile 不变。
-   core 仍然是 `M=8, N=8, K=8`，K-streaming 继续在 `acc_buf` 中累加多个物理
-   chunks。
+   core 仍然是 `M=8, N=8, K=8`，K-streaming 继续在 core accumulator file 中
+   累加多个物理 chunks。
 2. 把 debug 风格的 wrapper-to-core preload 路径替换成真正的数据搬运路径。
    wrapper 应该只配置搬运；搬运路径应直接填充 core local storage，而不是像 CPU
    一样逐 word 写 host window。
@@ -429,8 +429,9 @@ active. The wrapper advances to the next chunk only after both conditions hold:
 core_done_seen && next_prefetch_done
 ```
 
-`acc_buf` is not banked. It remains the single resident accumulator for all K
-chunks in the descriptor.
+The current K-streaming contract uses one resident accumulator bank for all K
+chunks in the descriptor. The v1 `accumulator_file` module has two physical
+banks, but the v0 path currently selects bank 0 only.
 
 Current measured result for the full FC1 single-N-tile smoke:
 

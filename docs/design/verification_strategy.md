@@ -79,7 +79,7 @@ These tests catch software/tooling regressions before RTL simulation.
 `make npu-core-sim` builds:
 
 ```text
-hw/npu_core/rtl/matmul_array.sv
+hw/npu_core/rtl/matrix/matmul_array.sv
 hw/npu_core/rtl/npu_v0_top.sv
 hw/npu_core/tb/npu_v0_tb.sv
 ```

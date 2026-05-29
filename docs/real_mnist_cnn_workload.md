@@ -142,7 +142,7 @@ a float or mixed-precision datapath, this boundary can change.
 The current policy is defined in:
 
 ```text
-docs/design/quantization_strategy.md
+docs/design/v0_cnn/quantization_strategy.md
 ```
 
 ## Current Validation
@@ -179,7 +179,7 @@ It verifies:
   `A[8,9216] * B[9216,8] -> C[8,8]`, represented as one
   `MATMUL_K_STREAM` descriptor with `k_chunks=1152`. Firmware copies the packed
   stream into enlarged simulation SRAM, the wrapper streams all K chunks, and
-  the core keeps the partial sum resident in `acc_buf` until the final writeback;
+  the core keeps the partial sum resident in the accumulator file until the final writeback;
 - CPU-controlled SoC RTL now also runs all 16 full `fc1` output N tiles. The
   tool-side firmware data emitter plans `n_offset = 0, 8, ..., 120`; firmware
   loops over the generated plans, launches 16 `MATMUL_K_STREAM` descriptors,
@@ -329,7 +329,7 @@ real_mnist_cnn_fc1_k_stream_smoke
 
 This smoke uses the new `SOC_NPU_JOB_OP_MATMUL_K_STREAM` descriptor type. The
 wrapper fetches four packed A/B tile chunks inside one descriptor, starts the
-core once per chunk, the core accumulates into the same `acc_buf`, and the
+core once per chunk, the core accumulates into the same accumulator file bank, and the
 wrapper writes output once. It verifies K-axis streaming and accumulator
 residency, but it is still not full `fc1`; full `fc1` needs a compact staging
 or external loading path for 1152 chunks per N tile.
@@ -340,7 +340,7 @@ Two hardware options are under consideration:
    `8x8x64` or `8x8x128`, and let wrapper/data mover feed larger K chunks.
 2. Keep the physical array at `8x8` output lanes, but add an internal K-stream
    loop where the core repeatedly consumes K chunks and accumulates into the
-   same `acc_buf` before one final store.
+   same accumulator file bank before one final store.
 
 Option 2 is more scalable for `K=9216`, because a fully resident
 `8x8x9216` tile would require much larger A/B storage and long preload time.

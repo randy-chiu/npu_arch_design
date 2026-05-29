@@ -76,6 +76,24 @@ build/perf/perf.json
 build/perf/perf_report.html
 ```
 
+For Transformer-oriented v1 reporting, `report.py` also joins each workload
+with manifest shape metadata and derives analysis fields that are not yet all
+hardware CSRs:
+
+| Field | Source |
+| --- | --- |
+| `effective_mac_ops` | manifest logical shape, usually `M*N*K` for measured executable jobs |
+| `peak_mac_capacity` | `matrix_active_cycles * peak_macs_per_cycle` |
+| `matrix_utilization` | derived from useful MACs over peak capacity |
+| `gemv_utilization` | same utilization only for `M=1` or `N=1` shapes |
+| `skinny_gemm_utilization` | same utilization for skinny current-array-compatible shapes |
+| `kv_read_bytes` / `kv_write_bytes` | manifest external-memory fields |
+| `bytes_per_token` | manifest/model-only KV traffic normalization when available |
+
+When a workload is model-only or a hardware engine is not implemented yet, the
+corresponding utilization/cycle field is `null` or zero rather than reported as
+measured hardware behavior.
+
 ### Current Code Walkthrough
 
 `make perf-report` does not run a separate profiler. It rebuilds the

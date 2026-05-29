@@ -68,10 +68,11 @@ Major blocks inside the module:
 | --- | --- |
 | Host interface | Simple write/read ports: `host_we`, `host_addr`, `host_wdata`, `host_rdata` |
 | Tensor memories | Small register arrays for `dram_a`, `dram_b`, `dram_c`, `dram_x`, and `dram_y` |
-| On-chip buffers | Register arrays for `spad_a`, `spad_b`, `acc_buf`, and `vec_buf` |
+| On-chip buffers | Register arrays for `spad_a`, `spad_b`, and `vec_buf`; accumulator storage is in `matrix/accumulator_file.sv` |
 | Instruction memory | 16-entry register array, one 32-bit encoded micro-op per entry |
 | Sequencer | FSM with `ST_IDLE`, `ST_FETCH`, `ST_MATMUL`, and `ST_DONE` |
-| Matmul datapath | `matmul_array.sv` updates the 8x8 output tile in parallel, one K slice per active cycle |
+| Matmul datapath | `matrix/matmul_array.sv` updates the 8x8 output tile in parallel, one K slice per active cycle |
+| Accumulator file | `matrix/accumulator_file.sv` provides the matmul and K-stream resident int32 accumulator storage |
 | Vector datapath | Whole-vector task execution for each vector micro-op in `ST_FETCH` |
 
 ### Execution Model
@@ -99,7 +100,7 @@ DMA or multi-lane vector unit yet.
 `MATMUL` is the only operation that is explicitly multi-cycle in the current
 RTL. The old Phase 0 baseline walked the 8x8x8 nested loop with one MAC update
 per clock, so the compute phase took 512 cycles. A1 replaced that path with
-`matmul_array.sv`: it keeps 64 output accumulators and consumes one K slice per
+`matrix/matmul_array.sv`: it keeps 64 output accumulators and consumes one K slice per
 active cycle. The current measured core matmul phase is about 10 cycles,
 including launch/observe overhead around the 8 K steps.
 

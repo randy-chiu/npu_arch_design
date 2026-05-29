@@ -12,17 +12,19 @@ development work.
 | `npu_subsystem.md` | primary PPA top around wrapper/data mover/core with external memory boundary |
 | `npu_core.md` | NPU core memories, uop execution, matmul array, softmax path |
 | `software_hardware_flow.md` | compiler, assembler, firmware, descriptor ABI, CPU/NPU flow |
-| `quantization_strategy.md` | selected-layer quantization boundary, scale policy, bias handling |
-| `fc1_k_streaming_matmul.md` | K-axis streaming matmul contract for real MNIST CNN `fc1` |
-| `k_stream_ping_pong_buffer.md` | K-streaming ping-pong buffer overlap design |
 | `performance_instrumentation.md` | cycle counters, PERF_JOB schema, report lanes, perf-counter strategy |
 | `verification_strategy.md` | verification layers, current baselines, gaps, and test update rules |
 | `ppa_methodology.md` | ASIC-oriented PPA boundaries, metrics, targets, activity and result contracts |
-| `transformer_workloads.md` | LLM prefill/decode workload levels, initial kernels, precision and traffic requirements |
-| `transformer_workload_integration.md` | Transformer fixture/golden/manifest/perf/PPA integration plan that reuses the current NPU path |
 | `workload_manifest.md` | Explicit `job_id` to workload contract for repeatable perf/PPA grouping |
 | `directory_structure.md` | Current implementation paths and staged unified-NPU target layout |
 | `perf_counter_csr_plan.md` | Migration from testbench sampled counters to wrapper-visible counters |
+
+## Domain-Specific Subdirectories
+
+| Directory | Scope |
+| --- | --- |
+| `transformer/` | Transformer-oriented NPU v1 architecture, workloads, integration notes, and next-step plan |
+| `v0_cnn/` | V0/CNN-specific MNIST `fc1` K-streaming, ping-pong, and selected-layer quantization notes |
 
 If a change touches one of these areas, update the matching design document
 before implementing the change. After implementation, record the actual result,

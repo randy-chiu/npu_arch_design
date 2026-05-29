@@ -232,7 +232,7 @@ Use the most specific active document:
 | Firmware, compiler artifacts, CPU/NPU ABI | `docs/design/software_hardware_flow.md` |
 | Perf counters, report schema, UI lanes | `docs/design/performance_instrumentation.md` |
 | ASIC PPA boundary, metric or result schema | `docs/design/ppa_methodology.md` |
-| Transformer workload, trace or metric choice | `docs/design/transformer_workloads.md` |
+| Transformer workload, trace or metric choice | `docs/design/transformer/workloads.md` |
 | Tests and coverage | `docs/design/verification_strategy.md` |
 | Long-term direction | `docs/target_architecture.md` |
 

@@ -11,6 +11,7 @@ from pathlib import Path
 PERF_PREFIX = "PERF_JOB "
 DEFAULT_MODEL = {
     "matmul_tile": [8, 8, 8],
+    "peak_macs_per_cycle": 64,
     "matmul_array_control_cycles": 4,
     "data_mover_words_per_cycle": 4,
     "data_mover_setup_cycles_per_segment": 1,
@@ -22,6 +23,7 @@ def load_measurement_model(arch_path: Path, soc_path: Path) -> dict:
     soc = _read_jsonc(soc_path)
     return {
         "matmul_tile": [int(value) for value in arch["rtl"]["matmul_tile"]],
+        "peak_macs_per_cycle": int(arch["compute"].get("mac_lanes", 64)),
         "matmul_array_control_cycles": int(arch["rtl"]["matmul_array_control_cycles"]),
         "data_mover_words_per_cycle": int(soc["npu_data_mover"]["words_per_cycle"]),
         "data_mover_setup_cycles_per_segment": int(
@@ -273,6 +275,7 @@ def parse_perf_log(path: Path, manifest_path: Path | None = None, model: dict = 
             "workloads": len(workloads),
             "total_cycles": sum(job["total_cycles"] for job in jobs),
             "max_job_cycles": max(job["total_cycles"] for job in jobs),
+            "transformer": transformer_summary(workloads, model_only_workloads),
         },
         "highlights": highlights,
         "workloads": workloads,
@@ -392,24 +395,53 @@ def model_only_workloads_from_manifest(manifest: dict) -> list[dict]:
         metadata = definition.get("metadata", {})
         if not metadata.get("model_only"):
             continue
-        summaries.append(
-            {
-                "name": name,
-                "kind": definition.get("kind", "model_only"),
-                "job_ids": [],
-                "jobs": 0,
-                "total_cycles": 0,
-                "max_job_cycles": 0,
-                "core_matmul_cycles": 0,
-                "movement_sram_cycles": 0,
-                "wrapper": {},
-                "core": {},
-                "movement": {},
-                "data_mover": {},
-                "metadata": metadata,
-            }
-        )
+        summary = {
+            "name": name,
+            "kind": definition.get("kind", "model_only"),
+            "job_ids": [],
+            "jobs": 0,
+            "total_cycles": 0,
+            "max_job_cycles": 0,
+            "core_matmul_cycles": 0,
+            "movement_sram_cycles": 0,
+            "wrapper": {},
+            "core": {},
+            "movement": {},
+            "data_mover": {},
+            "metadata": metadata,
+        }
+        summary["transformer_metrics"] = transformer_metrics(summary, DEFAULT_MODEL)
+        summaries.append(summary)
     return summaries
+
+
+def transformer_summary(workloads: list[dict], model_only_workloads: list[dict]) -> dict:
+    all_workloads = workloads + model_only_workloads
+    prefill_cycles = sum(
+        int(workload.get("total_cycles", 0))
+        for workload in all_workloads
+        if workload.get("metadata", {}).get("workload_family") == "transformer_prefill"
+    )
+    decode_cycles = sum(
+        int(workload.get("total_cycles", 0))
+        for workload in all_workloads
+        if workload.get("metadata", {}).get("workload_family") == "transformer_decode"
+    )
+    kv_read = sum(
+        int(workload.get("transformer_metrics", {}).get("kv_read_bytes") or 0)
+        for workload in all_workloads
+    )
+    kv_write = sum(
+        int(workload.get("transformer_metrics", {}).get("kv_write_bytes") or 0)
+        for workload in all_workloads
+    )
+    return {
+        "prefill_cycles": prefill_cycles if prefill_cycles else None,
+        "decode_cycles_per_token": decode_cycles if decode_cycles else None,
+        "kv_read_bytes": kv_read,
+        "kv_write_bytes": kv_write,
+        "bytes_per_token": kv_read + kv_write if (kv_read or kv_write) else None,
+    }
 
 
 def build_highlights(workloads: list[dict], jobs: list[dict]) -> list[dict]:
@@ -609,7 +641,7 @@ def _workload_summary(
     movement_cycles = int(movement_totals.get("sram_read_cycles", 0)) + int(
         movement_totals.get("sram_write_cycles", 0)
     )
-    return {
+    summary = {
         "name": name,
         "kind": kind,
         "job_ids": [_job_id(job) for job in jobs],
@@ -624,6 +656,84 @@ def _workload_summary(
         "data_mover": data_mover_totals,
         "metadata": metadata or {},
     }
+    summary["transformer_metrics"] = transformer_metrics(summary, DEFAULT_MODEL)
+    return summary
+
+
+def transformer_metrics(workload: dict, model: dict = DEFAULT_MODEL) -> dict:
+    metadata = workload.get("metadata", {})
+    shape = metadata.get("logical_shape", {})
+    matrix_active = int(workload.get("core_matmul_cycles", 0))
+    peak_macs_per_cycle = int(model.get("peak_macs_per_cycle", 64))
+    effective_mac_ops = None
+    shape_class = metadata.get("shape_class")
+    if all(key in shape for key in ("m", "n", "k")):
+        m_dim = int(shape["m"])
+        n_dim = int(shape["n"])
+        k_dim = int(shape["k"])
+        effective_mac_ops = m_dim * n_dim * k_dim * max(1, int(workload.get("jobs", 0)))
+        if shape_class is None:
+            shape_class = classify_matrix_shape(m_dim, n_dim, k_dim)
+
+    peak_mac_capacity = matrix_active * peak_macs_per_cycle if matrix_active else None
+    matrix_utilization = (
+        round(float(effective_mac_ops) / float(peak_mac_capacity), 6)
+        if effective_mac_ops is not None and peak_mac_capacity
+        else None
+    )
+    is_model_only = bool(metadata.get("model_only")) or int(workload.get("jobs", 0)) == 0
+    effective_mac_ops_for_report = None if is_model_only else effective_mac_ops
+    if is_model_only:
+        peak_mac_capacity = None
+        matrix_utilization = None
+
+    external_memory = metadata.get("external_memory", {})
+    kv_read = int(metadata.get("kv_read_bytes", external_memory.get("kv_cache_read_bytes", 0)))
+    kv_write = int(metadata.get("kv_write_bytes", external_memory.get("kv_cache_write_bytes", 0)))
+    bytes_per_token = metadata.get("bytes_per_token")
+    if bytes_per_token is None and (kv_read or kv_write):
+        bytes_per_token = kv_read + kv_write
+
+    return {
+        "workload_family": metadata.get("workload_family"),
+        "shape_class": shape_class,
+        "matrix_active_cycles": matrix_active,
+        "vector_active_cycles": int(workload.get("core", {}).get("vector", 0)),
+        "reduction_active_cycles": int(workload.get("core", {}).get("reduction", 0)),
+        "sfu_active_cycles": int(workload.get("core", {}).get("sfu", 0)),
+        "data_mover_active_cycles": int(workload.get("data_mover", {}).get("transfer_cycles", 0)),
+        "stall_cycles_by_engine": {
+            "matrix": int(workload.get("core", {}).get("matrix_stall", 0)),
+            "vector": int(workload.get("core", {}).get("vector_stall", 0)),
+            "reduction": int(workload.get("core", {}).get("reduction_stall", 0)),
+            "sfu": int(workload.get("core", {}).get("sfu_stall", 0)),
+            "data_mover": int(workload.get("data_mover", {}).get("stall_cycles", 0)),
+        },
+        "effective_mac_ops": effective_mac_ops_for_report,
+        "peak_mac_capacity": peak_mac_capacity,
+        "matrix_utilization": matrix_utilization,
+        "gemv_utilization": matrix_utilization if shape_class == "gemv" else None,
+        "skinny_gemm_utilization": matrix_utilization if shape_class == "skinny_gemm" else None,
+        "tail_waste_mac_capacity": (
+            peak_mac_capacity - effective_mac_ops_for_report
+            if peak_mac_capacity is not None and effective_mac_ops_for_report is not None
+            else None
+        ),
+        "kv_read_bytes": kv_read,
+        "kv_write_bytes": kv_write,
+        "bytes_per_token": bytes_per_token,
+        "softmax_cycles": int(workload.get("core", {}).get("softmax", 0)) if not is_model_only else None,
+        "rmsnorm_cycles": int(workload.get("core", {}).get("rmsnorm", 0)) if not is_model_only else None,
+        "sfu_cycles": int(workload.get("core", {}).get("sfu", 0)) if not is_model_only else None,
+    }
+
+
+def classify_matrix_shape(m_dim: int, n_dim: int, k_dim: int) -> str:
+    if m_dim == 1 or n_dim == 1:
+        return "gemv"
+    if m_dim <= 8 or n_dim <= 8:
+        return "skinny_gemm"
+    return "full_tile_gemm"
 
 
 def _accumulate_counter_dict(dst: dict[str, int], src: dict) -> None:

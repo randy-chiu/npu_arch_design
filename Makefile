@@ -1,4 +1,4 @@
-.PHONY: test test-full demo digits-demo validate-arch soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke npu-core-sim npu-subsystem-elab rtl-sim soc-sim cpu-soc-sim cpu-soc-quick cpu-soc-transformer cpu-soc-cnn-full cpu-soc-all perf-report perf-l0-quick perf-l0-transformer perf-l0-cnn-full perf-l0-all ppa-l0-from-perf ppa-l0-report validate-ppa-l0 ppa-proxy-from-perf ppa-proxy-report validate-ppa-proxy
+.PHONY: test test-full demo digits-demo validate-arch soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke primitive-engines-sim npu-core-sim npu-subsystem-elab rtl-sim soc-sim cpu-soc-sim cpu-soc-quick cpu-soc-transformer cpu-soc-cnn-full cpu-soc-all perf-report perf-l0-quick perf-l0-transformer perf-l0-cnn-full perf-l0-all ppa-l0-from-perf ppa-l0-report validate-ppa-l0 ppa-proxy-from-perf ppa-proxy-report validate-ppa-proxy
 
 PYTHONPATH := sw/tools
 ARCH := arch/configs/npu_v0.jsonc
@@ -65,15 +65,25 @@ test-full:
 refresh-references:
 	PYTHONPATH=$(PYTHONPATH) python scripts/refresh_references.py --output references/discovered_references.md
 
+primitive-engines-sim:
+	mkdir -p build
+	iverilog -g2012 -o build/primitive_engines_tb \
+		hw/npu_core/rtl/vector/vector_engine.sv \
+		hw/npu_core/rtl/reduction/reduction_engine.sv \
+		hw/npu_core/rtl/sfu/sfu_lut.sv \
+		hw/npu_core/tb/primitive_engines_tb.sv
+	vvp build/primitive_engines_tb
+
 npu-core-sim: rtl-fixtures
 	mkdir -p build
-	iverilog -g2012 -I build/rtl_fixture -o build/npu_v0_tb hw/npu_core/rtl/matmul_array.sv hw/npu_core/rtl/npu_v0_top.sv hw/npu_core/tb/npu_v0_tb.sv
+	iverilog -g2012 -I build/rtl_fixture -o build/npu_v0_tb hw/npu_core/rtl/matrix/accumulator_file.sv hw/npu_core/rtl/matrix/matmul_array.sv hw/npu_core/rtl/npu_v0_top.sv hw/npu_core/tb/npu_v0_tb.sv
 	vvp build/npu_v0_tb
 
 npu-subsystem-elab: rtl-fixtures soc-spec npu-wrapper-spec
 	mkdir -p build/ppa/elab
 	iverilog -g2012 -t null -s npu_subsystem_top -I build/rtl_fixture -I build/soc -I build/npu_wrapper -I hw/npu_wrapper/rtl \
-		hw/npu_core/rtl/matmul_array.sv \
+		hw/npu_core/rtl/matrix/matmul_array.sv \
+		hw/npu_core/rtl/matrix/accumulator_file.sv \
 		hw/npu_core/rtl/npu_v0_top.sv \
 		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
@@ -84,7 +94,8 @@ rtl-sim: npu-core-sim
 soc-sim: rtl-fixtures soc-spec npu-wrapper-spec
 	mkdir -p build/soc
 	iverilog -g2012 -I build/rtl_fixture -I build/soc -I build/npu_wrapper -I hw/npu_wrapper/rtl -o build/soc/soc_tb \
-		hw/npu_core/rtl/matmul_array.sv \
+		hw/npu_core/rtl/matrix/matmul_array.sv \
+		hw/npu_core/rtl/matrix/accumulator_file.sv \
 		hw/npu_core/rtl/npu_v0_top.sv \
 		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
@@ -102,7 +113,8 @@ cpu-soc-sim: firmware-smoke
 	iverilog -g2012 -I build/rtl_fixture -I build/soc -I build/npu_wrapper -I hw/npu_wrapper/rtl -o build/soc/soc_cpu_tb \
 		hw/soc/cpu/third_party/picorv32/picorv32.v \
 		hw/soc/cpu/rtl/picorv32_native_cpu.sv \
-		hw/npu_core/rtl/matmul_array.sv \
+		hw/npu_core/rtl/matrix/matmul_array.sv \
+		hw/npu_core/rtl/matrix/accumulator_file.sv \
 		hw/npu_core/rtl/npu_v0_top.sv \
 		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
@@ -132,7 +144,8 @@ perf-report: firmware-smoke
 	iverilog -g2012 -I build/rtl_fixture -I build/soc -I build/npu_wrapper -I hw/npu_wrapper/rtl -o build/soc/soc_cpu_tb \
 		hw/soc/cpu/third_party/picorv32/picorv32.v \
 		hw/soc/cpu/rtl/picorv32_native_cpu.sv \
-		hw/npu_core/rtl/matmul_array.sv \
+		hw/npu_core/rtl/matrix/matmul_array.sv \
+		hw/npu_core/rtl/matrix/accumulator_file.sv \
 		hw/npu_core/rtl/npu_v0_top.sv \
 		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \

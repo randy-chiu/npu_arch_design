@@ -58,7 +58,7 @@ shift from one MAC per cycle to many MACs per cycle.
 New module:
 
 ```text
-hw/npu_core/rtl/matmul_array.sv
+hw/npu_core/rtl/matrix/matmul_array.sv
 ```
 
 Interface:
@@ -80,7 +80,7 @@ module matmul_array #(
 ```
 
 The module uses packed flat ports. `npu_v0_top` flattens `spad_a/spad_b` and
-unpacks `result_flat` into `acc_buf`. This keeps the module internal interface
+unpacks `result_flat` into the core accumulator storage. This keeps the module internal interface
 simulator-friendly and closer to a future synthesizable boundary.
 
 ## Core Integration
@@ -99,7 +99,7 @@ On `UOP_MATMUL`:
 1. pulse `matmul_start`;
 2. enter `ST_MATMUL`;
 3. wait for `matmul_done`;
-4. copy/commit array results into `acc_buf`;
+4. copy/commit array results into accumulator storage;
 5. return to `ST_FETCH`.
 
 The program format does not change. Existing matmul fixtures, SoC firmware, and
@@ -199,13 +199,13 @@ debug, but it did not model a modern tensor/cube-style matrix engine.
 
 ### New Array-Style Engine
 
-The new implementation moves matmul into `hw/npu_core/rtl/matmul_array.sv`.
+The new implementation moves matmul into `hw/npu_core/rtl/matrix/matmul_array.sv`.
 `npu_v0_top.sv` now only:
 
 1. flattens `spad_a` and `spad_b`;
 2. pulses `matmul_start`;
 3. waits for `matmul_done`;
-4. commits `result_flat` back into `acc_buf`.
+4. commits `result_flat` back into accumulator storage.
 
 Inside `matmul_array.sv`, one active cycle processes one K slice:
 

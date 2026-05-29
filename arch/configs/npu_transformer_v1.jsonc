@@ -1,0 +1,76 @@
+{
+  // Transformer-oriented NPU v1 architecture contract. This file is a
+  // planning/source-of-truth config for v1 features; the current verified RTL
+  // still builds from arch/configs/npu_v0.jsonc until each v1 feature is
+  // implemented and gated.
+  "name": "npu_transformer_v1",
+  "version": 1,
+  "model_envelope": {
+    "batch": 1,
+    "model": "tiny_decoder_only_transformer",
+    "seq_len": [32, 128],
+    "hidden": [64, 128],
+    "heads": 4,
+    "head_dim": [16, 32],
+    "ffn_hidden": [256, 512]
+  },
+  "data_types": {
+    "activation": "int8",
+    "weight": "int8",
+    "accumulator": "int32",
+    "kv_cache": "int8",
+    "softmax_internal": "fixed_point"
+  },
+  "modules": {
+    "wrapper_csr": true,
+    "descriptor_engine": true,
+    "uop_scheduler": "in_order_v1",
+    "matrix_engine": {"tile": [8, 8, 8], "peak_macs_per_cycle": 64},
+    "accumulator_file": {"dtype": "int32", "tile": [8, 8], "banks": 2},
+    "vector_engine": {"lanes": 8, "dtypes": ["int16", "int32"]},
+    "reduction_engine": {"lanes": 8, "max_len": 128},
+    "sfu": {"exp_lut_entries": 257, "ops": ["EXP", "RECIP", "RSQRT"]},
+    "kv_cache_streamer": {"v1": "spec_and_counters_only"}
+  },
+  "primitive_uops": [
+    "LOAD_TILE",
+    "STORE_TILE",
+    "MATMUL",
+    "GEMV",
+    "VEC_ADD",
+    "VEC_SUB",
+    "VEC_MUL",
+    "VEC_SCALE",
+    "VEC_REQUANT",
+    "VEC_CLAMP",
+    "REDUCE_MAX",
+    "REDUCE_SUM",
+    "REDUCE_SUMSQ",
+    "SFU_EXP",
+    "SFU_RECIP",
+    "SFU_RSQRT",
+    "CLEAR_ACC",
+    "BARRIER",
+    "HALT"
+  ],
+  "perf_metrics": {
+    "active_stall_idle_semantics": true,
+    "required": [
+      "matrix_active_cycles",
+      "vector_active_cycles",
+      "reduction_active_cycles",
+      "sfu_active_cycles",
+      "data_mover_active_cycles",
+      "stall_cycles_by_engine",
+      "effective_mac_ops",
+      "peak_mac_capacity",
+      "matrix_utilization",
+      "gemv_utilization",
+      "skinny_gemm_utilization",
+      "kv_read_bytes",
+      "kv_write_bytes",
+      "bytes_per_token",
+      "energy_proxy_per_token"
+    ]
+  }
+}

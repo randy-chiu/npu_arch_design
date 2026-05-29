@@ -113,6 +113,11 @@ def build_workload_proxy(
     }
     total_energy = sum(contributions.values())
     mac_ops = events["int8_mac_accumulate"]
+    transformer_metrics = workload.get("transformer_metrics", {})
+    energy_per_token = None
+    bytes_per_token = transformer_metrics.get("bytes_per_token")
+    if bytes_per_token is not None and bytes_per_token != 0:
+        energy_per_token = round(total_energy, 3)
     return {
         "name": workload["name"],
         "kind": workload.get("kind", "unknown"),
@@ -121,6 +126,20 @@ def build_workload_proxy(
             "cycles": int(workload["total_cycles"]),
             "core_matmul_cycles": int(workload.get("core_matmul_cycles", 0)),
             "data_mover_words": int(workload.get("data_mover", {}).get("words", 0)),
+            "effective_mac_per_cycle": (
+                round(float(transformer_metrics["effective_mac_ops"]) / float(workload["total_cycles"]), 6)
+                if transformer_metrics.get("effective_mac_ops") is not None and int(workload["total_cycles"]) > 0
+                else None
+            ),
+            "matrix_utilization": transformer_metrics.get("matrix_utilization"),
+            "gemv_utilization": transformer_metrics.get("gemv_utilization"),
+            "skinny_gemm_utilization": transformer_metrics.get("skinny_gemm_utilization"),
+            "kv_read_bytes": transformer_metrics.get("kv_read_bytes", 0),
+            "kv_write_bytes": transformer_metrics.get("kv_write_bytes", 0),
+            "bytes_per_token": bytes_per_token,
+            "softmax_cycles": transformer_metrics.get("softmax_cycles"),
+            "rmsnorm_cycles": transformer_metrics.get("rmsnorm_cycles"),
+            "sfu_cycles": transformer_metrics.get("sfu_cycles"),
             "provenance": performance_provenance,
         },
         "energy_proxy": {
@@ -143,8 +162,10 @@ def build_workload_proxy(
             "normalized_energy_per_mac": (
                 round(total_energy / mac_ops, 6) if mac_ops else None
             ),
+            "normalized_energy_per_token": energy_per_token,
         },
         "metadata": workload.get("metadata", {}),
+        "transformer_metrics": transformer_metrics,
     }
 
 
@@ -308,8 +329,11 @@ def derive_workload_events(workload: dict[str, Any], energy_cfg: dict[str, Any])
     matmul_tiles = core_matmul_cycles // matmul_cycles_per_tile
     data_mover = workload.get("data_mover", {})
     external_bytes = external_memory_bytes(workload.get("metadata", {}))
+    transformer_mac_ops = workload.get("transformer_metrics", {}).get("effective_mac_ops")
     return {
-        "int8_mac_accumulate": matmul_tiles * mac_ops_per_tile,
+        "int8_mac_accumulate": int(transformer_mac_ops)
+        if transformer_mac_ops is not None
+        else matmul_tiles * mac_ops_per_tile,
         "data_mover_read_word": int(data_mover.get("read_words", 0)),
         "data_mover_write_word": int(data_mover.get("write_words", 0)),
         "active_subsystem_cycle": int(workload["total_cycles"]),
@@ -379,6 +403,9 @@ def write_html(report: dict[str, Any], path: Path) -> None:
         f"<td>{html.escape(item['name'])}</td>"
         f"<td>{item['performance']['cycles']}</td>"
         f"<td>{item['energy_proxy']['events']['int8_mac_accumulate']}</td>"
+        f"<td>{html.escape(str(item['performance'].get('matrix_utilization')))}</td>"
+        f"<td>{html.escape(str(item['performance'].get('gemv_utilization')))}</td>"
+        f"<td>{html.escape(str(item['performance'].get('kv_read_bytes')))}</td>"
         f"<td>{item['performance']['data_mover_words']}</td>"
         f"<td>{item['energy_proxy']['normalized_energy_units']}</td>"
         "</tr>"
@@ -473,7 +500,7 @@ def write_html(report: dict[str, Any], path: Path) -> None:
   <section>
     <h2>Workloads</h2>
     <table>
-      <thead><tr><th>Name</th><th>Measured cycles</th><th>Derived MAC ops</th><th>Moved words</th><th>Energy proxy</th></tr></thead>
+      <thead><tr><th>Name</th><th>Measured cycles</th><th>Derived MAC ops</th><th>Matrix util</th><th>GEMV util</th><th>KV read bytes</th><th>Moved words</th><th>Energy proxy</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>
   </section>

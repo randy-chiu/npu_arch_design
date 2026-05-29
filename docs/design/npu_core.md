@@ -65,19 +65,20 @@ executing.
 | `instr_mem` | 32 | 16 | encoded uop program |
 | `spad_a` | signed 8 | 64 | matmul A scratchpad |
 | `spad_b` | signed 8 | 64 | matmul B scratchpad |
-| `acc_buf` | signed 32 | 64 | matmul accumulator/output staging |
+| `accumulator_file` | signed 32 | 2 banks x 64 | matmul accumulator/output staging; v0 currently uses bank 0 |
 | `vec_buf` | signed 16 | 8 | softmax vector staging |
 
 Names like `dram_a` are historical. These are internal core arrays in the
 current RTL, not external DRAM.
 
-For K-streaming matmul, `acc_buf` is the resident partial-sum buffer. The A/B
-preload and scratchpad arrays remain one `8x8` tile each; they are overwritten
-for every K chunk while `acc_buf` persists until the final store.
+For K-streaming matmul, `matrix/accumulator_file.sv` is the resident
+partial-sum storage. The A/B preload and scratchpad arrays remain one `8x8`
+tile each; they are overwritten for every K chunk while accumulator bank 0
+persists until the final store.
 
-对于 K-streaming matmul，`acc_buf` 是常驻 partial-sum buffer。A/B preload 和
-scratchpad 数组仍然各自只保存一个 `8x8` tile；每个 K chunk 都会覆盖它们，而
-`acc_buf` 会一直保持到最终 store。
+对于 K-streaming matmul，`matrix/accumulator_file.sv` 是常驻 partial-sum
+storage。A/B preload 和 scratchpad 数组仍然各自只保存一个 `8x8` tile；每个
+K chunk 都会覆盖它们，而 accumulator bank 0 会一直保持到最终 store。
 
 ## 4. Host Window Map
 
@@ -146,7 +147,7 @@ Behavior:
   parallel;
 - each active cycle performs 64 signed int8-by-int8 MACs into int32 results;
 - after `K` slices, assert `done`;
-- `npu_v0_top` commits `result_flat` into `acc_buf`.
+- `npu_v0_top` commits `result_flat` into `accumulator_file`.
 
 The nested `for i/j` loops inside the clocked block describe many same-cycle
 register updates, not software-style serial loop execution. Only `k_idx`
@@ -154,7 +155,7 @@ advances across cycles. This is why the measured matmul compute phase moved
 from the old 512-cycle scalar baseline to about 10 cycles.
 
 For a cycle-by-cycle diagram of the current 64-MAC/cycle behavior, see
-`docs/design/fc1_k_streaming_matmul.md`, section
+`docs/design/v0_cnn/fc1_k_streaming_matmul.md`, section
 `2.1 Cycle-By-Cycle Example / 逐拍计算例子`.
 
 K-streaming matmul does not change this physical parallelism. It repeats the
@@ -162,13 +163,13 @@ same `8x8x8` array operation for multiple K chunks and changes the commit
 semantics from:
 
 ```text
-acc_buf = tile_result
+accumulator_file = tile_result
 ```
 
 to:
 
 ```text
-acc_buf += tile_result
+accumulator_file += tile_result
 ```
 
 when `matmul_accumulate_enable` is set through host address `0x500`.

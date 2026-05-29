@@ -21,7 +21,7 @@ Current priority update:
   reason to extend the architecture;
 - additional datapath features must be evaluated using the PPA contract in
   `docs/design/ppa_methodology.md` and workload plan in
-  `docs/design/transformer_workloads.md`.
+  `docs/design/transformer/workloads.md`.
 
 ## 1. Research Snapshot
 
