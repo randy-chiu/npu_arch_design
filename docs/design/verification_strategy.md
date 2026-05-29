@@ -14,10 +14,10 @@ For most changes, the minimum gate is:
 
 ```text
 make test
-make perf-report
+make ppa-l0-report
 ```
 
-`make perf-report` matters because many recent changes are performance-structure
+`make ppa-l0-report` matters because many recent changes are performance-structure
 changes. Functional PASS alone is not enough if timeline/counter behavior
 silently regresses.
 
@@ -31,13 +31,36 @@ silently regresses.
 | RTL fixture generation | `make rtl-fixtures` | produce RTL hex/includes from tooling |
 | NPU core RTL | `make npu-core-sim` | standalone NPU core fixture test |
 | Wrapper/SoC legacy path | `make soc-sim` | direct wrapper-window path |
-| CPU firmware SoC | `make cpu-soc-sim` | PicoRV32 firmware launches descriptor jobs |
-| Perf report | `make perf-report` | CPU SoC simulation plus JSON/HTML performance report |
+| CPU firmware SoC quick | `make cpu-soc-quick` or `make cpu-soc-sim` | PicoRV32 firmware launches quick descriptor jobs |
+| CPU firmware SoC full CNN | `make cpu-soc-cnn-full` | Explicit long real-MNIST CNN full-`fc1` regression |
+| CPU firmware SoC all | `make cpu-soc-all` | Full CNN plus Transformer workload profile |
+| Perf report | `make perf-report` | CPU SoC simulation plus JSON/HTML performance report for `WORKLOAD_PROFILE` |
 | NPU subsystem elaboration | `make npu-subsystem-elab` | check the primary PPA RTL boundary compiles without simulation SoC memories |
 | PPA contract | `test/ppa_contract/test_ppa_contract.py` | check PPA target/schema and Transformer manifest contracts |
-| PPA proxy report | `make ppa-proxy-report` | produce Level 0 measured-performance and normalized area/energy proxy output |
-| Fast PPA derivative | `make ppa-proxy-from-perf` | regenerate and validate proxy output from an existing perf artifact; not a substitute for the full gate |
-| Full unit gate | `make test` | Python tests and available RTL sims |
+| PPA L0 report | `make ppa-l0-report` | produce Level 0 measured-performance and normalized area/energy estimate output |
+| Fast PPA L0 derivative | `make ppa-l0-from-perf` | regenerate and validate L0 output from an existing perf artifact; not a substitute for a fresh simulation gate |
+| Full unit gate | `make test` | Python tests and available RTL sims, using quick firmware profile by default |
+
+Compatibility aliases remain available:
+
+```text
+make ppa-proxy-report
+make ppa-proxy-from-perf
+make validate-ppa-proxy
+```
+
+They call the new `ppa-l0-*` targets. New documentation should prefer the
+`ppa-l0-*` names because `proxy` can be mistaken for a software or network
+agent rather than a Level 0 estimate.
+
+Workload profiles:
+
+| Profile | Target examples | Contents |
+| --- | --- | --- |
+| `quick` | `make cpu-soc-quick`, default `make test` | operator smoke, digits classifier, tiny Transformer micro workloads |
+| `transformer` | `make cpu-soc-transformer` | same executable coverage as quick today, reserved for Transformer-focused growth |
+| `cnn-full` | `make cpu-soc-cnn-full` | operator smoke, digits classifier, real MNIST CNN full `fc1`/`fc2`; no Transformer micro jobs |
+| `all` | `make cpu-soc-all`, `make test-full` | real MNIST CNN full path plus Transformer micro jobs |
 
 ## 3. Golden And Simulator Tests
 
@@ -76,7 +99,9 @@ This path should not be treated as the main firmware flow.
 
 ## 6. CPU-Controlled SoC Test
 
-`make cpu-soc-sim` is the main functional system test.
+`make cpu-soc-sim` is the main functional system test. It uses the quick
+workload profile by default; use `make cpu-soc-cnn-full` or `make cpu-soc-all`
+when the long full-CNN path is required.
 
 It verifies:
 
@@ -141,13 +166,13 @@ and executable.
 Current Level 0 entry point:
 
 ```text
-make ppa-proxy-report
+make ppa-l0-report
 ```
 
 For schema/report-only iteration after a successful perf run:
 
 ```text
-make ppa-proxy-from-perf
+make ppa-l0-from-perf
 ```
 
 Generated outputs:
@@ -197,7 +222,7 @@ MAC work and moved words unchanged. The Level 0 model attributes only
 `78264.0 normalized_energy_units` of modeled reduction to the shorter active
 duration; it does not claim measured power or external-memory energy savings.
 
-The current named baseline comparison in `make ppa-proxy-report` is:
+The current named baseline comparison in the full-CNN Level 0 report is:
 
 ```text
 baseline:  npu_v0_a2_serial_k_stream

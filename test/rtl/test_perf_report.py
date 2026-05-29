@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from perf.report import build_highlights, load_measurement_model, parse_perf_log, write_html, write_json
+from transformer.generate_transformer_micro_fixtures import generate_transformer_micro_fixtures
 
 
 class PerfReportTests(unittest.TestCase):
@@ -82,6 +83,40 @@ class PerfReportTests(unittest.TestCase):
             1152,
         )
 
+    def test_firmware_fixture_tool_can_append_transformer_manifest_entries(self):
+        tool_path = Path("sw/tools/firmware/emit_soc_cpu_smoke_data.py")
+        spec = importlib.util.spec_from_file_location("emit_soc_cpu_smoke_data", tool_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        transformer_micro = generate_transformer_micro_fixtures()
+        with TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "manifest.json"
+            module._write_workload_manifest(
+                manifest_path,
+                16,
+                1,
+                1,
+                16,
+                1152,
+                32,
+                transformer_micro=transformer_micro,
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(manifest["jobs"]), 70)
+        self.assertEqual(manifest["manifest_id"], "soc_cpu_smoke_quick_v0")
+        self.assertEqual(manifest["jobs"][-2]["workload"], "transformer_prefill_gemm_tiny")
+        self.assertEqual(manifest["jobs"][-1]["workload"], "transformer_decode_skinny_gemm_m8_compat")
+        self.assertEqual(
+            manifest["workload_metadata"]["transformer_prefill_gemm_tiny"]["metadata"]["scenario"],
+            "transformer_prefill",
+        )
+        self.assertTrue(
+            manifest["workload_metadata"]["transformer_kv_cache_traffic_tiny"]["metadata"]["model_only"]
+        )
+
     def test_manifest_groups_jobs_by_job_id_not_log_order(self):
         with TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -126,6 +161,60 @@ class PerfReportTests(unittest.TestCase):
             self.assertEqual(report["workloads"][0]["job_ids"], [4])
             self.assertEqual(report["workloads"][1]["name"], "vector_regression")
             self.assertEqual(report["workloads"][1]["job_ids"], [7])
+
+    def test_manifest_preserves_transformer_metadata_and_model_only_workloads(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "perf.log"
+            manifest_path = tmp_path / "manifest.json"
+            log_path.write_text(
+                _perf_job_line(1, "matmul_k_stream", 128, matmul_cycles=20).replace(
+                    '{"id":1', '{"job_id":1,"id":1'
+                ),
+                encoding="utf-8",
+            )
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "npu_workload_manifest_v0",
+                        "manifest_id": "transformer_unit_v0",
+                        "run_name": "unit",
+                        "workload_metadata": {
+                            "transformer_prefill_gemm_tiny": {
+                                "kind": "transformer_micro",
+                                "metadata": {
+                                    "scenario": "transformer_prefill",
+                                    "logical_shape": {"m": 8, "n": 8, "k": 16},
+                                    "external_memory": {"weight_read_bytes": 128},
+                                },
+                            },
+                            "transformer_kv_cache_traffic_tiny": {
+                                "kind": "transformer_model_only",
+                                "metadata": {
+                                    "scenario": "transformer_decode",
+                                    "model_only": True,
+                                    "external_memory": {"kv_cache_read_bytes": 1024},
+                                },
+                            },
+                        },
+                        "jobs": [
+                            {
+                                "job_id": 1,
+                                "workload": "transformer_prefill_gemm_tiny",
+                                "op": "matmul_k_stream",
+                                "role": "transformer_micro",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = parse_perf_log(log_path, manifest_path)
+
+        self.assertEqual(report["workloads"][0]["metadata"]["scenario"], "transformer_prefill")
+        self.assertEqual(report["model_only_workloads"][0]["name"], "transformer_kv_cache_traffic_tiny")
+        self.assertEqual(report["model_only_workloads"][0]["metadata"]["external_memory"]["kv_cache_read_bytes"], 1024)
 
     def test_manifest_requires_explicit_perf_job_id(self):
         with TemporaryDirectory() as tmp:

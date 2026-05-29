@@ -44,6 +44,16 @@ static uint32_t real_mnist_cnn_fc2_c_tile_sram[REAL_MNIST_CNN_FC2_TILE_WORDS];
 static int32_t real_mnist_cnn_fc2_logits_sram[REAL_MNIST_CNN_FC2_LOGITS_WORDS];
 #endif
 
+#if TRANSFORMER_MICRO_ENABLED
+static uint32_t transformer_prefill_gemm_tiny_a_sram[TRANSFORMER_PREFILL_GEMM_TINY_CHUNKS][TRANSFORMER_PREFILL_GEMM_TINY_TILE_WORDS];
+static uint32_t transformer_prefill_gemm_tiny_b_sram[TRANSFORMER_PREFILL_GEMM_TINY_CHUNKS][TRANSFORMER_PREFILL_GEMM_TINY_TILE_WORDS];
+static uint32_t transformer_prefill_gemm_tiny_c_sram[TRANSFORMER_PREFILL_GEMM_TINY_TILE_WORDS];
+
+static uint32_t transformer_decode_skinny_gemm_m8_compat_a_sram[TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_CHUNKS][TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS];
+static uint32_t transformer_decode_skinny_gemm_m8_compat_b_sram[TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_CHUNKS][TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS];
+static uint32_t transformer_decode_skinny_gemm_m8_compat_c_sram[TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS];
+#endif
+
 static soc_npu_job_desc_t job_desc;
 static npu_perf_snapshot_t perf_snapshot;
 
@@ -364,6 +374,63 @@ static int run_real_mnist_cnn_fc2(void)
 }
 #endif
 
+#if TRANSFORMER_MICRO_ENABLED
+static int run_transformer_prefill_gemm_tiny(void)
+{
+    for (uint32_t chunk = 0; chunk < TRANSFORMER_PREFILL_GEMM_TINY_CHUNKS; ++chunk) {
+        copy_words(transformer_prefill_gemm_tiny_a_sram[chunk], transformer_prefill_gemm_tiny_a[chunk],
+                   TRANSFORMER_PREFILL_GEMM_TINY_TILE_WORDS);
+        copy_words(transformer_prefill_gemm_tiny_b_sram[chunk], transformer_prefill_gemm_tiny_b[chunk],
+                   TRANSFORMER_PREFILL_GEMM_TINY_TILE_WORDS);
+    }
+
+    job_desc.op_type = SOC_NPU_JOB_OP_MATMUL_K_STREAM;
+    job_desc.job_id = JOB_ID_TRANSFORMER_PREFILL_GEMM_TINY;
+    job_desc.program_addr = ptr32(matmul_program_sram);
+    job_desc.program_words = MATMUL_PROGRAM_LEN;
+    job_desc.input0_addr = ptr32(transformer_prefill_gemm_tiny_a_sram);
+    job_desc.input0_words = TRANSFORMER_PREFILL_GEMM_TINY_TILE_WORDS;
+    job_desc.input1_addr = ptr32(transformer_prefill_gemm_tiny_b_sram);
+    job_desc.input1_words = TRANSFORMER_PREFILL_GEMM_TINY_TILE_WORDS;
+    job_desc.output_addr = ptr32(transformer_prefill_gemm_tiny_c_sram);
+    job_desc.output_words = TRANSFORMER_PREFILL_GEMM_TINY_TILE_WORDS;
+    job_desc.k_chunks = TRANSFORMER_PREFILL_GEMM_TINY_CHUNKS;
+    run_job();
+
+    return check_words(transformer_prefill_gemm_tiny_c_sram, transformer_prefill_gemm_tiny_expected_c,
+                       TRANSFORMER_PREFILL_GEMM_TINY_TILE_WORDS, 0xb00u);
+}
+
+static int run_transformer_decode_skinny_gemm_m8_compat(void)
+{
+    for (uint32_t chunk = 0; chunk < TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_CHUNKS; ++chunk) {
+        copy_words(transformer_decode_skinny_gemm_m8_compat_a_sram[chunk],
+                   transformer_decode_skinny_gemm_m8_compat_a[chunk],
+                   TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS);
+        copy_words(transformer_decode_skinny_gemm_m8_compat_b_sram[chunk],
+                   transformer_decode_skinny_gemm_m8_compat_b[chunk],
+                   TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS);
+    }
+
+    job_desc.op_type = SOC_NPU_JOB_OP_MATMUL_K_STREAM;
+    job_desc.job_id = JOB_ID_TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT;
+    job_desc.program_addr = ptr32(matmul_program_sram);
+    job_desc.program_words = MATMUL_PROGRAM_LEN;
+    job_desc.input0_addr = ptr32(transformer_decode_skinny_gemm_m8_compat_a_sram);
+    job_desc.input0_words = TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS;
+    job_desc.input1_addr = ptr32(transformer_decode_skinny_gemm_m8_compat_b_sram);
+    job_desc.input1_words = TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS;
+    job_desc.output_addr = ptr32(transformer_decode_skinny_gemm_m8_compat_c_sram);
+    job_desc.output_words = TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS;
+    job_desc.k_chunks = TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_CHUNKS;
+    run_job();
+
+    return check_words(transformer_decode_skinny_gemm_m8_compat_c_sram,
+                       transformer_decode_skinny_gemm_m8_compat_expected_c,
+                       TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS, 0xc00u);
+}
+#endif
+
 int main(void)
 {
     copy_words(matmul_a_sram, matmul_a, MATMUL_A_LEN);
@@ -431,6 +498,15 @@ int main(void)
     #endif
 
     if (!run_real_mnist_cnn_fc2()) {
+        return 1;
+    }
+#endif
+
+#if TRANSFORMER_MICRO_ENABLED
+    if (!run_transformer_prefill_gemm_tiny()) {
+        return 1;
+    }
+    if (!run_transformer_decode_skinny_gemm_m8_compat()) {
         return 1;
     }
 #endif

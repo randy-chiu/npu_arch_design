@@ -194,6 +194,64 @@ class PPAContractTests(unittest.TestCase):
         self.assertIn("transformer_prefill", scenarios)
         self.assertIn("transformer_decode", scenarios)
         self.assertTrue(any(workload["op"] == "memory_traffic" for workload in manifest["workloads"]))
+        for workload in manifest["workloads"]:
+            self.assertIn("activity_scope", workload)
+            self.assertIn("external_memory", workload)
+
+    def test_proxy_report_keeps_transformer_external_memory_modeled_separately(self):
+        perf = {
+            "source": {"performance": "measured_architectural_perf_csr_snapshot"},
+            "workloads": [
+                {
+                    "name": "transformer_prefill_gemm_tiny",
+                    "kind": "transformer_micro",
+                    "jobs": 1,
+                    "total_cycles": 128,
+                    "core_matmul_cycles": 20,
+                    "data_mover": {"words": 512, "read_words": 448, "write_words": 64},
+                    "metadata": {
+                        "external_memory": {
+                            "activation_read_bytes": 128,
+                            "activation_write_bytes": 256,
+                            "weight_read_bytes": 128,
+                            "kv_cache_read_bytes": 0,
+                            "kv_cache_write_bytes": 0,
+                        }
+                    },
+                }
+            ],
+            "model_only_workloads": [
+                {
+                    "name": "transformer_kv_cache_traffic_tiny",
+                    "kind": "transformer_model_only",
+                    "jobs": 0,
+                    "total_cycles": 0,
+                    "core_matmul_cycles": 0,
+                    "data_mover": {},
+                    "metadata": {
+                        "model_only": True,
+                        "external_memory": {
+                            "kv_cache_read_bytes": 1024,
+                            "kv_cache_write_bytes": 512,
+                        },
+                    },
+                }
+            ],
+            "highlights": [],
+        }
+
+        report = build_proxy_report(perf, read_jsonc(AREA_PROXY_PATH), read_jsonc(ENERGY_PROXY_PATH))
+        validate_proxy_report(report)
+        prefill = report["workloads"][0]
+        kv = report["workloads"][1]
+
+        self.assertEqual(prefill["energy_proxy"]["events"]["external_memory_byte"], 512)
+        self.assertEqual(
+            prefill["energy_proxy"]["contribution_groups"]["modeled_external_memory"],
+            512 * 20.0,
+        )
+        self.assertEqual(kv["performance"]["provenance"], "modeled_manifest_only")
+        self.assertEqual(kv["energy_proxy"]["events"]["external_memory_byte"], 1536)
 
     @unittest.skipUnless(shutil.which("iverilog"), "iverilog not installed")
     def test_npu_subsystem_boundary_elaborates(self):

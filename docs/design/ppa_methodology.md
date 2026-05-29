@@ -312,11 +312,15 @@ directly comparable to a baseline only when schema, evidence level, proxy
 coefficient model/units, common workload names, and declared
 `workload_manifest_id` are compatible.
 
-`make ppa-proxy-report` remains the complete validation gate because it
+`make ppa-l0-report` remains the complete validation gate because it
 regenerates RTL-measured performance. When an existing `build/perf/perf.json`
 is already valid and only schema/report presentation is changing,
-`make ppa-proxy-from-perf` performs the derived Level 0 generation and
+`make ppa-l0-from-perf` performs the derived Level 0 generation and
 validation without repeating the long SoC run.
+
+The older `ppa-proxy-*` targets remain Makefile aliases for compatibility. New
+documentation should prefer `ppa-l0-*` because `proxy` can be mistaken for a
+software or network agent rather than a Level 0 estimate.
 
 Named baseline summaries are checked in under:
 

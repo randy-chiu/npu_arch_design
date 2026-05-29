@@ -19,6 +19,7 @@ development work.
 | `verification_strategy.md` | verification layers, current baselines, gaps, and test update rules |
 | `ppa_methodology.md` | ASIC-oriented PPA boundaries, metrics, targets, activity and result contracts |
 | `transformer_workloads.md` | LLM prefill/decode workload levels, initial kernels, precision and traffic requirements |
+| `transformer_workload_integration.md` | Transformer fixture/golden/manifest/perf/PPA integration plan that reuses the current NPU path |
 | `workload_manifest.md` | Explicit `job_id` to workload contract for repeatable perf/PPA grouping |
 | `directory_structure.md` | Current implementation paths and staged unified-NPU target layout |
 | `perf_counter_csr_plan.md` | Migration from testbench sampled counters to wrapper-visible counters |

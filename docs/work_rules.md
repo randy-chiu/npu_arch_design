@@ -181,6 +181,36 @@ version of the system.
 Before implementing a non-trivial change, write the design intent into the
 appropriate document under `docs/`.
 
+Design documents must be written from architecture intent to verification
+evidence. Do not start with a file list or patch plan. Use this structure unless
+there is a clear reason to deviate:
+
+1. **Target / 目标**: state the problem, goal, non-goals, and what decision the
+   design should enable.
+2. **Overall Design / 整体设计思路**: explain the architecture flow, ownership
+   boundaries, source-of-truth inputs, generated artifacts, and how data/control
+   moves through the system.
+3. **Key Details / 重点细节**: describe the important interfaces, formats,
+   state transitions, memory layout, timing model, naming choices, and
+   compatibility constraints.
+4. **Verification / 验证测试**: state what must be proven, which tests or
+   reports prove it, what metrics are measured versus modeled, and what
+   existing regressions must remain unchanged.
+5. **Implementation Priority / 实现优先级**: break the work into ordered steps
+   with acceptance criteria.
+
+设计文档必须从架构意图写到验证证据，不要一开始就列文件和 patch。除非有明确
+理由，新增或大幅更新的设计文档应按下面结构组织：
+
+1. **目标**：说明问题、目标、非目标，以及这个设计要支撑什么决策。
+2. **整体设计思路**：说明架构流程、ownership 边界、source of truth、生成产物，
+   以及数据/控制如何在系统中流动。
+3. **重点细节**：说明关键接口、格式、状态转换、memory layout、时序模型、命名
+   选择和兼容性约束。
+4. **验证测试**：说明要证明什么、用哪些测试或报告证明、哪些指标是实测、哪些
+   是模型估计，以及哪些既有 regression 必须保持不变。
+5. **实现优先级**：拆成有顺序的步骤，并给出 acceptance criteria。
+
 The design note should be detailed enough that another developer can understand
 the intended behavior before reading the patch. Include, as applicable:
 

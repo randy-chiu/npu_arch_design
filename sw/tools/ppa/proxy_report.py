@@ -31,6 +31,10 @@ def build_proxy_report(
         build_workload_proxy(workload, energy_cfg, performance_provenance)
         for workload in perf.get("workloads", [])
     ]
+    workload_results.extend(
+        build_workload_proxy(workload, energy_cfg, "modeled_manifest_only")
+        for workload in perf.get("model_only_workloads", [])
+    )
     manifest = perf.get("workload_manifest") or {}
     report = {
         "schema": SCHEMA_NAME,
@@ -59,7 +63,7 @@ def build_proxy_report(
         "limitations": [
             "Normalized area units are not synthesized cell area or physical area.",
             "Normalized energy units are not joules or measured power.",
-            "Current workload counters do not include external-memory traffic energy.",
+            "External-memory byte events are modeled from workload manifests, not measured RTL power.",
         ],
     }
     report["comparison"] = build_comparison(baseline_report, report) if baseline_report else None
@@ -125,6 +129,16 @@ def build_workload_proxy(
             "events": events,
             "coefficients": coefficients,
             "contributions": contributions,
+            "contribution_groups": {
+                "measured_onchip_events": round(
+                    contributions["int8_mac_accumulate"]
+                    + contributions["data_mover_read_word"]
+                    + contributions["data_mover_write_word"]
+                    + contributions["active_subsystem_cycle"],
+                    3,
+                ),
+                "modeled_external_memory": round(contributions["external_memory_byte"], 3),
+            },
             "normalized_energy_units": round(total_energy, 3),
             "normalized_energy_per_mac": (
                 round(total_energy / mac_ops, 6) if mac_ops else None
@@ -293,7 +307,7 @@ def derive_workload_events(workload: dict[str, Any], energy_cfg: dict[str, Any])
         )
     matmul_tiles = core_matmul_cycles // matmul_cycles_per_tile
     data_mover = workload.get("data_mover", {})
-    external_bytes = int(workload.get("metadata", {}).get("external_memory_bytes", 0))
+    external_bytes = external_memory_bytes(workload.get("metadata", {}))
     return {
         "int8_mac_accumulate": matmul_tiles * mac_ops_per_tile,
         "data_mover_read_word": int(data_mover.get("read_words", 0)),
@@ -301,6 +315,13 @@ def derive_workload_events(workload: dict[str, Any], energy_cfg: dict[str, Any])
         "active_subsystem_cycle": int(workload["total_cycles"]),
         "external_memory_byte": external_bytes,
     }
+
+
+def external_memory_bytes(metadata: dict[str, Any]) -> int:
+    external = metadata.get("external_memory", {})
+    if not isinstance(external, dict):
+        return int(metadata.get("external_memory_bytes", 0))
+    return sum(int(value) for value in external.values())
 
 
 def build_highlights(

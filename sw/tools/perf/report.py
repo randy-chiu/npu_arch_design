@@ -240,12 +240,14 @@ def parse_perf_log(path: Path, manifest_path: Path | None = None, model: dict = 
     if manifest_path is not None:
         workload_manifest = load_workload_manifest(manifest_path)
         workloads = workloads_from_manifest(jobs, workload_manifest)
+        model_only_workloads = model_only_workloads_from_manifest(workload_manifest)
     else:
         warnings.warn(
             "no workload manifest provided; falling back to order-based workload inference",
             UserWarning,
         )
         workloads = infer_workloads(jobs)
+        model_only_workloads = []
     highlights = build_highlights(workloads, jobs)
     performance_source = (
         "measured_architectural_perf_csr_snapshot"
@@ -274,6 +276,7 @@ def parse_perf_log(path: Path, manifest_path: Path | None = None, model: dict = 
         },
         "highlights": highlights,
         "workloads": workloads,
+        "model_only_workloads": model_only_workloads,
         "jobs": jobs,
     }
 
@@ -379,6 +382,32 @@ def workloads_from_manifest(jobs: list[dict], manifest: dict) -> list[dict]:
                 definition.get("kind", entry["role"]),
                 metadata=definition.get("metadata", {}),
             )
+        )
+    return summaries
+
+
+def model_only_workloads_from_manifest(manifest: dict) -> list[dict]:
+    summaries = []
+    for name, definition in manifest.get("workload_metadata", {}).items():
+        metadata = definition.get("metadata", {})
+        if not metadata.get("model_only"):
+            continue
+        summaries.append(
+            {
+                "name": name,
+                "kind": definition.get("kind", "model_only"),
+                "job_ids": [],
+                "jobs": 0,
+                "total_cycles": 0,
+                "max_job_cycles": 0,
+                "core_matmul_cycles": 0,
+                "movement_sram_cycles": 0,
+                "wrapper": {},
+                "core": {},
+                "movement": {},
+                "data_mover": {},
+                "metadata": metadata,
+            }
         )
     return summaries
 

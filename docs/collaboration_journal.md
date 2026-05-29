@@ -3352,3 +3352,94 @@ PYTHONPATH=sw/tools python -m unittest test.rtl.test_perf_report test.ppa_contra
 make test: PASS, 46 tests, 226.158s
 git diff --check: PASS
 ```
+
+## Session 62: Transformer Micro Workload Integration
+
+Goal:
+
+- add the first Transformer workload evidence path without changing the NPU
+  core;
+- keep CNN/MNIST as compatibility regression;
+- make Transformer metadata and model-only external-memory traffic visible in
+  perf/PPA reports.
+
+Implemented:
+
+- added design-document structure rules to `docs/work_rules.md`;
+- added deterministic Transformer micro fixture generation under
+  `sw/tools/transformer/`;
+- tightened `workloads/manifests/transformer/transformer_micro_v0.jsonc` with
+  tiny executable prefill/decode shapes, `activity_scope`, and explicit
+  external-memory fields;
+- extended `emit_soc_cpu_smoke_data.py` as the firmware-data aggregation point
+  so it appends Transformer arrays, `JOB_ID_*` values, manifest jobs, and
+  model-only KV-cache metadata without moving Transformer math into the
+  firmware emitter;
+- added firmware execution for two Transformer K-stream jobs:
+  `transformer_prefill_gemm_tiny` and
+  `transformer_decode_skinny_gemm_m8_compat`;
+- extended perf/PPA reporting to preserve Transformer metadata and report
+  modeled external-memory contribution separately from measured on-chip
+  events.
+
+Measured result:
+
+```text
+perf manifest: soc_cpu_smoke_transformer_v0
+jobs/workloads/total_cycles: 70 / 9 / 632007
+transformer_prefill_gemm_tiny: 118 cycles, 20 core matmul cycles, 336 data mover words
+transformer_decode_skinny_gemm_m8_compat: 84 cycles, 10 core matmul cycles, 208 data mover words
+transformer_kv_cache_traffic_tiny: model-only, 131584 external bytes
+```
+
+PPA note:
+
+- `ppa_proxy.json` includes 10 workloads: 9 executable groups plus the
+  model-only KV-cache traffic entry;
+- the old serial baseline is now marked incomparable because the workload
+  manifest id changed from `soc_cpu_smoke_v0` to
+  `soc_cpu_smoke_transformer_v0`.
+
+Validation:
+
+```text
+PYTHONPATH=sw/tools python -m unittest test.rtl.test_transformer_micro_fixtures test.rtl.test_perf_report -v: PASS
+make cpu-soc-sim: PASS
+make ppa-proxy-report: PASS
+make test: PASS, 51 tests, 235.795s
+git diff --check: PASS
+```
+
+## Session 63: Workload Profiles And PPA L0 Target Names
+
+Goal:
+
+- avoid confusing `proxy` in user-facing make target names;
+- decouple tiny Transformer validation from the long real-MNIST CNN full-FC1
+  SoC run;
+- reduce default development test time.
+
+Implemented:
+
+- added `WORKLOAD_PROFILE` to `emit_soc_cpu_smoke_data.py` and the Makefile;
+- default profile is now `quick`;
+- added explicit SoC profile targets:
+  `cpu-soc-quick`, `cpu-soc-transformer`, `cpu-soc-cnn-full`, `cpu-soc-all`;
+- added explicit report targets:
+  `ppa-l0-report`, `ppa-l0-from-perf`, `validate-ppa-l0`;
+- kept old `ppa-proxy-report`, `ppa-proxy-from-perf`, and
+  `validate-ppa-proxy` as compatibility aliases;
+- changed `make test` to use the quick firmware profile by default and added
+  `make test-full` for `WORKLOAD_PROFILE=all`.
+
+Validation:
+
+```text
+make cpu-soc-quick: PASS, 20 descriptor jobs
+make ppa-l0-report: PASS
+make test: PASS, 51 tests, 25.605s
+git diff --check: PASS
+```
+
+The previous full all-profile SoC/PPA path remains available through
+`make cpu-soc-all` and `make ppa-l0-report WORKLOAD_PROFILE=all`.

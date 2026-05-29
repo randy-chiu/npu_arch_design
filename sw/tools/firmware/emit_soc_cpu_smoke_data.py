@@ -36,6 +36,9 @@ from npu_phase0.real_mnist_cnn import (  # noqa: E402
     numpy_available,
     predict,
 )
+from transformer.generate_transformer_micro_fixtures import (  # noqa: E402
+    generate_transformer_micro_fixtures,
+)
 
 
 DATASETS = (
@@ -54,6 +57,12 @@ def main() -> None:
     parser.add_argument("--fixtures", type=Path, default=Path("build/rtl_fixture"))
     parser.add_argument("--out", type=Path, default=Path("build/firmware/soc_cpu_smoke_data.h"))
     parser.add_argument("--manifest-out", type=Path, default=Path("build/perf/workload_manifest.json"))
+    parser.add_argument(
+        "--workload-profile",
+        choices=("quick", "transformer", "cnn-full", "all"),
+        default="quick",
+        help="Select optional workload groups for the soc_cpu_smoke firmware.",
+    )
     args = parser.parse_args()
 
     lines = [
@@ -74,17 +83,30 @@ def main() -> None:
         lines.append("};")
         lines.append("")
 
+    include_cnn = args.workload_profile in ("cnn-full", "all")
+    include_transformer = args.workload_profile in ("quick", "transformer", "all")
+
     digits_jobs = _append_digits_classifier_data(lines)
-    fc1_tile_jobs = _append_real_mnist_cnn_fc1_tile_data(lines)
-    fc1_k_stream_jobs = _append_real_mnist_cnn_fc1_k_stream_data(lines)
-    fc1_full_jobs, fc1_full_k_chunks = _append_real_mnist_cnn_fc1_full_k_stream_data(lines)
-    fc2_jobs = _append_real_mnist_cnn_fc2_data(lines)
+    if include_cnn:
+        fc1_tile_jobs = _append_real_mnist_cnn_fc1_tile_data(lines)
+        fc1_k_stream_jobs = _append_real_mnist_cnn_fc1_k_stream_data(lines)
+        fc1_full_jobs, fc1_full_k_chunks = _append_real_mnist_cnn_fc1_full_k_stream_data(lines)
+        fc2_jobs = _append_real_mnist_cnn_fc2_data(lines)
+    else:
+        _append_real_mnist_cnn_disabled(lines)
+        fc1_tile_jobs = 0
+        fc1_k_stream_jobs = 0
+        fc1_full_jobs = 0
+        fc1_full_k_chunks = 0
+        fc2_jobs = 0
+    transformer_micro = _append_transformer_micro_data(lines) if include_transformer else _append_transformer_disabled(lines)
     jobs = _build_workload_jobs(
         digits_jobs,
         fc1_tile_jobs if fc2_jobs else 0,
         fc1_k_stream_jobs if fc2_jobs else 0,
         fc1_full_jobs if fc2_jobs else 0,
         fc2_jobs,
+        transformer_micro["executable_workloads"],
     )
     _append_job_id_defines(lines, jobs)
     lines.append("#endif")
@@ -99,6 +121,8 @@ def main() -> None:
         fc1_full_jobs if fc2_jobs else 0,
         fc1_full_k_chunks if fc2_jobs else 0,
         fc2_jobs,
+        transformer_micro,
+        args.workload_profile,
         jobs,
     )
 
@@ -310,6 +334,17 @@ def _append_real_mnist_cnn_fc2_data(lines: list[str]) -> int:
     return len(jobs)
 
 
+def _append_real_mnist_cnn_disabled(lines: list[str]) -> None:
+    lines.append("#define REAL_MNIST_CNN_FC1_TILE_ENABLED 0u")
+    lines.append("")
+    lines.append("#define REAL_MNIST_CNN_FC1_K_STREAM_ENABLED 0u")
+    lines.append("")
+    lines.append("#define REAL_MNIST_CNN_FC1_FULL_K_STREAM_ENABLED 0u")
+    lines.append("")
+    lines.append("#define REAL_MNIST_CNN_FC2_ENABLED 0u")
+    lines.append("")
+
+
 def _write_workload_manifest(
     path: Path,
     digits_jobs: int,
@@ -318,15 +353,37 @@ def _write_workload_manifest(
     fc1_full_jobs: int,
     fc1_full_k_chunks: int,
     fc2_jobs: int,
+    transformer_micro: dict | None = None,
+    workload_profile: str = "quick",
     jobs: list[dict] | None = None,
 ) -> None:
     if jobs is None:
-        jobs = _build_workload_jobs(digits_jobs, fc1_tile_jobs, fc1_k_stream_jobs, fc1_full_jobs, fc2_jobs)
+        jobs = _build_workload_jobs(
+            digits_jobs,
+            fc1_tile_jobs,
+            fc1_k_stream_jobs,
+            fc1_full_jobs,
+            fc2_jobs,
+            transformer_micro["executable_workloads"] if transformer_micro else [],
+        )
+    transformer_micro = transformer_micro or {"executable_workloads": [], "model_only_workloads": []}
+    transformer_metadata = {
+        item["name"]: {"kind": item["kind"], "metadata": item["metadata"]}
+        for item in transformer_micro["executable_workloads"]
+    }
+    transformer_metadata.update(
+        {
+            item["name"]: {"kind": item["kind"], "metadata": item["metadata"]}
+            for item in transformer_micro["model_only_workloads"]
+        }
+    )
+    manifest_id = f"soc_cpu_smoke_{workload_profile.replace('-', '_')}_v0"
     manifest = {
         "schema": "npu_workload_manifest_v0",
-        "manifest_id": "soc_cpu_smoke_v0",
+        "manifest_id": manifest_id,
         "run_name": "soc_cpu_smoke",
         "generated_by": "sw/tools/firmware/emit_soc_cpu_smoke_data.py",
+        "workload_profile": workload_profile,
         "workload_metadata": {
             "operator_smoke_matmul": {"kind": "operator_smoke"},
             "operator_smoke_softmax": {"kind": "operator_smoke"},
@@ -363,6 +420,7 @@ def _write_workload_manifest(
                 "kind": "model_layer",
                 "metadata": {"tile_jobs": fc2_jobs},
             },
+            **transformer_metadata,
         },
         "jobs": jobs,
     }
@@ -376,6 +434,7 @@ def _build_workload_jobs(
     fc1_k_stream_jobs: int,
     fc1_full_jobs: int,
     fc2_jobs: int,
+    transformer_workloads: list[dict] | None = None,
 ) -> list[dict]:
     jobs: list[dict] = []
 
@@ -398,7 +457,33 @@ def _build_workload_jobs(
     add("real_mnist_cnn_fc1_k_stream_smoke", "matmul_k_stream", "regression", fc1_k_stream_jobs, tiled=True)
     add("real_mnist_cnn_fc1_full_k_stream_layer", "matmul_k_stream", "regression", fc1_full_jobs, tiled=True)
     add("real_mnist_cnn_fc2", "matmul", "regression", fc2_jobs, tiled=True)
+    for workload in transformer_workloads or []:
+        add(workload["name"], workload["op"], workload["role"], 1, tiled=True)
     return jobs
+
+
+def _append_transformer_micro_data(lines: list[str]) -> dict:
+    transformer_micro = generate_transformer_micro_fixtures()
+    executable = transformer_micro["executable_workloads"]
+    lines.append("#define TRANSFORMER_MICRO_ENABLED 1u")
+    lines.append(f"#define TRANSFORMER_MICRO_EXECUTABLE_WORKLOADS {len(executable)}u")
+    lines.append("")
+    for workload in executable:
+        macro = workload["name"].upper()
+        lines.append(f"#define {macro}_CHUNKS {workload['k_chunks']}u")
+        lines.append(f"#define {macro}_TILE_WORDS {workload['tile_words']}u")
+        lines.append("")
+        _append_2d_array(lines, f"{workload['name']}_a", workload["a_stream"], bits=8)
+        _append_2d_array(lines, f"{workload['name']}_b", workload["b_stream"], bits=8)
+        _append_flat_array(lines, f"{workload['name']}_expected_c", workload["expected_c"], bits=32)
+    return transformer_micro
+
+
+def _append_transformer_disabled(lines: list[str]) -> dict:
+    lines.append("#define TRANSFORMER_MICRO_ENABLED 0u")
+    lines.append("#define TRANSFORMER_MICRO_EXECUTABLE_WORKLOADS 0u")
+    lines.append("")
+    return {"executable_workloads": [], "model_only_workloads": []}
 
 
 def _append_job_id_defines(lines: list[str], jobs: list[dict]) -> None:

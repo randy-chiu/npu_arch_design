@@ -13,32 +13,75 @@
       "name": "prefill_gemm_tiny",
       "scenario": "transformer_prefill",
       "op": "matmul",
-      "shape": {"m": 128, "n": 256, "k": 256},
+      "logical_op": "projection_gemm",
+      "shape": {"m": 8, "n": 8, "k": 16},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 128,
+        "activation_write_bytes": 256,
+        "weight_read_bytes": 128,
+        "kv_cache_read_bytes": 0,
+        "kv_cache_write_bytes": 0
+      },
       "status": "planned_current_matmul_extension",
       "metrics": ["cycles", "mac_ops", "words_moved", "energy_per_mac"]
     },
     {
-      "name": "decode_skinny_gemm_proxy",
+      // Current RTL-compatible decode approximation. Real single-token decode
+      // is closer to GEMV or very skinny GEMM, but the current array naturally
+      // executes 8 rows. The name uses m8_compat instead of bare proxy to make
+      // this constraint explicit.
+      "name": "decode_skinny_gemm_m8_compat",
       "scenario": "transformer_decode",
       "op": "matmul",
-      "shape": {"m": 8, "n": 256, "k": 256},
-      "note": "M=8 is a current array-compatible proxy for single-token/GEMV utilization study.",
+      "logical_op": "decode_skinny_gemm_m8_compat",
+      "shape": {"m": 8, "n": 8, "k": 8},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 64,
+        "activation_write_bytes": 256,
+        "weight_read_bytes": 64,
+        "kv_cache_read_bytes": 0,
+        "kv_cache_write_bytes": 0
+      },
+      "note": "M=8 is a current array-compatible approximation for single-token/GEMV utilization study; it is not a true GEMV implementation.",
       "status": "planned_current_matmul_extension",
-      "metrics": ["cycles", "mac_ops", "words_moved", "energy_per_token_proxy"]
+      "metrics": ["cycles", "mac_ops", "words_moved", "energy_per_decode_step_estimate"]
     },
     {
       "name": "rmsnorm_tiny",
       "scenario": "transformer_decode",
       "op": "rmsnorm",
       "shape": {"elements": 256},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 256,
+        "activation_write_bytes": 256,
+        "weight_read_bytes": 512,
+        "kv_cache_read_bytes": 0,
+        "kv_cache_write_bytes": 0
+      },
       "status": "requires_future_operator_contract",
-      "metrics": ["cycles", "accuracy", "energy_per_token_proxy"]
+      "metrics": ["cycles", "accuracy", "energy_per_decode_step_estimate"]
     },
     {
+      // Model-only decode memory workload. It tracks the cost of repeatedly
+      // reading historical keys/values and writing the new token's key/value
+      // state. This is included before RTL cache support so PPA reports can
+      // separate measured on-chip NPU activity from modeled external-memory
+      // traffic and energy.
       "name": "kv_cache_traffic_tiny",
       "scenario": "transformer_decode",
       "op": "memory_traffic",
       "shape": {"hidden_size": 256, "heads": 4, "head_dim": 64, "context_lengths": [128, 512]},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 0,
+        "activation_write_bytes": 0,
+        "weight_read_bytes": 0,
+        "kv_cache_read_bytes": 131072,
+        "kv_cache_write_bytes": 512
+      },
       "status": "model_only_initially",
       "metrics": ["read_bytes_per_token", "write_bytes_per_token", "estimated_external_memory_energy"]
     }

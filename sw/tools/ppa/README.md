@@ -26,6 +26,8 @@ candidate-versus-baseline deltas and exposes costs as well as improvements.
 Build targets:
 
 ```text
-make ppa-proxy-report       # full perf simulation plus proxy generation/validation
-make ppa-proxy-from-perf    # reuse build/perf/perf.json for fast report iteration
+make ppa-l0-report          # full perf simulation plus Level 0 generation/validation
+make ppa-l0-from-perf       # reuse build/perf/perf.json for fast report iteration
 ```
+
+The older `ppa-proxy-*` targets remain aliases for compatibility.

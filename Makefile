@@ -1,4 +1,4 @@
-.PHONY: test demo digits-demo validate-arch soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke npu-core-sim npu-subsystem-elab rtl-sim soc-sim cpu-soc-sim perf-report ppa-proxy-from-perf ppa-proxy-report validate-ppa-proxy
+.PHONY: test test-full demo digits-demo validate-arch soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke npu-core-sim npu-subsystem-elab rtl-sim soc-sim cpu-soc-sim cpu-soc-quick cpu-soc-transformer cpu-soc-cnn-full cpu-soc-all perf-report perf-l0-quick perf-l0-transformer perf-l0-cnn-full perf-l0-all ppa-l0-from-perf ppa-l0-report validate-ppa-l0 ppa-proxy-from-perf ppa-proxy-report validate-ppa-proxy
 
 PYTHONPATH := sw/tools
 ARCH := arch/configs/npu_v0.jsonc
@@ -13,6 +13,7 @@ RISCV_OBJDUMP ?= $(patsubst %-gcc,%-objdump,$(RISCV_GCC))
 RISCV_CFLAGS := -march=rv32i -mabi=ilp32 -mcmodel=medlow -msmall-data-limit=0 -ffreestanding -fno-pic -nostdlib -nostartfiles -Os -Wall -Wextra
 RISCV_INCLUDES := -I build/soc -I build/npu_wrapper -I build/firmware -I sw/soc_cpu/runtime
 FIRMWARE_ROM_WORDS ?= 2097152
+WORKLOAD_PROFILE ?= quick
 
 validate-arch:
 	PYTHONPATH=$(PYTHONPATH) python -m npu_phase0.cli validate-arch --arch $(ARCH)
@@ -33,7 +34,7 @@ npu-wrapper-spec:
 	python sw/tools/npu_wrapper/emit_npu_wrapper_spec.py --spec $(NPU_WRAPPER) --svh-out build/npu_wrapper/npu_v0_regs.svh --header-out build/npu_wrapper/npu_v0_regs.h
 
 firmware-data: rtl-fixtures
-	python sw/tools/firmware/emit_soc_cpu_smoke_data.py --fixtures build/rtl_fixture --out build/firmware/soc_cpu_smoke_data.h --manifest-out build/perf/workload_manifest.json
+	python sw/tools/firmware/emit_soc_cpu_smoke_data.py --fixtures build/rtl_fixture --out build/firmware/soc_cpu_smoke_data.h --manifest-out build/perf/workload_manifest.json --workload-profile $(WORKLOAD_PROFILE)
 
 firmware-smoke-generated: rtl-fixtures soc-spec npu-wrapper-spec
 	python sw/tools/firmware/emit_soc_cpu_smoke.py --soc $(SOC) --wrapper $(NPU_WRAPPER) --fixtures build/rtl_fixture --out build/firmware/soc_cpu_smoke.hex --manifest-out build/perf/workload_manifest.json
@@ -57,6 +58,9 @@ endif
 
 test:
 	PYTHONPATH=$(PYTHONPATH) python -m unittest discover -s test -v
+
+test-full:
+	$(MAKE) test WORKLOAD_PROFILE=all
 
 refresh-references:
 	PYTHONPATH=$(PYTHONPATH) python scripts/refresh_references.py --output references/discovered_references.md
@@ -111,6 +115,18 @@ cpu-soc-sim: firmware-smoke
 		hw/soc/tb/soc_cpu_tb.sv
 	vvp build/soc/soc_cpu_tb
 
+cpu-soc-quick:
+	$(MAKE) cpu-soc-sim WORKLOAD_PROFILE=quick
+
+cpu-soc-transformer:
+	$(MAKE) cpu-soc-sim WORKLOAD_PROFILE=transformer
+
+cpu-soc-cnn-full:
+	$(MAKE) cpu-soc-sim WORKLOAD_PROFILE=cnn-full
+
+cpu-soc-all:
+	$(MAKE) cpu-soc-sim WORKLOAD_PROFILE=all
+
 perf-report: firmware-smoke
 	mkdir -p build/soc build/perf
 	iverilog -g2012 -I build/rtl_fixture -I build/soc -I build/npu_wrapper -I hw/npu_wrapper/rtl -o build/soc/soc_cpu_tb \
@@ -130,7 +146,19 @@ perf-report: firmware-smoke
 	vvp build/soc/soc_cpu_tb > build/perf/cpu_soc_perf.log
 	python sw/tools/perf/report.py --log build/perf/cpu_soc_perf.log --workload-manifest build/perf/workload_manifest.json --arch-config $(ARCH) --soc-config $(SOC) --json-out build/perf/perf.json --html-out build/perf/perf_report.html
 
-ppa-proxy-from-perf:
+perf-l0-quick:
+	$(MAKE) perf-report WORKLOAD_PROFILE=quick
+
+perf-l0-transformer:
+	$(MAKE) perf-report WORKLOAD_PROFILE=transformer
+
+perf-l0-cnn-full:
+	$(MAKE) perf-report WORKLOAD_PROFILE=cnn-full
+
+perf-l0-all:
+	$(MAKE) perf-report WORKLOAD_PROFILE=all
+
+ppa-l0-from-perf:
 	mkdir -p build/ppa/proxy
 	PYTHONPATH=$(PYTHONPATH) python -m ppa.schema_check --json $(PPA_BASELINE)
 	PYTHONPATH=$(PYTHONPATH) python -m ppa.proxy_report \
@@ -142,8 +170,14 @@ ppa-proxy-from-perf:
 		--html-out build/ppa/proxy/ppa_proxy_report.html
 	PYTHONPATH=$(PYTHONPATH) python -m ppa.schema_check --json build/ppa/proxy/ppa_proxy.json
 
-ppa-proxy-report: perf-report
-	$(MAKE) ppa-proxy-from-perf
+ppa-l0-report: perf-report
+	$(MAKE) ppa-l0-from-perf
 
-validate-ppa-proxy:
+validate-ppa-l0:
 	PYTHONPATH=$(PYTHONPATH) python -m ppa.schema_check --json build/ppa/proxy/ppa_proxy.json
+
+ppa-proxy-from-perf: ppa-l0-from-perf
+
+ppa-proxy-report: ppa-l0-report
+
+validate-ppa-proxy: validate-ppa-l0

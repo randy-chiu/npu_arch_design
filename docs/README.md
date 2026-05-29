@@ -23,6 +23,7 @@
 | `design/verification_strategy.md` | 当前测试层级、验证入口、coverage 边界和下一步测试计划 |
 | `design/ppa_methodology.md` | 面向 ASIC 的 PPA 边界、公开工艺评估目标、功耗/面积/能耗结果合同 |
 | `design/transformer_workloads.md` | Transformer/LLM prefill 与 decode 的 workload 演进和评估指标 |
+| `design/transformer_workload_integration.md` | Transformer workload 的 fixture/golden/manifest/perf/PPA 接入设计，复用当前 NPU core/wrapper/report 路径 |
 | `digits_classifier_workload.md` | 下一阶段真实 workload：8x8 手写数字分类闭环 |
 | `real_mnist_cnn_workload.md` | 真实开源 MNIST CNN：外部 safetensors 权重、MNIST 图片、`fc1` tile 和 `fc2` SoC RTL 验证 |
 | `target_architecture.md` | 业界架构资料提炼、长期目标 NPU 架构、分阶段扩展计划 |
