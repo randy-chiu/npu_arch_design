@@ -1,91 +1,68 @@
-# Reduction Engine v1 Design
+# Reduction Engine v1
 
-## 1. Target / 目标
+## Scope
 
-Reduction Engine v1 provides row/vector reductions for Transformer
-micro-kernels. It is a primitive engine, not a softmax or RMSNorm macro-op.
+Primitive standalone row/vector reductions for Transformer bring-up. Covered ops
+are `REDUCE_MAX`, `REDUCE_SUM`, and `REDUCE_SUMSQ`.
 
-Required v1 reductions:
+## Parameters and source-of-truth config fields
 
-- `REDUCE_MAX` for stable softmax;
-- `REDUCE_SUM` for softmax denominator;
-- `REDUCE_SUMSQ` for RMSNorm.
+Source of truth: `arch/configs/npu_transformer_v1.jsonc`.
 
-## 2. Overall Design / 整体设计思路
-
-The engine consumes vector rows in chunks of `REDUCE_LANES=8` and accumulates a
-scalar result:
-
-```text
-vector/source buffer
-  -> lane reduction stage
-  -> scalar accumulator
-  -> scalar result register
-```
-
-The first module should live under:
-
-```text
-hw/npu_core/rtl/reduction/
-```
-
-It should support a row length up to 128 through repeated chunks.
-
-## 3. Key Details / 重点细节
-
-Parameters:
-
-| Field | v1 value |
+| Parameter | Config field |
 | --- | --- |
-| `REDUCE_LANES` | 8 |
-| `MAX_LEN` | 128 |
-| input type | int16 or int32 |
-| sum output | int32/uint32 |
-| max output | signed int32 |
-| issue model | start + length + op, then done |
+| `MAX_LEN` | `modules.reduction_engine.max_len` |
+| `DATA_WIDTH` | `modules.reduction_engine.data_width` |
+| `RESULT_WIDTH` | `modules.reduction_engine.result_width` |
+| v1 logical lanes | `modules.reduction_engine.lanes` |
+| `OP_REDUCE_*` | `primitive_op_encodings.reduction.*` |
 
-Ops:
+## Input/output dtype and Q format
 
-| Op | Semantics |
-| --- | --- |
-| `REDUCE_MAX` | signed maximum over valid elements |
-| `REDUCE_SUM` | arithmetic sum over valid elements |
-| `REDUCE_SUMSQ` | sum of `x[i] * x[i]` over valid elements |
+Inputs are signed integer elements of `DATA_WIDTH` bits packed into `x_flat`.
+`result` is signed `RESULT_WIDTH`. Current v1 bring-up uses int32 inputs and
+int64 result accumulation.
 
-Counter semantics:
+## Operation semantics
 
-| Counter | Meaning |
-| --- | --- |
-| `reduction_active_cycles` | at least one chunk consumed or scalar state updated |
-| `reduction_stall_cycles` | reduction assigned but input chunk unavailable |
-| `reduction_idle_cycles` | no reduction op assigned |
+The engine consumes elements `[0, length)`, capped structurally by `MAX_LEN`.
+`REDUCE_MAX` returns the signed maximum, `REDUCE_SUM` returns signed sum, and
+`REDUCE_SUMSQ` returns the sum of signed element squares.
 
-For v1, overflow behavior must be deterministic. RMSNorm `SUMSQ` should use a
-wide enough intermediate for hidden sizes 64/128 with int8/int16 inputs before
-downstream approximation.
+## Latency model
 
-## 4. Verification / 验证测试
+Current RTL computes combinationally inside one clocked start transaction and
+pulses `done` in the cycle after `start` is sampled. This is not the final
+multi-cycle reduction tree or streaming latency model.
 
-Initial tests:
+## active/stall/done semantics
 
-- `REDUCE_MAX` on mixed signed rows;
-- `REDUCE_SUM` with valid lengths 1, 8, 16, 64, 128;
-- `REDUCE_SUMSQ` for RMSNorm-sized vectors;
-- valid-lane tail behavior.
+`active` mirrors `start`. `done` pulses for one cycle when `start` is sampled.
+There is no valid/ready pipeline and no real stall counter.
 
-Golden source:
+## Rounding/saturation behavior
 
-```text
-sw/tools/transformer/micro_golden.py
-```
+`REDUCE_MAX` sign-extends the selected input. `REDUCE_SUM` accumulates in
+`RESULT_WIDTH`. `REDUCE_SUMSQ` accumulates integer products in `RESULT_WIDTH`.
+Current RTL does not saturate on accumulator overflow.
 
-## 5. Implementation Priority / 实现优先级
+## PPA counters
 
-1. Build standalone reduction RTL and testbench. Status: implemented as
-   `hw/npu_core/rtl/reduction/reduction_engine.sv`.
-2. Cover row lengths up to 128 before connecting to scheduler. Status:
-   module supports `MAX_LEN=128`; directed tests currently cover short rows.
-3. Add softmax/RMSNorm primitive fixture coverage. Status: implemented in
-   `hw/npu_core/tb/primitive_engines_tb.sv`.
-4. Expose measured reduction cycles only after integrated execution exists.
-   Status: pending.
+Required v1 reporting includes `reduction_active_cycles` and
+`stall_cycles_by_engine`. Current standalone RTL exposes only `active`; real
+counter integration is deferred.
+
+## Current RTL status
+
+Implemented as `hw/npu_core/rtl/reduction/reduction_engine.sv`. The design-side
+integration point is `hw/npu_core/rtl/transformer_primitive_engines.sv`, which
+imports generated config and passes reduction parameters/op encodings
+explicitly.
+
+## Known gaps
+
+- Primitive standalone bring-up RTL only.
+- No valid/ready pipeline.
+- No real stall counters.
+- No balanced tree or streaming implementation.
+- No production overflow policy.

@@ -27,9 +27,18 @@
     "uop_scheduler": "in_order_v1",
     "matrix_engine": {"tile": [8, 8, 8], "peak_macs_per_cycle": 64},
     "accumulator_file": {"dtype": "int32", "tile": [8, 8], "banks": 2},
-    "vector_engine": {"lanes": 8, "dtypes": ["int16", "int32"]},
-    "reduction_engine": {"lanes": 8, "max_len": 128},
-    "sfu": {"exp_lut_entries": 257, "ops": ["EXP", "RECIP", "RSQRT"]},
+    "vector_engine": {"lanes": 8, "data_width": 32, "dtypes": ["int16", "int32"]},
+    "reduction_engine": {"lanes": 8, "max_len": 128, "data_width": 32, "result_width": 64},
+    "sfu": {
+      "data_width": 32,
+      "exp_input_scale": 32,
+      "exp_lut_entries": 257,
+      "exp_output_q": 15,
+      "bringup_exp_q15_segments": [32767, 12055, 4435, 1632, 600, 221, 81, 30, 11],
+      "recip_output_q": 24,
+      "rsqrt_output_q": 24,
+      "ops": ["EXP", "RECIP", "RSQRT"]
+    },
     "kv_cache_streamer": {"v1": "spec_and_counters_only"}
   },
   "primitive_uops": [
@@ -53,6 +62,26 @@
     "BARRIER",
     "HALT"
   ],
+  "primitive_op_encodings": {
+    "vector": {
+      "VEC_ADD": 0,
+      "VEC_SUB": 1,
+      "VEC_MUL": 2,
+      "VEC_SCALE": 3,
+      "VEC_REQUANT": 4,
+      "VEC_CLAMP": 5
+    },
+    "reduction": {
+      "REDUCE_MAX": 0,
+      "REDUCE_SUM": 1,
+      "REDUCE_SUMSQ": 2
+    },
+    "sfu": {
+      "SFU_EXP": 0,
+      "SFU_RECIP": 1,
+      "SFU_RSQRT": 2
+    }
+  },
   "perf_metrics": {
     "active_stall_idle_semantics": true,
     "required": [

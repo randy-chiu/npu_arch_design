@@ -1,9 +1,10 @@
-.PHONY: test test-full demo digits-demo validate-arch soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke primitive-engines-sim npu-core-sim npu-subsystem-elab rtl-sim soc-sim cpu-soc-sim cpu-soc-quick cpu-soc-transformer cpu-soc-cnn-full cpu-soc-all perf-report perf-l0-quick perf-l0-transformer perf-l0-cnn-full perf-l0-all ppa-l0-from-perf ppa-l0-report validate-ppa-l0 ppa-proxy-from-perf ppa-proxy-report validate-ppa-proxy
+.PHONY: test test-full demo digits-demo validate-arch transformer-config soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke primitive-engines-sim npu-core-sim npu-subsystem-elab rtl-sim soc-sim cpu-soc-sim cpu-soc-quick cpu-soc-transformer cpu-soc-cnn-full cpu-soc-all perf-report perf-l0-quick perf-l0-transformer perf-l0-cnn-full perf-l0-all ppa-l0-from-perf ppa-l0-report validate-ppa-l0 ppa-proxy-from-perf ppa-proxy-report validate-ppa-proxy
 
 PYTHONPATH := sw/tools
 ARCH := arch/configs/npu_v0.jsonc
 SOC := arch/configs/soc_v0.jsonc
 NPU_WRAPPER := arch/configs/npu_wrapper_v0.jsonc
+TRANSFORMER_CONFIG := arch/configs/npu_transformer_v1.jsonc
 PPA_AREA_PROXY := arch/configs/ppa/area_proxy_v0.jsonc
 PPA_ENERGY_PROXY := arch/configs/ppa/energy_proxy_v0.jsonc
 PPA_BASELINE := ppa/baselines/l0/npu_v0_a2_serial_k_stream_proxy.json
@@ -26,6 +27,9 @@ digits-demo:
 
 rtl-fixtures:
 	PYTHONPATH=$(PYTHONPATH) python -m npu_phase0.cli emit-rtl-fixtures --arch $(ARCH) --out-dir build/rtl_fixture
+
+transformer-config:
+	PYTHONPATH=$(PYTHONPATH) python -m transformer.emit_transformer_config --config $(TRANSFORMER_CONFIG) --out-dir build/generated
 
 soc-spec:
 	python sw/tools/soc/emit_soc_spec.py --soc $(SOC) --out build/soc/soc_v0_addr.svh --header-out build/soc/soc_v0_addr.h --linker-out build/soc/soc_v0.ld
@@ -65,12 +69,14 @@ test-full:
 refresh-references:
 	PYTHONPATH=$(PYTHONPATH) python scripts/refresh_references.py --output references/discovered_references.md
 
-primitive-engines-sim:
+primitive-engines-sim: transformer-config
 	mkdir -p build
 	iverilog -g2012 -o build/primitive_engines_tb \
+		build/generated/npu_transformer_v1_config_pkg.sv \
 		hw/npu_core/rtl/vector/vector_engine.sv \
 		hw/npu_core/rtl/reduction/reduction_engine.sv \
 		hw/npu_core/rtl/sfu/sfu_lut.sv \
+		hw/npu_core/rtl/transformer_primitive_engines.sv \
 		hw/npu_core/tb/primitive_engines_tb.sv
 	vvp build/primitive_engines_tb
 

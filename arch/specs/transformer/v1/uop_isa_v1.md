@@ -8,6 +8,11 @@ adds macro-op expansion or fused hardware.
 
 ## Primitive Uops
 
+Primitive op names and local engine encodings are sourced from
+`arch/configs/npu_transformer_v1.jsonc` under `primitive_op_encodings`.
+Generated RTL/software constants are emitted by
+`sw/tools/transformer/emit_transformer_config.py`.
+
 | Uop | Semantics |
 | --- | --- |
 | `LOAD_TILE` | load tensor tile from scratch/system workspace into internal buffer |

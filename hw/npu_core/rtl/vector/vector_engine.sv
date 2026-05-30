@@ -1,6 +1,12 @@
 module vector_engine #(
     parameter int LANES = 8,
-    parameter int DATA_WIDTH = 32
+    parameter int DATA_WIDTH = 32,
+    parameter int OP_VEC_ADD = 0,
+    parameter int OP_VEC_SUB = 1,
+    parameter int OP_VEC_MUL = 2,
+    parameter int OP_VEC_SCALE = 3,
+    parameter int OP_VEC_REQUANT = 4,
+    parameter int OP_VEC_CLAMP = 5
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -17,12 +23,12 @@ module vector_engine #(
     output logic active,
     output logic signed [(LANES*DATA_WIDTH)-1:0] y_flat
 );
-    localparam logic [2:0] VEC_ADD = 3'd0;
-    localparam logic [2:0] VEC_SUB = 3'd1;
-    localparam logic [2:0] VEC_MUL = 3'd2;
-    localparam logic [2:0] VEC_SCALE = 3'd3;
-    localparam logic [2:0] VEC_REQUANT = 3'd4;
-    localparam logic [2:0] VEC_CLAMP = 3'd5;
+    localparam logic [2:0] VEC_ADD = OP_VEC_ADD[2:0];
+    localparam logic [2:0] VEC_SUB = OP_VEC_SUB[2:0];
+    localparam logic [2:0] VEC_MUL = OP_VEC_MUL[2:0];
+    localparam logic [2:0] VEC_SCALE = OP_VEC_SCALE[2:0];
+    localparam logic [2:0] VEC_REQUANT = OP_VEC_REQUANT[2:0];
+    localparam logic [2:0] VEC_CLAMP = OP_VEC_CLAMP[2:0];
 
     integer lane;
     logic signed [DATA_WIDTH-1:0] a_value;

@@ -1,21 +1,27 @@
 module primitive_engines_tb;
-    localparam int LANES = 8;
-    localparam int MAX_LEN = 128;
-    localparam int DATA_WIDTH = 32;
+    import npu_transformer_v1_config_pkg::*;
 
-    localparam logic [2:0] VEC_ADD = 3'd0;
-    localparam logic [2:0] VEC_SUB = 3'd1;
-    localparam logic [2:0] VEC_MUL = 3'd2;
-    localparam logic [2:0] VEC_SCALE = 3'd3;
-    localparam logic [2:0] VEC_CLAMP = 3'd5;
+    localparam int LANES = CFG_VECTOR_LANES;
+    localparam int MAX_LEN = CFG_REDUCTION_MAX_LEN;
+    localparam int DATA_WIDTH = CFG_VECTOR_DATA_WIDTH;
+    localparam int REDUCTION_DATA_WIDTH = CFG_REDUCTION_DATA_WIDTH;
+    localparam int REDUCTION_RESULT_WIDTH = CFG_REDUCTION_RESULT_WIDTH;
+    localparam int SFU_DATA_WIDTH = CFG_SFU_DATA_WIDTH;
 
-    localparam logic [1:0] REDUCE_MAX = 2'd0;
-    localparam logic [1:0] REDUCE_SUM = 2'd1;
-    localparam logic [1:0] REDUCE_SUMSQ = 2'd2;
+    localparam logic [2:0] VEC_ADD = CFG_VEC_ADD[2:0];
+    localparam logic [2:0] VEC_SUB = CFG_VEC_SUB[2:0];
+    localparam logic [2:0] VEC_MUL = CFG_VEC_MUL[2:0];
+    localparam logic [2:0] VEC_SCALE = CFG_VEC_SCALE[2:0];
+    localparam logic [2:0] VEC_REQUANT = CFG_VEC_REQUANT[2:0];
+    localparam logic [2:0] VEC_CLAMP = CFG_VEC_CLAMP[2:0];
 
-    localparam logic [1:0] SFU_EXP = 2'd0;
-    localparam logic [1:0] SFU_RECIP = 2'd1;
-    localparam logic [1:0] SFU_RSQRT = 2'd2;
+    localparam logic [1:0] REDUCE_MAX = CFG_REDUCE_MAX[1:0];
+    localparam logic [1:0] REDUCE_SUM = CFG_REDUCE_SUM[1:0];
+    localparam logic [1:0] REDUCE_SUMSQ = CFG_REDUCE_SUMSQ[1:0];
+
+    localparam logic [1:0] SFU_EXP = CFG_SFU_EXP[1:0];
+    localparam logic [1:0] SFU_RECIP = CFG_SFU_RECIP[1:0];
+    localparam logic [1:0] SFU_RSQRT = CFG_SFU_RSQRT[1:0];
 
     logic clk;
     logic rst_n;
@@ -33,59 +39,93 @@ module primitive_engines_tb;
     logic vector_active;
     logic signed [(LANES*DATA_WIDTH)-1:0] vector_y_flat;
 
+    localparam int SMALL_VECTOR_LANES = 4;
+    localparam int SMALL_VECTOR_DATA_WIDTH = 16;
+    logic small_vector_start;
+    logic [2:0] small_vector_op;
+    logic [SMALL_VECTOR_LANES-1:0] small_vector_valid_mask;
+    logic signed [(SMALL_VECTOR_LANES*SMALL_VECTOR_DATA_WIDTH)-1:0] small_vector_a_flat;
+    logic signed [(SMALL_VECTOR_LANES*SMALL_VECTOR_DATA_WIDTH)-1:0] small_vector_b_flat;
+    logic signed [SMALL_VECTOR_DATA_WIDTH-1:0] small_vector_scalar;
+    logic signed [SMALL_VECTOR_DATA_WIDTH-1:0] small_vector_clamp_low;
+    logic signed [SMALL_VECTOR_DATA_WIDTH-1:0] small_vector_clamp_high;
+    logic [4:0] small_vector_shift;
+    logic small_vector_done;
+    logic small_vector_active;
+    logic signed [(SMALL_VECTOR_LANES*SMALL_VECTOR_DATA_WIDTH)-1:0] small_vector_y_flat;
+
     logic reduction_start;
     logic [1:0] reduction_op;
     logic [7:0] reduction_length;
-    logic signed [(MAX_LEN*DATA_WIDTH)-1:0] reduction_x_flat;
+    logic signed [(MAX_LEN*REDUCTION_DATA_WIDTH)-1:0] reduction_x_flat;
     logic reduction_done;
     logic reduction_active;
-    logic signed [63:0] reduction_result;
+    logic signed [REDUCTION_RESULT_WIDTH-1:0] reduction_result;
 
     logic sfu_start;
     logic [1:0] sfu_op;
-    logic signed [DATA_WIDTH-1:0] sfu_x;
+    logic signed [SFU_DATA_WIDTH-1:0] sfu_x;
     logic sfu_done;
     logic sfu_active;
-    logic [DATA_WIDTH-1:0] sfu_y;
+    logic [SFU_DATA_WIDTH-1:0] sfu_y;
 
-    vector_engine u_vector_engine (
+    transformer_primitive_engines u_transformer_primitive_engines (
         .clk(clk),
         .rst_n(rst_n),
-        .start(vector_start),
-        .op(vector_op),
-        .valid_mask(vector_valid_mask),
-        .a_flat(vector_a_flat),
-        .b_flat(vector_b_flat),
-        .scalar(vector_scalar),
-        .clamp_low(vector_clamp_low),
-        .clamp_high(vector_clamp_high),
-        .shift(vector_shift),
-        .done(vector_done),
-        .active(vector_active),
-        .y_flat(vector_y_flat)
+
+        .vector_start(vector_start),
+        .vector_op(vector_op),
+        .vector_valid_mask(vector_valid_mask),
+        .vector_a_flat(vector_a_flat),
+        .vector_b_flat(vector_b_flat),
+        .vector_scalar(vector_scalar),
+        .vector_clamp_low(vector_clamp_low),
+        .vector_clamp_high(vector_clamp_high),
+        .vector_shift(vector_shift),
+        .vector_done(vector_done),
+        .vector_active(vector_active),
+        .vector_y_flat(vector_y_flat),
+
+        .reduction_start(reduction_start),
+        .reduction_op(reduction_op),
+        .reduction_length(reduction_length),
+        .reduction_x_flat(reduction_x_flat),
+        .reduction_done(reduction_done),
+        .reduction_active(reduction_active),
+        .reduction_result(reduction_result),
+
+        .sfu_start(sfu_start),
+        .sfu_op(sfu_op),
+        .sfu_x(sfu_x),
+        .sfu_done(sfu_done),
+        .sfu_active(sfu_active),
+        .sfu_y(sfu_y)
     );
 
-    reduction_engine u_reduction_engine (
+    vector_engine #(
+        .LANES(SMALL_VECTOR_LANES),
+        .DATA_WIDTH(SMALL_VECTOR_DATA_WIDTH),
+        .OP_VEC_ADD(CFG_VEC_ADD),
+        .OP_VEC_SUB(CFG_VEC_SUB),
+        .OP_VEC_MUL(CFG_VEC_MUL),
+        .OP_VEC_SCALE(CFG_VEC_SCALE),
+        .OP_VEC_REQUANT(CFG_VEC_REQUANT),
+        .OP_VEC_CLAMP(CFG_VEC_CLAMP)
+    ) u_small_vector_engine (
         .clk(clk),
         .rst_n(rst_n),
-        .start(reduction_start),
-        .op(reduction_op),
-        .length(reduction_length),
-        .x_flat(reduction_x_flat),
-        .done(reduction_done),
-        .active(reduction_active),
-        .result(reduction_result)
-    );
-
-    sfu_lut u_sfu_lut (
-        .clk(clk),
-        .rst_n(rst_n),
-        .start(sfu_start),
-        .op(sfu_op),
-        .x(sfu_x),
-        .done(sfu_done),
-        .active(sfu_active),
-        .y(sfu_y)
+        .start(small_vector_start),
+        .op(small_vector_op),
+        .valid_mask(small_vector_valid_mask),
+        .a_flat(small_vector_a_flat),
+        .b_flat(small_vector_b_flat),
+        .scalar(small_vector_scalar),
+        .clamp_low(small_vector_clamp_low),
+        .clamp_high(small_vector_clamp_high),
+        .shift(small_vector_shift),
+        .done(small_vector_done),
+        .active(small_vector_active),
+        .y_flat(small_vector_y_flat)
     );
 
     initial clk = 1'b0;
@@ -94,15 +134,19 @@ module primitive_engines_tb;
     initial begin
         rst_n = 1'b0;
         vector_start = 1'b0;
+        small_vector_start = 1'b0;
         reduction_start = 1'b0;
         sfu_start = 1'b0;
         vector_a_flat = '0;
         vector_b_flat = '0;
+        small_vector_a_flat = '0;
+        small_vector_b_flat = '0;
         reduction_x_flat = '0;
         repeat (4) @(posedge clk);
         rst_n = 1'b1;
 
         run_vector_tests();
+        run_vector_parameter_override_test();
         run_reduction_tests();
         run_sfu_tests();
         run_softmax_primitive_sequence_test();
@@ -190,12 +234,77 @@ module primitive_engines_tb;
             set_vec_b(0, 32'sd5);
             launch_vector();
             check_vec_y(0, -32'sd15);
+
+            vector_op = VEC_REQUANT;
+            vector_shift = 5'd2;
+            vector_clamp_low = -32'sd4;
+            vector_clamp_high = 32'sd7;
+            set_vec_a(0, -32'sd32);
+            set_vec_a(1, -32'sd7);
+            set_vec_a(2, 32'sd12);
+            set_vec_a(3, 32'sd64);
+            launch_vector();
+            check_vec_y(0, -32'sd4);
+            check_vec_y(1, -32'sd2);
+            check_vec_y(2, 32'sd3);
+            check_vec_y(3, 32'sd7);
+        end
+    endtask
+
+    task automatic set_small_vec_a(input int lane, input logic signed [15:0] value);
+        begin
+            small_vector_a_flat[(lane * SMALL_VECTOR_DATA_WIDTH) +: SMALL_VECTOR_DATA_WIDTH] = value;
+        end
+    endtask
+
+    task automatic check_small_vec_y(input int lane, input logic signed [15:0] expected);
+        logic signed [15:0] actual;
+        begin
+            actual = small_vector_y_flat[(lane * SMALL_VECTOR_DATA_WIDTH) +: SMALL_VECTOR_DATA_WIDTH];
+            if (actual !== expected) begin
+                $display("FAIL small vector lane %0d actual=%0d expected=%0d", lane, actual, expected);
+                $fatal(1);
+            end
+        end
+    endtask
+
+    task automatic launch_small_vector;
+        begin
+            small_vector_start = 1'b1;
+            @(posedge clk);
+            #1;
+            if (!small_vector_done) begin
+                $display("FAIL small vector did not assert done");
+                $fatal(1);
+            end
+            small_vector_start = 1'b0;
+            @(posedge clk);
+        end
+    endtask
+
+    task automatic run_vector_parameter_override_test;
+        begin
+            small_vector_valid_mask = 4'hf;
+            small_vector_scalar = 16'sd0;
+            small_vector_clamp_low = -16'sd16;
+            small_vector_clamp_high = 16'sd16;
+            small_vector_shift = 5'd1;
+            set_small_vec_a(0, -16'sd40);
+            set_small_vec_a(1, -16'sd3);
+            set_small_vec_a(2, 16'sd14);
+            set_small_vec_a(3, 16'sd80);
+            small_vector_op = VEC_REQUANT;
+            launch_small_vector();
+            check_small_vec_y(0, -16'sd16);
+            check_small_vec_y(1, -16'sd2);
+            check_small_vec_y(2, 16'sd7);
+            check_small_vec_y(3, 16'sd16);
         end
     endtask
 
     task automatic set_reduce_x(input int index, input logic signed [31:0] value);
         begin
-            reduction_x_flat[(index * DATA_WIDTH) +: DATA_WIDTH] = value;
+            reduction_x_flat[(index * REDUCTION_DATA_WIDTH) +: REDUCTION_DATA_WIDTH] = value;
         end
     endtask
 

@@ -1,97 +1,76 @@
-# SFU v1 Design
+# SFU v1
 
-## 1. Target / 目标
+## Scope
 
-SFU v1 provides deterministic fixed-point approximations needed by Transformer
-micro-kernels. It does not implement floating-point exp/div/sqrt.
+Primitive standalone special-function unit for Transformer bring-up. Covered ops
+are `SFU_EXP`, `SFU_RECIP`, and `SFU_RSQRT`.
 
-Required v1 functions:
+## Parameters and source-of-truth config fields
 
-- `SFU_EXP` for softmax;
-- `SFU_RECIP` for softmax normalization;
-- `SFU_RSQRT` for RMSNorm.
+Source of truth: `arch/configs/npu_transformer_v1.jsonc`.
 
-## 2. Overall Design / 整体设计思路
-
-The first SFU should be LUT-oriented and deterministic:
-
-```text
-uop scheduler
-  -> scalar/vector SFU input
-  -> LUT or small approximation stage
-  -> fixed-point result
-```
-
-The first module should live under:
-
-```text
-hw/npu_core/rtl/sfu/
-```
-
-V1 prefers simple LUTs over iterative math unless PPA evidence later justifies
-more complex approximations.
-
-## 3. Key Details / 重点细节
-
-Softmax EXP:
-
-| Field | v1 value |
+| Parameter | Config field |
 | --- | --- |
-| input | signed fixed-point delta |
-| input scale | 32 |
-| clamp range | `[-256, 0]`, representing `[-8, 0]` |
-| LUT entries | 257 |
-| output | uint16 Q0.15 |
+| `DATA_WIDTH` | `modules.sfu.data_width` |
+| EXP input scale | `modules.sfu.exp_input_scale` |
+| EXP LUT entries | `modules.sfu.exp_lut_entries` |
+| EXP output Q | `modules.sfu.exp_output_q` |
+| Bring-up EXP segments | `modules.sfu.bringup_exp_q15_segments` |
+| RECIP output Q | `modules.sfu.recip_output_q` |
+| RSQRT output Q | `modules.sfu.rsqrt_output_q` |
+| `OP_SFU_*` | `primitive_op_encodings.sfu.*` |
 
-RECIP:
+## Input/output dtype and Q format
 
-| Field | v1 value |
-| --- | --- |
-| input | uint32 sum |
-| output | uint16 or uint24 fixed-point reciprocal |
-| zero behavior | return zero and flag invalid input if exposed later |
+Current RTL input and output ports are `DATA_WIDTH` bits. EXP takes signed
+integer input scaled by `exp_input_scale = 32` and returns Q0.15 in the low
+16 bits. RECIP and RSQRT return unsigned Q24-style approximations.
 
-RSQRT:
+## Operation semantics
 
-| Field | v1 value |
-| --- | --- |
-| input | fixed-point mean square plus epsilon |
-| output | fixed-point reciprocal square root |
-| use case | RMSNorm row |
+Target v1 EXP semantics are a 257-entry Q0.15 LUT over clamped integer input
+`[-256, 0]`. Current RTL does not implement that target table. Current EXP is a
+9-segment coarse LUT matched by `softmax_rtl_model_row_q15` in
+`sw/tools/transformer/micro_golden.py`.
 
-Counter semantics:
+Current RECIP computes `(1 << 24) / x` with integer division and returns zero
+for zero input. Current RSQRT computes `isqrt(x)` and then `(1 << 24) / root`.
+These are bring-up models, not production SFU implementations.
 
-| Counter | Meaning |
-| --- | --- |
-| `sfu_active_cycles` | SFU accepts input or produces approximation progress |
-| `sfu_stall_cycles` | SFU op assigned but input/result path unavailable |
-| `sfu_idle_cycles` | no SFU op assigned |
+## Latency model
 
-## 4. Verification / 验证测试
+Current RTL is single-cycle start-to-done. Final LUT/Newton paths may have
+different latency and must update this spec before integration.
 
-Initial tests:
+## active/stall/done semantics
 
-- EXP LUT endpoints: `0`, `-1`, `-8`, below clamp range;
-- monotonic EXP output over clamped range;
-- RECIP simple denominators and zero behavior;
-- RSQRT simple positive inputs;
-- softmax row golden comparison through Python Q15 reference.
+`active` mirrors `start`. `done` pulses for one cycle when `start` is sampled.
+There is no valid/ready pipeline and no real stall counter.
 
-Golden source:
+## Rounding/saturation behavior
 
-```text
-sw/tools/transformer/micro_golden.py
-arch/specs/transformer/v1/transformer_numerical_v1.md
-```
+EXP clamps input to `[-256, 0]` and selects a coarse segment. RECIP/RSQRT use
+integer truncating division. Zero input returns zero for reciprocal-like ops.
 
-## 5. Implementation Priority / 实现优先级
+## PPA counters
 
-1. Add standalone EXP LUT module or combined SFU module. Status: implemented
-   as `hw/npu_core/rtl/sfu/sfu_lut.sv`.
-2. Add RECIP and RSQRT approximations with documented fixed-point formats.
-   Status: implemented as simple deterministic approximations for standalone
-   validation.
-3. Connect to reduction/vector micro-kernel fixtures. Status: implemented in
-   the standalone primitive testbench; scheduler integration is still pending.
-4. Add measured SFU cycles only when scheduler integration exists. Status:
-   pending.
+Required v1 reporting includes `sfu_active_cycles` and
+`stall_cycles_by_engine`. Current standalone RTL exposes only `active`; real
+counter integration is deferred.
+
+## Current RTL status
+
+Implemented as `hw/npu_core/rtl/sfu/sfu_lut.sv`. The design-side integration
+point is `hw/npu_core/rtl/transformer_primitive_engines.sv`, which imports
+generated config and passes SFU parameters/op encodings explicitly. The file
+name is provisional: current EXP is a 9-segment coarse LUT, not the 257-entry
+target LUT.
+
+## Known gaps
+
+- Primitive standalone bring-up RTL only.
+- No valid/ready pipeline.
+- No real stall counters.
+- No full softmax pipeline.
+- EXP target 257-entry Q0.15 LUT is not implemented.
+- Production reciprocal/rsqrt LUT/Newton implementation is deferred.

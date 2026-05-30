@@ -1,5 +1,22 @@
 module sfu_lut #(
-    parameter int DATA_WIDTH = 32
+    parameter int DATA_WIDTH = 32,
+    parameter int EXP_INPUT_SCALE = 32,
+    parameter int EXP_LUT_ENTRIES = 257,
+    parameter int EXP_OUTPUT_Q = 15,
+    parameter int RECIP_OUTPUT_Q = 24,
+    parameter int RSQRT_OUTPUT_Q = 24,
+    parameter int BRINGUP_EXP_SEG_0 = 32767,
+    parameter int BRINGUP_EXP_SEG_1 = 12055,
+    parameter int BRINGUP_EXP_SEG_2 = 4435,
+    parameter int BRINGUP_EXP_SEG_3 = 1632,
+    parameter int BRINGUP_EXP_SEG_4 = 600,
+    parameter int BRINGUP_EXP_SEG_5 = 221,
+    parameter int BRINGUP_EXP_SEG_6 = 81,
+    parameter int BRINGUP_EXP_SEG_7 = 30,
+    parameter int BRINGUP_EXP_SEG_8 = 11,
+    parameter int OP_SFU_EXP = 0,
+    parameter int OP_SFU_RECIP = 1,
+    parameter int OP_SFU_RSQRT = 2
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -10,9 +27,13 @@ module sfu_lut #(
     output logic active,
     output logic [DATA_WIDTH-1:0] y
 );
-    localparam logic [1:0] SFU_EXP = 2'd0;
-    localparam logic [1:0] SFU_RECIP = 2'd1;
-    localparam logic [1:0] SFU_RSQRT = 2'd2;
+    localparam logic [1:0] SFU_EXP = OP_SFU_EXP[1:0];
+    localparam logic [1:0] SFU_RECIP = OP_SFU_RECIP[1:0];
+    localparam logic [1:0] SFU_RSQRT = OP_SFU_RSQRT[1:0];
+    localparam int EXP_CLAMP_MIN = -8 * EXP_INPUT_SCALE;
+    localparam int EXP_SEGMENT_WIDTH = EXP_INPUT_SCALE;
+    localparam int EXP_SEGMENT_ROUND = EXP_SEGMENT_WIDTH / 2;
+    localparam int RSQRT_ROOT_BITS = DATA_WIDTH / 2;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -39,26 +60,26 @@ module sfu_lut #(
         integer segment;
         begin
             if (value > 0) clamped = 0;
-            else if (value < -256) clamped = -256;
+            else if (value < EXP_CLAMP_MIN) clamped = EXP_CLAMP_MIN;
             else clamped = value;
-            segment = (-clamped + 16) / 32;
+            segment = (-clamped + EXP_SEGMENT_ROUND) / EXP_SEGMENT_WIDTH;
             case (segment)
-                0: exp_q15 = 16'd32767;
-                1: exp_q15 = 16'd12055;
-                2: exp_q15 = 16'd4435;
-                3: exp_q15 = 16'd1632;
-                4: exp_q15 = 16'd600;
-                5: exp_q15 = 16'd221;
-                6: exp_q15 = 16'd81;
-                7: exp_q15 = 16'd30;
-                default: exp_q15 = 16'd11;
+                0: exp_q15 = BRINGUP_EXP_SEG_0[15:0];
+                1: exp_q15 = BRINGUP_EXP_SEG_1[15:0];
+                2: exp_q15 = BRINGUP_EXP_SEG_2[15:0];
+                3: exp_q15 = BRINGUP_EXP_SEG_3[15:0];
+                4: exp_q15 = BRINGUP_EXP_SEG_4[15:0];
+                5: exp_q15 = BRINGUP_EXP_SEG_5[15:0];
+                6: exp_q15 = BRINGUP_EXP_SEG_6[15:0];
+                7: exp_q15 = BRINGUP_EXP_SEG_7[15:0];
+                default: exp_q15 = BRINGUP_EXP_SEG_8[15:0];
             endcase
         end
     endfunction
 
     function automatic [31:0] recip_q24(input logic [31:0] value);
         begin
-            recip_q24 = (value == 0) ? 32'h0 : (32'd16777216 / value);
+            recip_q24 = (value == 0) ? 32'h0 : ((32'd1 << RECIP_OUTPUT_Q) / value);
         end
     endfunction
 
@@ -66,7 +87,7 @@ module sfu_lut #(
         logic [31:0] root;
         begin
             root = isqrt(value);
-            rsqrt_q24 = (root == 0) ? 32'h0 : (32'd16777216 / root);
+            rsqrt_q24 = (root == 0) ? 32'h0 : ((32'd1 << RSQRT_OUTPUT_Q) / root);
         end
     endfunction
 
@@ -76,7 +97,7 @@ module sfu_lut #(
         logic [31:0] root;
         begin
             root = 32'h0;
-            for (bit_idx = 15; bit_idx >= 0; bit_idx = bit_idx - 1) begin
+            for (bit_idx = RSQRT_ROOT_BITS - 1; bit_idx >= 0; bit_idx = bit_idx - 1) begin
                 candidate = root | (32'h1 << bit_idx);
                 if (candidate * candidate <= value) begin
                     root = candidate;

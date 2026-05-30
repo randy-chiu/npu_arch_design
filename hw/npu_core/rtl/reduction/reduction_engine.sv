@@ -2,7 +2,10 @@ module reduction_engine #(
     parameter int MAX_LEN = 128,
     parameter int DATA_WIDTH = 32,
     parameter int LEN_WIDTH = 8,
-    parameter int RESULT_WIDTH = 64
+    parameter int RESULT_WIDTH = 64,
+    parameter int OP_REDUCE_MAX = 0,
+    parameter int OP_REDUCE_SUM = 1,
+    parameter int OP_REDUCE_SUMSQ = 2
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -14,9 +17,9 @@ module reduction_engine #(
     output logic active,
     output logic signed [RESULT_WIDTH-1:0] result
 );
-    localparam logic [1:0] REDUCE_MAX = 2'd0;
-    localparam logic [1:0] REDUCE_SUM = 2'd1;
-    localparam logic [1:0] REDUCE_SUMSQ = 2'd2;
+    localparam logic [1:0] REDUCE_MAX = OP_REDUCE_MAX[1:0];
+    localparam logic [1:0] REDUCE_SUM = OP_REDUCE_SUM[1:0];
+    localparam logic [1:0] REDUCE_SUMSQ = OP_REDUCE_SUMSQ[1:0];
 
     integer idx;
     logic signed [DATA_WIDTH-1:0] x_value;

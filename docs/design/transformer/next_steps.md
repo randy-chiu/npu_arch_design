@@ -24,6 +24,61 @@ LLM or fused attention pipeline.
 
 ## Ordered Work
 
+### 0. Primitive Contract Cleanup
+
+Status:
+
+- Implemented: Transformer primitive dimensions, local op encodings, current
+  SFU bring-up LUT constants, and RECIP/RSQRT Q formats are sourced from
+  `arch/configs/npu_transformer_v1.jsonc`.
+- Implemented: `make transformer-config` emits SV/C/Python constants under
+  `build/generated/`.
+- Implemented: `hw/npu_core/rtl/transformer_primitive_engines.sv` is the
+  design-side primitive integration point and explicitly passes generated
+  parameters into vector/reduction/SFU RTL.
+- Still deferred: production SFU LUT/Newton, valid/ready pipeline, full
+  requant.
+
+### 0.1 SFU EXP 257-entry LUT Expansion
+
+Detailed design: `docs/design/transformer/sfu_exp_lut257_design.md`.
+
+Acceptance criteria:
+
+- Generate the 257-entry Q0.15 EXP table from the numerical spec source and
+  config scale/Q fields.
+- Replace current `bringup_exp_q15_segments` usage in RTL with the generated
+  257-entry table.
+- Keep `softmax_reference_*`, `softmax_fixed_spec_*`, and
+  `softmax_rtl_model_*` separate while the old and new SFU models coexist.
+- Update README status from 9-segment bring-up to 257-entry implemented only
+  after RTL/golden/tests match.
+
+### 0.2 Valid/Ready and Counter Expansion
+
+Detailed design: `docs/design/transformer/primitive_valid_ready_v1.md`.
+
+Acceptance criteria:
+
+- Add an engine-level issue/accept/done contract before scheduler integration:
+  `valid`, `ready`, `done`, and stable input hold rules.
+- Define active/stall/idle counter increments in the spec before adding CSRs.
+- Preserve the existing single-start bring-up tests as compatibility tests
+  until the scheduler path consumes the valid/ready interface.
+
+### 0.3 Requant v2 Expansion
+
+Detailed design: `docs/design/transformer/requant_v2_design.md`.
+
+Acceptance criteria:
+
+- Add a mode field or distinct op contract for `mul_round_shift_clamp`.
+- Extend config/spec/golden with multiplier width, rounding mode, shift, clamp,
+  and optional zero-point behavior.
+- Keep current `shift_clamp` as a named v1 mode with regression coverage.
+- Only switch Transformer fixed-spec softmax/RMSNorm paths to v2 requant after
+  RTL-like golden and primitive RTL tests agree.
+
 ### 1. Accumulator File Integration
 
 Acceptance criteria:

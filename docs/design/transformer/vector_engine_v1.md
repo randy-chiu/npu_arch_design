@@ -1,101 +1,81 @@
-# Vector Engine v1 Design
+# Vector Engine v1
 
-## 1. Target / 目标
+## Scope
 
-Vector Engine v1 provides primitive lane-wise integer operations used by
-Transformer micro-kernels. It is not a fused softmax or RMSNorm unit.
+Primitive standalone vector RTL for Transformer bring-up. Covered ops are
+`VEC_ADD`, `VEC_SUB`, `VEC_MUL`, `VEC_SCALE`, `VEC_REQUANT`, and `VEC_CLAMP`.
+This is not a full vector pipeline or scheduler integration contract.
 
-Initial use cases:
+## Parameters and source-of-truth config fields
 
-- stable softmax row: `VEC_SUB`, `VEC_CLAMP`, `VEC_MUL`;
-- RMSNorm row: lane-wise multiply/scale after `REDUCE_SUMSQ` and `SFU_RSQRT`;
-- future requantization after matrix or vector intermediate results.
+Source of truth: `arch/configs/npu_transformer_v1.jsonc`.
 
-## 2. Overall Design / 整体设计思路
-
-The v1 vector engine is an in-order primitive execution block behind the uop
-scheduler:
-
-```text
-uop scheduler
-  -> vector operand buffer
-  -> VECTOR_LANES=8 lane datapath
-  -> vector result buffer
-```
-
-The first RTL module should be standalone under:
-
-```text
-hw/npu_core/rtl/vector/
-```
-
-It should be tested independently before connecting to `npu_v0_top`.
-
-## 3. Key Details / 重点细节
-
-Parameters:
-
-| Field | v1 value |
+| Parameter | Config field |
 | --- | --- |
-| `VECTOR_LANES` | 8 |
-| input types | int16 and int32 paths |
-| output types | int16/int32 internal, later int8/uint16 through requant |
-| issue model | one primitive op per issued uop |
-| edge handling | valid-lane mask, default all lanes valid |
+| `LANES` | `modules.vector_engine.lanes` |
+| `DATA_WIDTH` | `modules.vector_engine.data_width` |
+| `OP_VEC_*` | `primitive_op_encodings.vector.*` |
 
-Primitive ops:
+Generated integration constants are emitted in
+`build/generated/npu_transformer_v1_config_pkg.sv`. RTL integration must pass
+both shape parameters and op encodings explicitly; module defaults are only a
+standalone fallback.
+
+## Input/output dtype and Q format
+
+Inputs and outputs are signed integer lanes of `DATA_WIDTH` bits. Current
+bring-up tests use signed 32-bit lanes. `VEC_REQUANT` current mode is
+`shift_clamp`; see `requant_v1.md`.
+
+## Operation semantics
+
+For active lanes in `valid_mask`, operations are lane-wise:
 
 | Op | Semantics |
 | --- | --- |
-| `VEC_ADD` | `y[i] = a[i] + b[i]` |
-| `VEC_SUB` | `y[i] = a[i] - b[i]` |
-| `VEC_MUL` | `y[i] = a[i] * b[i]` |
-| `VEC_SCALE` | `y[i] = (a[i] * scale) >> shift` |
-| `VEC_REQUANT` | clamp/round/shift wider input to target integer format |
-| `VEC_CLAMP` | `y[i] = min(max(x[i], low), high)` |
+| `VEC_ADD` | `a + b` |
+| `VEC_SUB` | `a - b` |
+| `VEC_MUL` | low `DATA_WIDTH` bits of `a * b` |
+| `VEC_SCALE` | `(a * scalar) >>> shift` |
+| `VEC_REQUANT` | `(a >>> shift)` clamped to `[clamp_low, clamp_high]` |
+| `VEC_CLAMP` | `a` clamped to `[clamp_low, clamp_high]` |
 
-Counter semantics:
+Inactive lanes produce zero in current RTL.
 
-| Counter | Meaning |
-| --- | --- |
-| `vector_active_cycles` | vector op accepted and produces progress |
-| `vector_stall_cycles` | vector op assigned but input/output path unavailable |
-| `vector_idle_cycles` | no vector op assigned |
+## Latency model
 
-V1 may implement one-cycle combinational lane ops for ADD/SUB/CLAMP and a
-registered one-cycle MUL/SCALE path. The report must use measured active cycles
-once the module is connected; standalone tests can check only functionality.
+Current RTL is single-cycle start-to-done in the cycle after the sampled
+`start` edge. This is a bring-up model, not a timing target for production.
 
-## 4. Verification / 验证测试
+## active/stall/done semantics
 
-Initial tests:
+`active` mirrors `start`. `done` pulses for one cycle when `start` is sampled.
+There is no valid/ready interface, no back-pressure, and no real stall counter.
 
-- directed ADD/SUB/MUL with signed values;
-- SCALE with positive and negative inputs;
-- CLAMP for softmax range `[-256, 0]`;
-- REQUANT saturation behavior.
+## Rounding/saturation behavior
 
-Golden source:
+`VEC_SCALE` and current `VEC_REQUANT` use arithmetic right shift with truncation.
+`VEC_CLAMP` and `VEC_REQUANT` saturate only to explicit clamp bounds. Add/sub/mul
+do not provide full overflow saturation.
 
-```text
-sw/tools/transformer/micro_golden.py
-```
+## PPA counters
 
-Required gates after integration:
+Required v1 reporting includes `vector_active_cycles` and
+`stall_cycles_by_engine`. Current standalone RTL exposes only `active`; counter
+integration is deferred to the wrapper/scheduler path.
 
-```text
-make npu-core-sim
-make test
-```
+## Current RTL status
 
-## 5. Implementation Priority / 实现优先级
+Implemented as `hw/npu_core/rtl/vector/vector_engine.sv`. The design-side
+integration point is `hw/npu_core/rtl/transformer_primitive_engines.sv`, which
+imports generated config and passes vector parameters/op encodings explicitly.
+Integrated tests instantiate that wrapper and include a smaller direct override
+instance to prove parameters are not relying on defaults.
 
-1. Add standalone vector RTL and testbench. Status: implemented as
-   `hw/npu_core/rtl/vector/vector_engine.sv`.
-2. Match Python golden for softmax clamp and RMSNorm scale cases. Status:
-   directed RTL cases and standalone softmax/RMSNorm primitive sequences pass
-   through `make primitive-engines-sim`.
-3. Add uop decode constants only after standalone module passes. Status:
-   pending.
-4. Connect perf counters after the scheduler path is reviewed. Status:
-   pending.
+## Known gaps
+
+- Primitive standalone bring-up RTL only.
+- No valid/ready pipeline.
+- No real stall counters.
+- No full requant policy.
+- No scheduler-owned issue/retire protocol.
