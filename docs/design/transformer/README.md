@@ -13,7 +13,10 @@ the public SoC/wrapper/perf/PPA contracts in `docs/design/`.
 | `attention_numerical_v1.md` | Fixed-point attention math, examples, Q formats, and golden/RTL consistency rules |
 | `attention_workload_ppa.md` | Attention workload grouping, measured/model-only boundaries, and PPA fields |
 | `transformer_v1_test_plan.md` | Transformer V1 verification targets, constraints, acceptance criteria, and deferred tests |
-| `software_runtime_compiler_attention.md` | Compiler lowering, runtime launch models, command-list needs, and tensor layout for attention |
+| `software_runtime_compiler_attention.md` | Overview for attention software execution ownership and next coding order |
+| `attention_operators_v1.md` | Operator contracts for attention QK, score scale/mask, softmax, PV, and composite SDPA |
+| `attention_compiler_v1.md` | Compiler plan for lowering SDPA to primitive stages, buffers, and runtime jobs |
+| `attention_runtime_v1.md` | Runtime design for descriptor launch, SRAM buffers, firmware dispatch, and grouped PPA |
 | `matrix_mixed_precision_v1.md` | Shared matrix extension for attention PV `Q0.15 x int8` mixed precision |
 | `vector_engine_v1.md` | Vector primitive engine contract for ADD/SUB/MUL/SCALE/REQUANT/CLAMP |
 | `reduction_engine_v1.md` | Reduction primitive engine contract for MAX/SUM/SUMSQ |

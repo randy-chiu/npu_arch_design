@@ -2,6 +2,31 @@
 
 [TOC]
 
+## 2026-05-31 Attention Software Stack Design
+
+Decision:
+
+- Split the next attention software work into three design-owned modules:
+  operators, compiler, and runtime.
+- Keep attention as a software/compiler sequence over existing matrix, vector,
+  reduction, and SFU primitives.
+- Make score scale/mask an explicit stage boundary between QK and softmax, even
+  while the first executable path may materialize it in fixtures.
+
+Reasoning:
+
+- QK, softmax, and PV can already be measured as stage jobs, but the parent
+  attention workload is not yet launched from one compiler-produced plan.
+- A real software stack needs operator contracts, compiler lowering, generated
+  runtime jobs, intermediate buffer metadata, and PPA provenance before adding
+  more RTL.
+
+Documentation:
+
+- `docs/design/transformer/attention_operators_v1.md`
+- `docs/design/transformer/attention_compiler_v1.md`
+- `docs/design/transformer/attention_runtime_v1.md`
+
 ## 2026-05-31 Transformer Attention Mixed Precision Direction
 
 Decision:

@@ -16,6 +16,68 @@ are underspecified, and which missing features must be added before attention
 measurements are valid PPA evidence?
 ```
 
+## Current Attention Validation Summary
+
+The current SoC path has passed stage-level end-to-end validation for the basic
+attention building blocks:
+
+```text
+QK score:     Q_s8 * K_t_s8          -> int32 score tile
+Softmax row:  scaled/masked score    -> Q0.15 probability row/tile
+PV:           P_q15 * V_s8           -> int32 output tile
+```
+
+This is enough evidence that the basic attention primitives can execute through
+the CPU-to-NPU descriptor path. It is not yet evidence that a single firmware
+or runtime-generated attention operation executes the full formula as one
+grouped workload.
+
+Current boundary:
+
+- QK, softmax, and PV are launched and measured as separate descriptor jobs.
+- The scale/mask boundary is explicit in the design, but the current executable
+  smoke path may still materialize or pre-stage the softmax input.
+- The parent `attention_prefill_s8_d8` workload remains model-only until
+  compiler output drives runtime launch of the full sequence and owns the
+  intermediate buffers.
+
+Therefore the next software task is to make operators, compiler, and runtime
+generate the stage sequence and runtime jobs, rather than continuing to encode
+attention execution behavior inside fixture-specific code.
+
+## Current PPA Status And Gaps
+
+Current PPA evidence is Level 0 only:
+
+- performance cycles and movement counters come from RTL/SoC simulation;
+- normalized area is a structural proxy, not synthesized area;
+- normalized energy is event/coefficient proxy, not measured power;
+- external-memory energy is modeled from workload metadata.
+
+Measured stage PPA exists for:
+
+| Stage | Current PPA evidence | Main gap |
+| --- | --- | --- |
+| QK | measured cycles, data mover words, useful MACs, matrix utilization, L0 energy proxy | no grouped attention parent execution yet |
+| Softmax | measured cycles through vector/reduction/SFU sequence, L0 energy proxy | vector/reduction/SFU events are not yet split into reliable per-submodule active-cycle/energy counters |
+| PV | measured cycles through shared mixed matrix mode, useful MACs, matrix utilization, L0 energy proxy | mixed `u16 x s8` area/energy still uses generic MAC proxy coefficients |
+| Full attention parent | model-only/group metadata | no generated runtime plan, no measured group total, no measured scale/mask cost |
+
+Missing before claiming complete attention PPA:
+
+- generated runtime group execution for QK -> scale/mask -> softmax -> PV;
+- explicit PPA row for scale/mask bridge, measured or clearly model-only;
+- group total cycles and energy provenance for `attention_prefill_s8_d8`;
+- submodule counters or derived events for matrix, vector, reduction, SFU, data
+  mover, and scheduler/control;
+- event-energy coefficients split by `int8xint8` MAC, `u16xint8` MAC,
+  vector lane op, reduction element op, SFU EXP, and SFU RECIP;
+- structural area proxy split by matrix, mixed-precision multiplier delta,
+  vector lanes, reduction tree, SFU LUT/table, accumulator/local buffers, and
+  wrapper/data mover;
+- later L1 mapped area/timing and L2 activity-driven power if architecture
+  choices need ASIC trend validation.
+
 ## V1 Module Status
 
 | V1 module | Design doc | RTL / tooling status | Verification status | Next action |
@@ -30,7 +92,7 @@ measurements are valid PPA evidence?
 | SFU | `docs/design/transformer/sfu_v1.md` | standalone `sfu/sfu_lut.sv` implemented | EXP/RECIP/RSQRT and sequence tests pass | refine LUT/tolerance before model accuracy claims |
 | memory / scratchpad / data mover | common docs in `docs/design/` | v0 wrapper data mover exists | perf/PPA pass | add v1 internal scratchpad contract before widening |
 | KV cache subsystem | `arch/specs/transformer/v1/transformer_npu_v1.md` | spec/model-only counters only | perf/PPA model-only traffic visible | no RTL until decode traffic evidence justifies it |
-| Transformer attention workloads | `docs/design/transformer/attention_workload_ppa.md` | current manifest has QK/PV/softmax-like model-only entries and tiny executable matmul workloads | quick profile enters perf/PPA for current executable matmul; full attention group is pending | make attention parent/stage workload identity the main PPA surface |
+| Transformer attention workloads | `docs/design/transformer/attention_workload_ppa.md` | QK, attention softmax, and mixed PV stage jobs execute; full attention parent is still model-only | stage-level SoC/PPA path passes; grouped attention runtime is pending | make compiler/runtime generated attention group the main PPA surface |
 
 ## Ordered Work
 
@@ -44,8 +106,10 @@ Status:
 - Implemented in documentation: attention workload/PPA and compiler/runtime
   documents define parent/stage grouping, model-only versus measured evidence,
   and software-owned lowering.
-- Still deferred: full attention golden/workload implementation, scheduler
-  command-list ABI, and measured primitive sequence execution.
+- Implemented in current SoC path: QK, softmax, and PV stages are separately
+  executable and visible in PPA.
+- Still deferred: compiler-generated grouped attention runtime, executable
+  scale/mask bridge, command-list ABI, and measured full-attention parent row.
 
 Acceptance criteria:
 
@@ -228,31 +292,34 @@ make npu-core-sim
 
 Acceptance criteria:
 
-- `attention_softmax_s8` has generated fixture data and expected Q0.15
-  outputs.
-- The workload manifest keeps it as `model_only` or `primitive_rtl_unit` until
-  firmware/runtime execution exists.
-- Perf/PPA fields stay `null` for unavailable runtime cycles rather than
-  pretending they are measured.
+- `attention_softmax_s8` has generated fixture data and expected Q0.15 outputs.
+- It executes through the CPU-to-NPU `attention_softmax_v1` descriptor path.
+- Perf/PPA reports measured stage cycles for the current bring-up numerical
+  contract.
+- Vector/reduction/SFU submodule event split remains a PPA gap until counters
+  or derived event accounting are added.
 - RMSNorm remains covered but is not the next PPA driver.
 
 Status:
 
-- Implemented for standalone primitive sequence validation.
+- Implemented for standalone primitive sequence validation and SoC stage-level
+  attention softmax bring-up.
 - Python golden functions:
   - `softmax_row_primitive_lut_q15()`;
   - `rmsnorm_primitive_sequence()`.
 - RTL sequence coverage lives in `hw/npu_core/tb/primitive_engines_tb.sv`.
-- These are not yet firmware-executable workloads and do not report measured
-  runtime cycles in perf/PPA.
+- The attention softmax smoke uses the hardwired current V1 sequence in
+  `npu_v0_top.sv`; it is measured but still labeled as the bring-up numerical
+  contract until SFU/RECIP are upgraded to the target fixed spec.
 
 ### 4. PV Policy And GEMV / Skinny GEMM Execution Path
 
 Acceptance criteria:
 
 - Decide PV policy:
-  - probability requantized to int8 and reused by matrix engine; or
-  - mixed Q0.15 x int8 weighted-sum/matrix support.
+  - selected current direction: mixed Q0.15 x int8 weighted-sum/matrix support;
+  - deferred approximation: probability requantized to int8 and reused by the
+    old matrix mode.
 - Add a true `GEMV_TILE` or valid-row/valid-column skinny-GEMM path.
 - Report distinguishes:
   - full tile GEMM;
@@ -265,22 +332,40 @@ Acceptance criteria:
 Upgrade trigger:
 
 - int8 probability PV is acceptable as an explicitly labeled approximation;
-- mixed Q0.15 x int8 PV becomes necessary when probability requantization error
-  blocks attention output accuracy or when PPA comparison needs the more
-  faithful datapath.
+- mixed Q0.15 x int8 PV is now the attention PV direction and should keep using
+  the shared matrix path, with upgraded area/energy coefficients before making
+  mixed-precision PPA claims.
 
 ### 5. Attention Runtime / Command-List Path
 
-Detailed design: `docs/design/transformer/software_runtime_compiler_attention.md`.
+Detailed design:
+
+- `docs/design/transformer/software_runtime_compiler_attention.md`
+- `docs/design/transformer/attention_operators_v1.md`
+- `docs/design/transformer/attention_compiler_v1.md`
+- `docs/design/transformer/attention_runtime_v1.md`
 
 Acceptance criteria:
 
+- Add operator metadata for QK, score scale/mask, softmax, PV, and composite
+  SDPA.
 - Add compiler lowering from logical attention to primitive stage sequence.
 - Add runtime launch model:
-  - multi-descriptor firmware loop for measured QK first;
-  - command-list executor before full measured attention.
+  - multi-descriptor firmware loop for generated grouped stage execution first;
+  - command-list executor before production-like full measured attention.
 - Define intermediate score/probability/output buffer allocation.
 - Preserve generated `job_id` to manifest correlation.
+- Promote `attention_prefill_s8_d8` from model-only only after generated runtime
+  launches QK -> scale/mask -> softmax -> PV and PPA reports the group
+  provenance.
+
+PPA acceptance additions:
+
+- report measured stage cycles and group total separately;
+- expose or derive matrix/vector/reduction/SFU/data-mover events;
+- split energy proxy coefficients for `int8xint8` MAC and `u16xint8` mixed MAC;
+- split structural area proxy by matrix, vector, reduction, SFU, buffers, and
+  wrapper/data mover before using submodule area conclusions.
 
 ### 6. KV Cache Counter Path
 

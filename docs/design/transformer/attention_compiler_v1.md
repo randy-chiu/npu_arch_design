@@ -1,0 +1,360 @@
+# Attention Compiler v1
+
+## Scope
+
+This document defines the compiler design for lowering a logical Transformer
+attention operator to existing NPU primitive jobs. It is the implementation plan
+for `sw/tools/npu_compiler` and its interaction with `sw/npu_core/operators`.
+
+The compiler must replace the current attention-specific fixture logic as the
+owner of execution planning. The fixture generator should only generate
+deterministic tensor contents, expected outputs, and C/hex artifacts from
+compiler output.
+
+## Current State
+
+Implemented today:
+
+- `sw/tools/npu_compiler/phase0.py` lowers simple graph `matmul` and `softmax`
+  ops using `sw/npu_core/operators/phase0_intrinsics.json`;
+- `sw/tools/npu_compiler/k_stream.py` plans K-stream chunks for one matmul
+  output tile;
+- `sw/tools/transformer/generate_transformer_micro_fixtures.py` directly
+  selects attention QK, softmax, and PV executable jobs from the workload
+  manifest;
+- QK, softmax, and PV are measured as separate SoC jobs;
+- full attention parent metadata exists, but no compiler-produced plan drives
+  runtime execution of the full group.
+
+Missing:
+
+- typed Transformer attention operator IR;
+- lowering from `scaled_dot_product_attention_v1` to primitive stages;
+- explicit intermediate buffer planning for score and probability tensors;
+- compiler-owned stage/job identity;
+- generated runtime command descriptors;
+- compiler-owned grouped PPA metadata.
+
+## Compiler Inputs
+
+| Input | Source | Used for |
+| --- | --- | --- |
+| Operator metadata | `sw/npu_core/operators/transformer_attention_v1.json` | operator names, dtype/layout checks, primitive sequence, numerical contracts |
+| Workload manifest | `workloads/manifests/transformer/transformer_micro_v0.jsonc` | workload name, logical shape, attention group, PPA role |
+| Tensor metadata | fixtures now, future model import | tensor shape, dtype, layout, quantization |
+| Architecture config | `arch/configs/soc_v0.jsonc`, wrapper/core configs | descriptor op values, tile sizes, SRAM/program limits |
+
+## Compiler Output
+
+The compiler emits an `AttentionPlan`. The first coding version can be a Python
+dictionary validated by tests; a stable JSON schema can follow after the shape
+settles.
+
+```text
+AttentionPlan
+  workload_name
+  attention_group
+  logical_op = scaled_dot_product_attention_v1
+  shape
+  numerical_contract
+  tensors
+  buffers
+  stages[]
+  runtime_jobs[]
+  ppa
+```
+
+Stage entry example:
+
+```json
+{
+  "stage_id": "qk",
+  "operator": "matmul_s8s8_i32_tile",
+  "inputs": ["q", "k_t"],
+  "outputs": ["score_raw"],
+  "shape": {"m": 8, "n": 8, "k": 8},
+  "dtype": {"inputs": ["int8", "int8"], "output": "int32"},
+  "numerical_contract": "attention_bringup_v0_qk_exact"
+}
+```
+
+Runtime job entry example:
+
+```json
+{
+  "job_id_symbol": "JOB_ID_TRANSFORMER_ATTENTION_QK_S8_D8",
+  "stage_id": "qk",
+  "descriptor_op": "matmul_k_stream",
+  "input0": "q_tile_sram",
+  "input1": "k_t_tile_sram",
+  "output": "score_raw_sram",
+  "program": "matmul_program",
+  "k_chunks": 1,
+  "perf_scope": "attention_prefill_s8_d8/qk"
+}
+```
+
+Required stage order:
+
+| Stage | Operator | Current executable? | Output |
+| --- | --- | --- | --- |
+| `qk` | `matmul_s8s8_i32_tile` | yes | `score_raw_i32` |
+| `scale_mask` | `attention_score_scale_mask_v1` | partially, fixture/materialized | `score_softmax_in_i32` |
+| `softmax` | `attention_softmax_q15_v1` | yes | `prob_q15_u16` |
+| `pv` | `matmul_u16s8_q15_i32_tile` | yes | `o_i32` |
+
+## Lowering Algorithm
+
+### 1. Validate Logical Shape
+
+The first executable attention target is:
+
+```text
+S_q = 8
+S_k = 8
+D_k = 8
+D_v = 8
+```
+
+Validation rules:
+
+- Q shape is `S_q x D_k`;
+- K shape is `S_k x D_k` or already transposed `D_k x S_k`;
+- V shape is `S_k x D_v`;
+- physical tile sizes match current matrix and softmax contracts;
+- PV `K` dimension equals `S_k`.
+
+Unsupported shapes are rejected unless the workload is explicitly marked
+`model_only`.
+
+### 2. Choose K Layout
+
+QK requires:
+
+```text
+Q[S_q,D_k] * K^T[D_k,S_k]
+```
+
+Compiler policy:
+
+- if K is tagged `layout = transposed_d_by_s`, use it directly;
+- otherwise materialize a staged tensor `k_t`;
+- record the transform in the plan so fixture, golden, and runtime agree.
+
+Firmware should not own the transpose decision.
+
+### 3. Plan QK
+
+For each query/key tile:
+
+```text
+score_raw_tile = matmul_s8s8_i32_tile(q_tile, k_t_tile)
+```
+
+Current shape:
+
+```text
+M = 8, N = 8, K = 8, k_chunks = 1
+```
+
+For future `D_k > 8`, the compiler calls the existing K-stream planner and
+emits one runtime job with multiple chunks when the descriptor supports it.
+
+### 4. Plan Score Scale And Mask
+
+Mathematical attention requires:
+
+```text
+score_scaled = score_raw / sqrt(D_k)
+```
+
+Compiler fixed-point policy:
+
+```text
+scale_multiplier = round((1 / sqrt(D_k)) * 2^scale_shift)
+score_scaled = round_shift(score_raw * scale_multiplier, scale_shift)
+```
+
+The plan must record:
+
+| Field | Meaning |
+| --- | --- |
+| `scale_policy` | `power_of_two`, `multiplier_shift`, or `pre_scaled_fixture` |
+| `scale_multiplier` | integer multiplier when used |
+| `scale_shift` | right shift amount |
+| `rounding` | truncate or round-to-nearest |
+| `score_q_format` | fixed-point interpretation for softmax input |
+
+Current executable limitation:
+
+- the softmax descriptor consumes a pre-staged row;
+- first compiler integration may use `scale_policy = pre_scaled_fixture` for
+  the smoke workload while still emitting target multiplier/shift metadata.
+
+Mask planning:
+
+| Mask kind | Compiler action |
+| --- | --- |
+| `none` | all lanes valid |
+| `causal` | invalid when `key_position > query_position` |
+| `padding` | invalid from sequence valid length |
+| `tile_tail` | invalid outside logical sequence length |
+
+Invalid lanes become `SCORE_NEG_INF`. The compiler must record mask policy even
+when the first smoke workload uses `none`.
+
+### 5. Plan Softmax
+
+The compiler emits softmax over scaled/masked score rows:
+
+```text
+prob_q15 = attention_softmax_q15_v1(score_masked)
+```
+
+The stage records:
+
+- clamp range;
+- exp SFU contract;
+- reciprocal SFU contract;
+- probability output dtype `uint16_q0.15`;
+- test tolerance policy.
+
+For a full `8x8` probability matrix, runtime either launches one row/tile
+descriptor per row or later uses a row-loop descriptor/command list.
+
+### 6. Plan PV
+
+PV computes:
+
+```text
+O_i32[S_q,D_v] = P_q15[S_q,S_k] * V_s8[S_k,D_v]
+```
+
+Compiler action:
+
+- use `matmul_u16s8_q15_i32_tile`;
+- set descriptor op to `matmul_u16s8_q15`;
+- tag input0 as `uint16_q0.15`;
+- tag input1 as `int8`;
+- tag current output policy as `acc_shift15_truncate`.
+
+Future larger sequence length uses K-stream chunks along `S_k`.
+
+### 7. Emit Group Metadata
+
+The plan includes:
+
+```text
+attention_group = attention_prefill_s8_d8
+logical_op      = scaled_dot_product_attention_v1
+stages          = qk, scale_mask, softmax, pv
+```
+
+PPA rules:
+
+- stage rows report measured jobs when executable;
+- scale/mask is visible even if materialized/model-only;
+- parent remains `model_only` until runtime launches the compiler plan as a
+  grouped attention workload.
+
+## Buffer Planning
+
+| Buffer | Dtype | Producer | Consumer | Current location |
+| --- | --- | --- | --- | --- |
+| `q_tile` | int8 | fixture/model input | QK | SRAM input0 |
+| `k_t_tile` | int8 | compiler transpose/fixture | QK | SRAM input1 |
+| `score_raw` | int32 | QK | scale/mask | SRAM output |
+| `score_softmax_in` | int32 | scale/mask | softmax | SRAM/input window |
+| `prob_q15` | uint16 Q0.15 | softmax | PV | SRAM input0 |
+| `v_tile` | int8 | fixture/model input | PV | SRAM input1 |
+| `o_i32` | int32 | PV | output check/store | SRAM output |
+
+Initial allocation rules:
+
+- buffers from different attention groups must not alias;
+- `score_raw` and `prob_q15` must be separate because they have different
+  dtypes and consumers;
+- output buffers must not alias live input buffers;
+- every buffer records element width and word packing.
+
+## Modules To Add
+
+Proposed files:
+
+```text
+sw/tools/npu_compiler/attention.py
+sw/tools/npu_compiler/attention_plan_schema.py
+```
+
+`attention.py` owns metadata loading, attention lowering, K-stream planning for
+QK/PV, runtime job plan emission, and PPA metadata.
+
+`attention_plan_schema.py` owns required fields and validation for shape, dtype,
+layout, stage dependencies, and buffer lifetimes.
+
+## Verification
+
+Compiler unit tests:
+
+- lowering `scaled_dot_product_attention_v1` emits `qk`, `scale_mask`,
+  `softmax`, `pv` in order;
+- QK uses transposed K layout and records whether transpose was materialized;
+- score scale metadata for `D_k=8` is present even if smoke execution uses
+  pre-scaled input;
+- causal mask plan marks future key lanes invalid for decode rows;
+- PV uses `matmul_u16s8_q15` and `uint16_q0.15` input0;
+- generated runtime job stage names match manifest attention stages;
+- buffer validator rejects accidental alias between `score_raw` and `prob_q15`.
+
+Integration tests:
+
+- transformer fixture generation consumes `AttentionPlan`;
+- existing QK/softmax/PV smoke data remains bit-compatible unless a reviewed
+  numerical contract changes;
+- PPA report still emits per-stage measured rows;
+- parent full attention remains model-only until grouped runtime launch lands.
+
+## Iteration Plan
+
+### Compiler v1.0: Plan-Only Integration
+
+Deliverables:
+
+- operator metadata loaded;
+- `AttentionPlan` generated for current `S=8,D=8` prefill smoke;
+- fixture generator consumes plan stage metadata;
+- no RTL changes required.
+
+Trigger: before adding more attention shapes or decode masks.
+
+### Compiler v1.1: Scale/Mask Materialization
+
+Deliverables:
+
+- fixed-point scale multiplier/shift emitted from `D_k`;
+- mask policy emitted and tested;
+- golden/fixture include `score_raw`, `score_scaled`, and `score_masked`.
+
+Trigger: before claiming full attention numerical correctness.
+
+### Compiler v1.2: Grouped Runtime Command Planning
+
+Deliverables:
+
+- one grouped runtime plan for QK -> scale/mask -> softmax -> PV;
+- intermediate buffer allocation in the plan;
+- group-level perf scope and parent PPA row.
+
+Trigger: before promoting `attention_prefill_s8_d8` from model-only to measured
+software-grouped attention.
+
+### Compiler v2: Larger/Tiled Attention
+
+Deliverables:
+
+- multi-tile QK;
+- row-wise softmax across multiple key tiles;
+- PV across multiple sequence chunks;
+- spill/reload policy for score/probability buffers.
+
+Trigger: when sequence length or head dimension exceeds one 8x8 tile.
