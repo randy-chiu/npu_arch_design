@@ -2,6 +2,37 @@
 
 [TOC]
 
+## 2026-05-31 Transformer Attention Mixed Precision Direction
+
+Decision:
+
+- Project rules now explicitly require agents to reuse and extend existing RTL
+  modules before considering temporary one-off modules.
+- Project rules now require detailed module design documentation before module
+  coding.
+- `AGENT_RULES.md` was simplified to durable project rules: source-of-truth
+  specs, RTL reuse, design-before-code, complete cross-layer updates,
+  blast-radius verification, and decision journaling.
+- Attention PV will move away from the current int8 proxy path and toward a
+  shared matrix mixed-precision mode: `P_q15 * V_int8`.
+
+Reasoning:
+
+- `P` after softmax is already a fixed-point Q0.15 probability, so converting
+  it to int8 only to reuse the current matrix path loses precision and is not
+  the target architecture.
+- The mixed precision operation belongs in the shared matrix capability, not in
+  a standalone attention-only macro.
+
+Implementation plan:
+
+- Document the shared matrix mixed-precision mode in
+  `docs/design/transformer/matrix_mixed_precision_v1.md`.
+- Extend `matmul_array.sv` and the CPU-to-NPU descriptor path with
+  `matmul_u16s8_q15`.
+- Update transformer PV fixtures, firmware checks, and PPA metadata to use the
+  measured mixed matrix path.
+
 This journal records the project process and AI collaboration flow. It avoids
 low-level patch history and focuses on goals, decisions, reasoning, and team
 workflow.

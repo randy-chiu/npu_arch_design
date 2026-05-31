@@ -255,10 +255,14 @@ module soc_cpu_tb;
             end
             if (csr_op_type == SOC_NPU_JOB_OP_MATMUL) begin
                 print_csr_perf_job("matmul", sram_write_words);
+            end else if (csr_op_type == SOC_NPU_JOB_OP_MATMUL_U16S8_Q15) begin
+                print_csr_perf_job("matmul_u16s8_q15", sram_write_words);
             end else if (csr_op_type == SOC_NPU_JOB_OP_MATMUL_K_STREAM) begin
                 print_csr_perf_job("matmul_k_stream", sram_write_words);
             end else if (csr_op_type == SOC_NPU_JOB_OP_SOFTMAX) begin
                 print_csr_perf_job("softmax", sram_write_words);
+            end else if (csr_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1) begin
+                print_csr_perf_job("attention_softmax_v1", sram_write_words);
             end else begin
                 print_csr_perf_job("unknown", sram_write_words);
             end

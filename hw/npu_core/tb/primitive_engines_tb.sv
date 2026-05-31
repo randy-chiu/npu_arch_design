@@ -150,6 +150,7 @@ module primitive_engines_tb;
         run_reduction_tests();
         run_sfu_tests();
         run_softmax_primitive_sequence_test();
+        run_attention_softmax_sequence_test();
         run_rmsnorm_primitive_sequence_test();
 
         $display("PASS primitive engine RTL tests");
@@ -499,6 +500,111 @@ module primitive_engines_tb;
             check_vec_y(1, 32'sd8005);
             check_vec_y(2, 32'sd2945);
             check_vec_y(3, 32'sd7);
+        end
+    endtask
+
+    task automatic run_attention_softmax_sequence_test;
+        integer i;
+        logic signed [31:0] row [0:7];
+        logic signed [31:0] max_value;
+        logic [31:0] exp_values [0:7];
+        logic [31:0] reciprocal;
+        begin
+            row[0] = 32'sd32;
+            row[1] = 32'sd0;
+            row[2] = -32'sd32;
+            row[3] = -32'sd64;
+            row[4] = -32'sd96;
+            row[5] = -32'sd128;
+            row[6] = -32'sd192;
+            row[7] = -32'sd256;
+
+            reduction_x_flat = '0;
+            for (i = 0; i < 8; i = i + 1) begin
+                set_reduce_x(i, row[i]);
+            end
+            reduction_length = 8'd8;
+            reduction_op = REDUCE_MAX;
+            launch_reduction();
+            max_value = reduction_result[31:0];
+            if (max_value !== 32'sd32) begin
+                $display("FAIL attention softmax max actual=%0d", max_value);
+                $fatal(1);
+            end
+
+            vector_a_flat = '0;
+            vector_b_flat = '0;
+            vector_valid_mask = 8'hff;
+            for (i = 0; i < 8; i = i + 1) begin
+                set_vec_a(i, row[i]);
+                set_vec_b(i, max_value);
+            end
+            vector_op = VEC_SUB;
+            launch_vector();
+
+            vector_a_flat = vector_y_flat;
+            vector_clamp_low = -32'sd256;
+            vector_clamp_high = 32'sd0;
+            vector_op = VEC_CLAMP;
+            launch_vector();
+            check_vec_y(0, 32'sd0);
+            check_vec_y(1, -32'sd32);
+            check_vec_y(2, -32'sd64);
+            check_vec_y(3, -32'sd96);
+            check_vec_y(4, -32'sd128);
+            check_vec_y(5, -32'sd160);
+            check_vec_y(6, -32'sd224);
+            check_vec_y(7, -32'sd256);
+
+            reduction_x_flat = '0;
+            for (i = 0; i < 8; i = i + 1) begin
+                sfu_op = SFU_EXP;
+                sfu_x = vector_y_flat[(i * DATA_WIDTH) +: DATA_WIDTH];
+                launch_sfu();
+                exp_values[i] = sfu_y;
+                set_reduce_x(i, sfu_y);
+            end
+            if (exp_values[0] !== 32'd32767 || exp_values[1] !== 32'd12055 ||
+                exp_values[2] !== 32'd4435 || exp_values[3] !== 32'd1632 ||
+                exp_values[4] !== 32'd600 || exp_values[5] !== 32'd221 ||
+                exp_values[6] !== 32'd30 || exp_values[7] !== 32'd11) begin
+                $display("FAIL attention softmax exp values");
+                $fatal(1);
+            end
+
+            reduction_length = 8'd8;
+            reduction_op = REDUCE_SUM;
+            launch_reduction();
+            if (reduction_result !== 64'd51751) begin
+                $display("FAIL attention softmax exp sum actual=%0d", reduction_result);
+                $fatal(1);
+            end
+
+            sfu_op = SFU_RECIP;
+            sfu_x = reduction_result[31:0];
+            launch_sfu();
+            reciprocal = sfu_y;
+            if (reciprocal !== 32'd324) begin
+                $display("FAIL attention softmax reciprocal actual=%0d", reciprocal);
+                $fatal(1);
+            end
+
+            vector_a_flat = '0;
+            for (i = 0; i < 8; i = i + 1) begin
+                set_vec_a(i, exp_values[i]);
+            end
+            vector_scalar = reciprocal;
+            vector_shift = 5'd9;
+            vector_op = VEC_SCALE;
+            launch_vector();
+            check_vec_y(0, 32'sd20735);
+            check_vec_y(1, 32'sd7628);
+            check_vec_y(2, 32'sd2806);
+            check_vec_y(3, 32'sd1032);
+            check_vec_y(4, 32'sd379);
+            check_vec_y(5, 32'sd139);
+            check_vec_y(6, 32'sd18);
+            check_vec_y(7, 32'sd6);
         end
     endtask
 

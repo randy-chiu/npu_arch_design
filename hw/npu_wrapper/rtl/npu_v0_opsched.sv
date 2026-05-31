@@ -217,7 +217,8 @@ module npu_v0_opsched #(
         .clk(clk),
         .rst_n(rst_n),
         .start(start_pulse),
-        .op(1'b0),
+        .op((job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1) ? 2'd1 :
+            ((job_op_type == SOC_NPU_JOB_OP_MATMUL_U16S8_Q15) ? 2'd2 : 2'd0)),
         .done(npu_done),
         .perf_active(core_perf_active),
         .perf_fetch_active(core_perf_fetch_active),
@@ -328,7 +329,8 @@ module npu_v0_opsched #(
                     mover_sram_base = job_input0_addr;
                 end
                 mover_words = job_input0_words[7:0];
-                if (job_op_type == SOC_NPU_JOB_OP_SOFTMAX) begin
+                if (job_op_type == SOC_NPU_JOB_OP_SOFTMAX ||
+                    job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1) begin
                     mover_host_base = RTL_HOST_X_BASE;
                 end else begin
                     mover_host_base = RTL_HOST_A_BASE;
@@ -363,7 +365,8 @@ module npu_v0_opsched #(
                 mover_store = 1'b1;
                 mover_sram_base = job_output_addr;
                 mover_words = job_output_words[7:0];
-                if (job_op_type == SOC_NPU_JOB_OP_SOFTMAX) begin
+                if (job_op_type == SOC_NPU_JOB_OP_SOFTMAX ||
+                    job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1) begin
                     mover_host_base = RTL_HOST_Y_BASE;
                 end else begin
                     mover_host_base = RTL_HOST_C_BASE;
@@ -754,7 +757,9 @@ module npu_v0_opsched #(
                 DESC_FETCH_INPUT0: begin
                     if (mover_complete) begin
                         transfer_idx <= 8'h0;
-                        if (job_op_type == SOC_NPU_JOB_OP_MATMUL || job_is_k_stream) begin
+                        if (job_op_type == SOC_NPU_JOB_OP_MATMUL ||
+                            job_op_type == SOC_NPU_JOB_OP_MATMUL_U16S8_Q15 ||
+                            job_is_k_stream) begin
                             desc_state <= DESC_FETCH_INPUT1;
                         end else begin
                             desc_state <= DESC_START_CORE;

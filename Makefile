@@ -82,7 +82,14 @@ primitive-engines-sim: transformer-config
 
 npu-core-sim: rtl-fixtures
 	mkdir -p build
-	iverilog -g2012 -I build/rtl_fixture -o build/npu_v0_tb hw/npu_core/rtl/matrix/accumulator_file.sv hw/npu_core/rtl/matrix/matmul_array.sv hw/npu_core/rtl/npu_v0_top.sv hw/npu_core/tb/npu_v0_tb.sv
+	iverilog -g2012 -I build/rtl_fixture -o build/npu_v0_tb \
+		hw/npu_core/rtl/vector/vector_engine.sv \
+		hw/npu_core/rtl/reduction/reduction_engine.sv \
+		hw/npu_core/rtl/sfu/sfu_lut.sv \
+		hw/npu_core/rtl/matrix/accumulator_file.sv \
+		hw/npu_core/rtl/matrix/matmul_array.sv \
+		hw/npu_core/rtl/npu_v0_top.sv \
+		hw/npu_core/tb/npu_v0_tb.sv
 	vvp build/npu_v0_tb
 
 npu-subsystem-elab: rtl-fixtures soc-spec npu-wrapper-spec
@@ -90,6 +97,9 @@ npu-subsystem-elab: rtl-fixtures soc-spec npu-wrapper-spec
 	iverilog -g2012 -t null -s npu_subsystem_top -I build/rtl_fixture -I build/soc -I build/npu_wrapper -I hw/npu_wrapper/rtl \
 		hw/npu_core/rtl/matrix/matmul_array.sv \
 		hw/npu_core/rtl/matrix/accumulator_file.sv \
+		hw/npu_core/rtl/vector/vector_engine.sv \
+		hw/npu_core/rtl/reduction/reduction_engine.sv \
+		hw/npu_core/rtl/sfu/sfu_lut.sv \
 		hw/npu_core/rtl/npu_v0_top.sv \
 		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
@@ -102,6 +112,9 @@ soc-sim: rtl-fixtures soc-spec npu-wrapper-spec
 	iverilog -g2012 -I build/rtl_fixture -I build/soc -I build/npu_wrapper -I hw/npu_wrapper/rtl -o build/soc/soc_tb \
 		hw/npu_core/rtl/matrix/matmul_array.sv \
 		hw/npu_core/rtl/matrix/accumulator_file.sv \
+		hw/npu_core/rtl/vector/vector_engine.sv \
+		hw/npu_core/rtl/reduction/reduction_engine.sv \
+		hw/npu_core/rtl/sfu/sfu_lut.sv \
 		hw/npu_core/rtl/npu_v0_top.sv \
 		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
@@ -121,6 +134,9 @@ cpu-soc-sim: firmware-smoke
 		hw/soc/cpu/rtl/picorv32_native_cpu.sv \
 		hw/npu_core/rtl/matrix/matmul_array.sv \
 		hw/npu_core/rtl/matrix/accumulator_file.sv \
+		hw/npu_core/rtl/vector/vector_engine.sv \
+		hw/npu_core/rtl/reduction/reduction_engine.sv \
+		hw/npu_core/rtl/sfu/sfu_lut.sv \
 		hw/npu_core/rtl/npu_v0_top.sv \
 		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
@@ -152,6 +168,9 @@ perf-report: firmware-smoke
 		hw/soc/cpu/rtl/picorv32_native_cpu.sv \
 		hw/npu_core/rtl/matrix/matmul_array.sv \
 		hw/npu_core/rtl/matrix/accumulator_file.sv \
+		hw/npu_core/rtl/vector/vector_engine.sv \
+		hw/npu_core/rtl/reduction/reduction_engine.sv \
+		hw/npu_core/rtl/sfu/sfu_lut.sv \
 		hw/npu_core/rtl/npu_v0_top.sv \
 		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
 		hw/npu_wrapper/rtl/npu_v0_opsched.sv \

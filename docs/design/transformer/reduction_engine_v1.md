@@ -5,6 +5,70 @@
 Primitive standalone row/vector reductions for Transformer bring-up. Covered ops
 are `REDUCE_MAX`, `REDUCE_SUM`, and `REDUCE_SUMSQ`.
 
+For attention v1, reduction is primarily required by row softmax:
+
+```text
+P[i,j] = exp(x[i,j] - max_j x[i,j]) / sum_j exp(x[i,j] - max_j x[i,j])
+```
+
+This formula requires a row maximum over masked scores and a row sum over EXP
+outputs. RMSNorm continues to use `REDUCE_SUMSQ`, but RMSNorm is separate from
+the attention softmax acceptance path.
+
+## Attention-derived requirements
+
+### Row max
+
+For each attention score row:
+
+```text
+row_max = max_j masked_score[j]
+```
+
+The reduction engine must define:
+
+- row length;
+- valid lane behavior;
+- masked element behavior;
+- result dtype;
+- behavior when no lane is valid.
+
+Current RTL can compute `REDUCE_MAX` over `[0, length)` but has no explicit mask
+input. For causal attention, invalid positions must not become zero-valued
+participants in max. They must be excluded or replaced with a reviewed negative
+sentinel before reduction.
+
+### Row sum
+
+After SFU EXP:
+
+```text
+row_sum = sum_j exp_q15[j]
+```
+
+For initial attention:
+
+```text
+0 <= exp_q15[j] <= 32767
+row_sum width >= ceil(log2(row_len * 32767))
+```
+
+Current `RESULT_WIDTH=64` is sufficient for the v1 model envelope. The spec must
+still state the expected input Q format because row sum feeds SFU RECIP.
+
+### Segmented rows
+
+For `S > reduction lanes`, softmax rows may be processed in segments:
+
+```text
+row_max = max(segment_max_0, segment_max_1, ...)
+row_sum = sum(segment_sum_0, segment_sum_1, ...)
+```
+
+The current standalone RTL accepts a packed vector up to `MAX_LEN`, but the
+future scheduler/runtime must define whether rows are issued whole or segmented.
+PPA counters must count useful reduced elements, not only command count.
+
 ## Parameters and source-of-truth config fields
 
 Source of truth: `arch/configs/npu_transformer_v1.jsonc`.
@@ -66,3 +130,6 @@ explicitly.
 - No real stall counters.
 - No balanced tree or streaming implementation.
 - No production overflow policy.
+- No explicit attention mask semantics.
+- No segmented-row scheduler contract.
+- No measured `reduction_element_ops` counter.

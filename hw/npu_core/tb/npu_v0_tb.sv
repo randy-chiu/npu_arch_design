@@ -5,7 +5,7 @@ module npu_v0_tb;
     logic clk;
     logic rst_n;
     logic start;
-    logic op;
+    logic [1:0] op;
     logic done;
     logic [3:0] host_we;
     logic [11:0] host_addr;
@@ -30,7 +30,7 @@ module npu_v0_tb;
     initial begin
         rst_n = 1'b0;
         start = 1'b0;
-        op = 1'b0;
+        op = 2'd0;
         host_we = 4'b0000;
         host_addr = 12'h0;
         host_wdata = 128'h0;
@@ -39,6 +39,7 @@ module npu_v0_tb;
 
         run_matmul_fixture_test();
         run_softmax_fixture_test();
+        run_mixed_u16s8_q15_matmul_test();
         run_core_host_lane_smoke();
 
         $display("PASS npu_v0 RTL generated-fixture tests");
@@ -135,10 +136,37 @@ module npu_v0_tb;
             $readmemh(MATMUL_EXPECTED_C_HEX, expected_c);
 
             launch_and_wait();
+            op <= 2'd0;
 
             for (i = 0; i < MATMUL_OUTPUT_COUNT; i = i + 1) begin
                 if (dut.dram_c[i] !== expected_c[i]) begin
                     $display("FAIL matmul[%0d] actual=%0d expected=%0d", i, dut.dram_c[i], expected_c[i]);
+                    $fatal(1);
+                end
+            end
+        end
+    endtask
+
+    task automatic run_mixed_u16s8_q15_matmul_test;
+        integer i;
+        begin
+            for (i = 0; i < RTL_MATMUL_ELEMS; i = i + 1) begin
+                dut.dram_a[i] = 16'd16384;
+                dut.dram_b[i] = 8'd2;
+            end
+            dut.instr_mem[0] = uop(UOP_LOAD, TENSOR_A, BUF_SPAD_A);
+            dut.instr_mem[1] = uop(UOP_LOAD, TENSOR_B, BUF_SPAD_B);
+            dut.instr_mem[2] = uop(UOP_MATMUL, 4'h0, 4'h0);
+            dut.instr_mem[3] = uop(UOP_STORE, TENSOR_C, BUF_ACC);
+            dut.instr_mem[4] = uop(UOP_HALT, 4'h0, 4'h0);
+            op <= 2'd2;
+
+            launch_and_wait();
+            op <= 2'd0;
+
+            for (i = 0; i < RTL_MATMUL_ELEMS; i = i + 1) begin
+                if (dut.dram_c[i] !== 32'd8) begin
+                    $display("FAIL mixed u16s8 matmul[%0d] actual=%0d expected=8", i, dut.dram_c[i]);
                     $fatal(1);
                 end
             end
@@ -169,8 +197,8 @@ module npu_v0_tb;
             repeat (2) @(posedge clk);
             host_write4(RTL_HOST_A_BASE, 32'h0000_0011, 32'h0000_0022, 32'h0000_0033, 32'h0000_0044);
             @(posedge clk);
-            if (dut.dram_a[0] !== 8'h11 || dut.dram_a[1] !== 8'h22 ||
-                dut.dram_a[2] !== 8'h33 || dut.dram_a[3] !== 8'h44) begin
+            if (dut.dram_a[0] !== 16'h0011 || dut.dram_a[1] !== 16'h0022 ||
+                dut.dram_a[2] !== 16'h0033 || dut.dram_a[3] !== 16'h0044) begin
                 $display("FAIL wide write to A window");
                 $fatal(1);
             end

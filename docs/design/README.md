@@ -29,3 +29,7 @@ development work.
 If a change touches one of these areas, update the matching design document
 before implementing the change. After implementation, record the actual result,
 test command, and any remaining gap.
+
+Current Transformer planning is attention-centered. Attention is treated as a
+compiler/runtime sequence over shared matrix, vector, reduction, SFU, memory,
+and scheduler primitives, not as a separate RTL macro.

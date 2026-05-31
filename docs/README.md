@@ -19,7 +19,7 @@
 | `design/performance_instrumentation.md` | cycle 级 perf 计数、PERF_JOB、HTML timeline、counter 下沉策略 |
 | `design/verification_strategy.md` | 当前测试层级、验证入口、coverage 边界和下一步测试计划 |
 | `design/ppa_methodology.md` | 面向 ASIC 的 PPA 边界、公开工艺评估目标、功耗/面积/能耗结果合同 |
-| `design/transformer/` | Transformer-oriented NPU v1 架构、workload、集成说明和下一步计划 |
+| `design/transformer/` | Transformer-oriented NPU v1 架构、attention sequence、workload/PPA、集成说明和下一步计划 |
 | `design/v0_cnn/` | V0/CNN 专属 MNIST `fc1` K-streaming、ping-pong 和 selected-layer quantization 文档 |
 | `digits_classifier_workload.md` | 下一阶段真实 workload：8x8 手写数字分类闭环 |
 | `real_mnist_cnn_workload.md` | 真实开源 MNIST CNN：外部 safetensors 权重、MNIST 图片、`fc1` tile 和 `fc2` SoC RTL 验证 |

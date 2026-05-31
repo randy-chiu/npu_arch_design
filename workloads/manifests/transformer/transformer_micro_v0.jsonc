@@ -63,6 +63,26 @@
       "metrics": ["cycles", "mac_ops", "kv_read_bytes", "energy_per_token"]
     },
     {
+      "name": "attention_qk_s8_d8",
+      "scenario": "transformer_prefill",
+      "op": "matmul",
+      "logical_op": "attention_qk_score",
+      "attention_group": "attention_prefill_s8_d8",
+      "attention_stage": "qk",
+      "shape": {"m": 8, "n": 8, "k": 8, "seq_len": 8, "head_dim": 8},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 64,
+        "activation_write_bytes": 256,
+        "weight_read_bytes": 64,
+        "kv_cache_read_bytes": 0,
+        "kv_cache_write_bytes": 0
+      },
+      "numerical_contract": "attention_bringup_v0_qk_exact",
+      "status": "planned_current_matmul_extension",
+      "metrics": ["cycles", "mac_ops", "matrix_utilization", "attention_qk_cycles"]
+    },
+    {
       "name": "softmax_row",
       "scenario": "transformer_prefill",
       "op": "softmax_row",
@@ -77,6 +97,26 @@
         "kv_cache_write_bytes": 0
       },
       "status": "golden_model_only_v1",
+      "metrics": ["softmax_cycles", "reduction_cycles", "sfu_cycles", "accuracy"]
+    },
+    {
+      "name": "attention_softmax_s8",
+      "scenario": "transformer_prefill",
+      "op": "attention_softmax_v1",
+      "logical_op": "attention_row_softmax",
+      "attention_group": "attention_prefill_s8_d8",
+      "attention_stage": "softmax",
+      "shape": {"rows": 8, "elements": 8, "seq_len": 8},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 256,
+        "activation_write_bytes": 128,
+        "weight_read_bytes": 0,
+        "kv_cache_read_bytes": 0,
+        "kv_cache_write_bytes": 0
+      },
+      "numerical_contract": "attention_bringup_v0_shift_scale_sfu9seg",
+      "status": "planned_current_softmax_extension",
       "metrics": ["softmax_cycles", "reduction_cycles", "sfu_cycles", "accuracy"]
     },
     {
@@ -95,6 +135,46 @@
       },
       "status": "golden_model_only_v1",
       "metrics": ["cycles", "mac_ops", "kv_read_bytes", "energy_per_token"]
+    },
+    {
+      "name": "attention_pv_s8_d8",
+      "scenario": "transformer_prefill",
+      "op": "matmul_u16s8_q15",
+      "logical_op": "attention_probability_value",
+      "attention_group": "attention_prefill_s8_d8",
+      "attention_stage": "pv",
+      "shape": {"m": 8, "n": 8, "k": 8, "seq_len": 8, "head_dim": 8},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 128,
+        "activation_write_bytes": 64,
+        "weight_read_bytes": 64,
+        "kv_cache_read_bytes": 0,
+        "kv_cache_write_bytes": 0
+      },
+      "numerical_contract": "attention_numerical_v1_q15_prob_q24_recip_lut257",
+      "status": "planned_current_matmul_extension",
+      "metrics": ["cycles", "mac_ops", "attention_pv_cycles", "accuracy"]
+    },
+    {
+      "name": "attention_prefill_s8_d8",
+      "scenario": "transformer_prefill",
+      "op": "attention_group",
+      "logical_op": "scaled_dot_product_attention",
+      "attention_group": "attention_prefill_s8_d8",
+      "attention_stage": "full_attention",
+      "shape": {"seq_len": 8, "head_dim": 8},
+      "activity_scope": "kernel_group",
+      "external_memory": {
+        "activation_read_bytes": 192,
+        "activation_write_bytes": 64,
+        "weight_read_bytes": 0,
+        "kv_cache_read_bytes": 0,
+        "kv_cache_write_bytes": 0
+      },
+      "numerical_contract": "attention_bringup_v0_qk_measured_softmax_pv_model_only",
+      "status": "model_only_v1",
+      "metrics": ["qk_cycles", "softmax_cycles", "pv_cycles", "energy_proxy"]
     },
     {
       // Current RTL-compatible decode approximation. Real single-token decode

@@ -49,6 +49,17 @@ static uint32_t transformer_prefill_gemm_tiny_a_sram[TRANSFORMER_PREFILL_GEMM_TI
 static uint32_t transformer_prefill_gemm_tiny_b_sram[TRANSFORMER_PREFILL_GEMM_TINY_CHUNKS][TRANSFORMER_PREFILL_GEMM_TINY_TILE_WORDS];
 static uint32_t transformer_prefill_gemm_tiny_c_sram[TRANSFORMER_PREFILL_GEMM_TINY_TILE_WORDS];
 
+static uint32_t transformer_attention_qk_s8_d8_a_sram[TRANSFORMER_ATTENTION_QK_S8_D8_CHUNKS][TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS];
+static uint32_t transformer_attention_qk_s8_d8_b_sram[TRANSFORMER_ATTENTION_QK_S8_D8_CHUNKS][TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS];
+static uint32_t transformer_attention_qk_s8_d8_c_sram[TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS];
+
+static uint32_t transformer_attention_softmax_s8_x_sram[TRANSFORMER_ATTENTION_SOFTMAX_S8_X_WORDS];
+static uint32_t transformer_attention_softmax_s8_y_sram[TRANSFORMER_ATTENTION_SOFTMAX_S8_Y_WORDS];
+
+static uint32_t transformer_attention_pv_s8_d8_a_sram[TRANSFORMER_ATTENTION_PV_S8_D8_CHUNKS][TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS];
+static uint32_t transformer_attention_pv_s8_d8_b_sram[TRANSFORMER_ATTENTION_PV_S8_D8_CHUNKS][TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS];
+static uint32_t transformer_attention_pv_s8_d8_c_sram[TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS];
+
 static uint32_t transformer_decode_skinny_gemm_m8_compat_a_sram[TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_CHUNKS][TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS];
 static uint32_t transformer_decode_skinny_gemm_m8_compat_b_sram[TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_CHUNKS][TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS];
 static uint32_t transformer_decode_skinny_gemm_m8_compat_c_sram[TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS];
@@ -89,6 +100,24 @@ static int check_low_bytes(const uint32_t *actual, const uint32_t *expected, uin
     return 1;
 }
 
+static int check_words_abs_tol(const uint32_t *actual,
+                               const uint32_t *expected,
+                               uint32_t len,
+                               uint32_t tolerance,
+                               uint32_t fail_base)
+{
+    for (uint32_t i = 0; i < len; ++i) {
+        uint32_t a = actual[i];
+        uint32_t e = expected[i];
+        uint32_t diff = (a > e) ? (a - e) : (e - a);
+        if (diff > tolerance) {
+            test_status_fail_code(fail_base | ((actual[i] & 0xffffu) << 8) | (expected[i] & 0xffu));
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void run_job(void)
 {
     npu_set_desc_addr(ptr32(&job_desc));
@@ -107,7 +136,8 @@ static void run_job(void)
         perf_snapshot.data_mover_read_words + perf_snapshot.data_mover_write_words !=
             perf_snapshot.data_mover_words ||
         ((job_desc.op_type == SOC_NPU_JOB_OP_MATMUL ||
-          job_desc.op_type == SOC_NPU_JOB_OP_MATMUL_K_STREAM) &&
+          job_desc.op_type == SOC_NPU_JOB_OP_MATMUL_K_STREAM ||
+          job_desc.op_type == SOC_NPU_JOB_OP_MATMUL_U16S8_Q15) &&
          perf_snapshot.core_matmul_cycles == 0u)) {
         test_status_fail_code(0xa00u | (job_desc.job_id & 0xffu));
         for (;;) {
@@ -429,6 +459,90 @@ static int run_transformer_decode_skinny_gemm_m8_compat(void)
                        transformer_decode_skinny_gemm_m8_compat_expected_c,
                        TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS, 0xc00u);
 }
+
+static int run_transformer_attention_qk_s8_d8(void)
+{
+    for (uint32_t chunk = 0; chunk < TRANSFORMER_ATTENTION_QK_S8_D8_CHUNKS; ++chunk) {
+        copy_words(transformer_attention_qk_s8_d8_a_sram[chunk],
+                   transformer_attention_qk_s8_d8_a[chunk],
+                   TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS);
+        copy_words(transformer_attention_qk_s8_d8_b_sram[chunk],
+                   transformer_attention_qk_s8_d8_b[chunk],
+                   TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS);
+    }
+
+    job_desc.op_type = SOC_NPU_JOB_OP_MATMUL_K_STREAM;
+    job_desc.job_id = JOB_ID_TRANSFORMER_ATTENTION_QK_S8_D8;
+    job_desc.program_addr = ptr32(matmul_program_sram);
+    job_desc.program_words = MATMUL_PROGRAM_LEN;
+    job_desc.input0_addr = ptr32(transformer_attention_qk_s8_d8_a_sram);
+    job_desc.input0_words = TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS;
+    job_desc.input1_addr = ptr32(transformer_attention_qk_s8_d8_b_sram);
+    job_desc.input1_words = TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS;
+    job_desc.output_addr = ptr32(transformer_attention_qk_s8_d8_c_sram);
+    job_desc.output_words = TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS;
+    job_desc.k_chunks = TRANSFORMER_ATTENTION_QK_S8_D8_CHUNKS;
+    run_job();
+
+    return check_words(transformer_attention_qk_s8_d8_c_sram,
+                       transformer_attention_qk_s8_d8_expected_c,
+                       TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS, 0xd00u);
+}
+
+static int run_transformer_attention_softmax_s8(void)
+{
+    copy_words(transformer_attention_softmax_s8_x_sram,
+               transformer_attention_softmax_s8_x,
+               TRANSFORMER_ATTENTION_SOFTMAX_S8_X_WORDS);
+
+    job_desc.op_type = SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1;
+    job_desc.job_id = JOB_ID_TRANSFORMER_ATTENTION_SOFTMAX_S8;
+    job_desc.program_addr = ptr32(softmax_program_sram);
+    job_desc.program_words = SOFTMAX_PROGRAM_LEN;
+    job_desc.input0_addr = ptr32(transformer_attention_softmax_s8_x_sram);
+    job_desc.input0_words = TRANSFORMER_ATTENTION_SOFTMAX_S8_X_WORDS;
+    job_desc.input1_addr = 0u;
+    job_desc.input1_words = 0u;
+    job_desc.output_addr = ptr32(transformer_attention_softmax_s8_y_sram);
+    job_desc.output_words = TRANSFORMER_ATTENTION_SOFTMAX_S8_Y_WORDS;
+    job_desc.k_chunks = 0u;
+    run_job();
+
+    return check_words_abs_tol(transformer_attention_softmax_s8_y_sram,
+                               transformer_attention_softmax_s8_expected_y,
+                               TRANSFORMER_ATTENTION_SOFTMAX_S8_Y_WORDS,
+                               128u,
+                               0xe00u);
+}
+
+static int run_transformer_attention_pv_s8_d8(void)
+{
+    for (uint32_t chunk = 0; chunk < TRANSFORMER_ATTENTION_PV_S8_D8_CHUNKS; ++chunk) {
+        copy_words(transformer_attention_pv_s8_d8_a_sram[chunk],
+                   transformer_attention_pv_s8_d8_a[chunk],
+                   TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS);
+        copy_words(transformer_attention_pv_s8_d8_b_sram[chunk],
+                   transformer_attention_pv_s8_d8_b[chunk],
+                   TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS);
+    }
+
+    job_desc.op_type = SOC_NPU_JOB_OP_MATMUL_U16S8_Q15;
+    job_desc.job_id = JOB_ID_TRANSFORMER_ATTENTION_PV_S8_D8;
+    job_desc.program_addr = ptr32(matmul_program_sram);
+    job_desc.program_words = MATMUL_PROGRAM_LEN;
+    job_desc.input0_addr = ptr32(transformer_attention_pv_s8_d8_a_sram);
+    job_desc.input0_words = TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS;
+    job_desc.input1_addr = ptr32(transformer_attention_pv_s8_d8_b_sram);
+    job_desc.input1_words = TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS;
+    job_desc.output_addr = ptr32(transformer_attention_pv_s8_d8_c_sram);
+    job_desc.output_words = TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS;
+    job_desc.k_chunks = 0u;
+    run_job();
+
+    return check_words(transformer_attention_pv_s8_d8_c_sram,
+                       transformer_attention_pv_s8_d8_expected_c,
+                       TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS, 0xf00u);
+}
 #endif
 
 int main(void)
@@ -504,6 +618,15 @@ int main(void)
 
 #if TRANSFORMER_MICRO_ENABLED
     if (!run_transformer_prefill_gemm_tiny()) {
+        return 1;
+    }
+    if (!run_transformer_attention_qk_s8_d8()) {
+        return 1;
+    }
+    if (!run_transformer_attention_softmax_s8()) {
+        return 1;
+    }
+    if (!run_transformer_attention_pv_s8_d8()) {
         return 1;
     }
     if (!run_transformer_decode_skinny_gemm_m8_compat()) {

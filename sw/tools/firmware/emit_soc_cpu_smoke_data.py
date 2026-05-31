@@ -470,12 +470,22 @@ def _append_transformer_micro_data(lines: list[str]) -> dict:
     lines.append("")
     for workload in executable:
         macro = workload["name"].upper()
-        lines.append(f"#define {macro}_CHUNKS {workload['k_chunks']}u")
-        lines.append(f"#define {macro}_TILE_WORDS {workload['tile_words']}u")
-        lines.append("")
-        _append_2d_array(lines, f"{workload['name']}_a", workload["a_stream"], bits=8)
-        _append_2d_array(lines, f"{workload['name']}_b", workload["b_stream"], bits=8)
-        _append_flat_array(lines, f"{workload['name']}_expected_c", workload["expected_c"], bits=32)
+        if workload["op"] in ("matmul_k_stream", "matmul_u16s8_q15"):
+            lines.append(f"#define {macro}_CHUNKS {workload['k_chunks']}u")
+            lines.append(f"#define {macro}_TILE_WORDS {workload['tile_words']}u")
+            lines.append("")
+            _append_2d_array(lines, f"{workload['name']}_a", workload["a_stream"], bits=int(workload.get("a_bits", 8)))
+            _append_2d_array(lines, f"{workload['name']}_b", workload["b_stream"], bits=8)
+            _append_flat_array(lines, f"{workload['name']}_expected_c", workload["expected_c"], bits=32)
+        elif workload["op"] in ("softmax", "attention_softmax_v1"):
+            lines.append(f"#define {macro}_X_WORDS {workload['x_words']}u")
+            lines.append(f"#define {macro}_Y_WORDS {workload['y_words']}u")
+            lines.append("")
+            _append_flat_array(lines, f"{workload['name']}_x", workload["x"], bits=8)
+            expected_bits = 32 if workload["op"] == "attention_softmax_v1" else 8
+            _append_flat_array(lines, f"{workload['name']}_expected_y", workload["expected_y"], bits=expected_bits)
+        else:
+            raise ValueError(f"unsupported executable transformer op {workload['op']!r}")
     return transformer_micro
 
 

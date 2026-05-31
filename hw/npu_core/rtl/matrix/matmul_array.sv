@@ -6,24 +6,32 @@ module matmul_array #(
     input  logic clk,
     input  logic rst_n,
     input  logic start,
+    input  logic mixed_u16s8_q15,
     output logic done,
 
-    input  logic [(M*K*8)-1:0]   a_flat,
+    input  logic [(M*K*16)-1:0]  a_flat,
     input  logic [(K*N*8)-1:0]   b_flat,
     output logic [(M*N*32)-1:0]  result_flat
 );
     localparam int OUT_ELEMS = M * N;
 
     logic active;
+    logic mixed_mode_active;
     logic [$clog2(K)-1:0] k_idx;
     logic signed [31:0] result [0:OUT_ELEMS-1];
     integer i;
     integer j;
     integer r;
 
-    function automatic logic signed [7:0] a_at(input int row, input int k);
+    function automatic logic signed [7:0] a_s8_at(input int row, input int k);
         begin
-            a_at = a_flat[(((row * K) + k) * 8) +: 8];
+            a_s8_at = a_flat[(((row * K) + k) * 16) +: 8];
+        end
+    endfunction
+
+    function automatic logic [15:0] a_u16_at(input int row, input int k);
+        begin
+            a_u16_at = a_flat[(((row * K) + k) * 16) +: 16];
         end
     endfunction
 
@@ -36,13 +44,15 @@ module matmul_array #(
     genvar out_idx;
     generate
         for (out_idx = 0; out_idx < OUT_ELEMS; out_idx = out_idx + 1) begin : gen_result_flat
-            assign result_flat[(out_idx * 32) +: 32] = result[out_idx];
+            assign result_flat[(out_idx * 32) +: 32] =
+                mixed_mode_active ? (result[out_idx] >>> 15) : result[out_idx];
         end
     endgenerate
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             active <= 1'b0;
+            mixed_mode_active <= 1'b0;
             done <= 1'b0;
             k_idx <= '0;
             for (r = 0; r < OUT_ELEMS; r = r + 1) begin
@@ -52,6 +62,7 @@ module matmul_array #(
             done <= 1'b0;
             if (start && !active) begin
                 active <= 1'b1;
+                mixed_mode_active <= mixed_u16s8_q15;
                 k_idx <= '0;
                 for (r = 0; r < OUT_ELEMS; r = r + 1) begin
                     result[r] <= '0;
@@ -61,7 +72,9 @@ module matmul_array #(
                     for (j = 0; j < N; j = j + 1) begin
                         result[(i * N) + j] <=
                             result[(i * N) + j] +
-                            (a_at(i, k_idx) * b_at(k_idx, j));
+                            (mixed_mode_active ?
+                                ($signed({1'b0, a_u16_at(i, k_idx)}) * b_at(k_idx, j)) :
+                                (a_s8_at(i, k_idx) * b_at(k_idx, j)));
                     end
                 end
 

@@ -1,125 +1,93 @@
-# Mandatory Rules For All Module Agents
+# Mandatory Project Rules
 
 These rules apply to every human and AI agent working on this NPU project.
 
-## 1. The Architecture Spec Is The Source Of Truth
+## 1. Specs Are The Source Of Truth
 
-Canonical Phase 0 spec:
+Keep architecture facts in the relevant canonical spec and generate downstream
+constants from those specs whenever practical.
+
+Canonical specs:
 
 ```text
 arch/configs/npu_v0.jsonc
-```
-
-Canonical SoC spec:
-
-```text
+arch/configs/npu_transformer_v1.jsonc
 arch/configs/soc_v0.jsonc
-```
-
-Canonical NPU wrapper register spec:
-
-```text
 arch/configs/npu_wrapper_v0.jsonc
 ```
 
-Do not hard-code architecture facts, SoC address-map facts, or NPU-wrapper
-register/window offsets in compiler, simulator, RTL, runtime, firmware, or
-tests if they belong in the relevant spec.
+Do not duplicate opcode maps, descriptor fields, register offsets, tensor IDs,
+fixed-point contracts, or verification tolerances across RTL, firmware, tools,
+tests, and docs.
 
-Each architecture fact must have exactly one canonical representation. Do not
-duplicate opcode maps, instruction field layouts, tensor IDs, buffer IDs,
-memory-map constants, fixture paths, verification lengths, or numerical
-tolerances in multiple source files. Generate downstream constants or metadata
-from the canonical source instead.
+## 2. Reuse Existing RTL Before Adding New Modules
 
-## 2. ISA Changes Require Full-System Updates
+For new requirements, first check whether an existing RTL module, datapath,
+primitive, scheduler path, or runtime descriptor should be extended. Prefer
+evolving shared blocks such as matrix, vector, reduction, SFU, accumulator,
+wrapper, and firmware/runtime paths over creating temporary one-off modules.
 
-If ISA opcodes, fields, semantics, encoding, or legality rules change, the same
-change must update all affected components:
+Temporary modules are allowed only when the existing boundary cannot reasonably
+represent the requirement. In that case, document the temporary scope and the
+plan to merge, replace, or retire it.
 
-- spec validator
-- compiler emission
-- functional simulator
-- cycle model when available
-- RTL control/decode/datapath
-- runtime program metadata
-- golden or tolerance rules
-- tests and documentation
+## 3. Design Documentation Comes Before Module Coding
 
-An ISA change is not accepted until the closed-loop verification flow passes.
+Before coding or materially changing any RTL module, write or update the
+module's detailed design document. The document must cover:
 
-## 3. Hardware Spec Changes Require Re-Verification
+- the mathematical or architectural requirement;
+- why the existing module is reused or changed;
+- interface, data type, fixed-point, mode, rounding, and saturation behavior;
+- golden/RTL consistency rules;
+- verification tests and PPA reporting impact;
+- known limitations and follow-up conditions.
 
-Every spec change must be followed by:
+## 4. Cross-Layer Changes Must Be Complete
 
-```text
-make validate-arch
-make demo
-make test
-```
+Any ISA, descriptor, register, datatype, memory-layout, numerical-contract, or
+RTL-visible behavior change must update all affected layers:
 
-If RTL-visible behavior changes, also run the RTL simulation target on a machine
-with Icarus Verilog or an equivalent SystemVerilog simulator:
+- architecture/config specs;
+- RTL datapath/control;
+- firmware/runtime descriptors;
+- fixture and workload generators;
+- golden models and tolerances;
+- perf/PPA reporting;
+- tests and design docs.
+
+Partial cross-layer changes are not accepted.
+
+## 5. Verification Must Match The Blast Radius
+
+Run the smallest relevant tests while iterating, then run the full affected
+flow before handing work back.
+
+Common gates:
 
 ```text
 make npu-core-sim
+make primitive-engines-sim
+make ppa-l0-report WORKLOAD_PROFILE=transformer
+make test
 ```
 
-If SoC-visible launch, register, bus, or wrapper behavior changes, also run:
+If SoC-visible launch, register, bus, wrapper, descriptor, or firmware behavior
+changes, run a CPU-to-SoC RTL path such as:
 
 ```text
-make soc-sim
-make cpu-soc-sim
+make cpu-soc-transformer
 ```
 
-## 4. Keep Phase 0 Minimal
+Report any skipped or unavailable verification clearly.
 
-Phase 0 only supports:
+## 6. Record Important Decisions
 
-- `matmul`
-- `softmax`
-- `matmul -> softmax`
-
-Allowed micro-ops:
-
-- `LOAD`
-- `STORE`
-- `MATMUL`
-- `VREDMAX`
-- `VSUB`
-- `VEXP`
-- `VREDSUM`
-- `VDIV`
-- `HALT`
-
-Do not add unrelated operators or advanced architecture features until this
-minimal loop is stable.
-
-## 5. Research Does Not Directly Change The Architecture
-
-Reference research lives under:
-
-```text
-references/
-```
-
-New ideas become implementation only through a reviewed spec change and passing
-verification.
-
-## 6. Record Collaboration Decisions
-
-Every meaningful human/AI collaboration turn must update:
+For meaningful architecture or collaboration decisions, update:
 
 ```text
 docs/collaboration_journal.md
 ```
 
-Record goals, decisions, architectural reasoning, validation outcomes, and
-open risks. Do not record secrets, passwords, tokens, or noisy patch-level edit
-history.
-
-See the detailed rulebook at:
-
-```text
-docs/work_rules.md
-```
+Record goals, decisions, reasoning, validation outcomes, and open risks. Do not
+record secrets or noisy patch-level history.

@@ -693,9 +693,24 @@ def transformer_metrics(workload: dict, model: dict = DEFAULT_MODEL) -> dict:
     bytes_per_token = metadata.get("bytes_per_token")
     if bytes_per_token is None and (kv_read or kv_write):
         bytes_per_token = kv_read + kv_write
+    attention_stage = metadata.get("attention_stage")
+    qk_cycles = None
+    softmax_cycles = None
+    pv_cycles = None
+    if not is_model_only:
+        if attention_stage == "qk":
+            qk_cycles = int(workload.get("total_cycles", 0))
+        elif attention_stage == "softmax":
+            softmax_cycles = int(workload.get("total_cycles", 0))
+        elif attention_stage == "pv":
+            pv_cycles = int(workload.get("total_cycles", 0))
 
     return {
         "workload_family": metadata.get("workload_family"),
+        "attention_group": metadata.get("attention_group"),
+        "attention_stage": attention_stage,
+        "numerical_contract": metadata.get("numerical_contract"),
+        "stage_provenance": metadata.get("stage_provenance"),
         "shape_class": shape_class,
         "matrix_active_cycles": matrix_active,
         "vector_active_cycles": int(workload.get("core", {}).get("vector", 0)),
@@ -722,6 +737,9 @@ def transformer_metrics(workload: dict, model: dict = DEFAULT_MODEL) -> dict:
         "kv_read_bytes": kv_read,
         "kv_write_bytes": kv_write,
         "bytes_per_token": bytes_per_token,
+        "qk_cycles": qk_cycles,
+        "attention_softmax_cycles": softmax_cycles,
+        "pv_cycles": pv_cycles,
         "softmax_cycles": int(workload.get("core", {}).get("softmax", 0)) if not is_model_only else None,
         "rmsnorm_cycles": int(workload.get("core", {}).get("rmsnorm", 0)) if not is_model_only else None,
         "sfu_cycles": int(workload.get("core", {}).get("sfu", 0)) if not is_model_only else None,

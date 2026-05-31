@@ -105,13 +105,28 @@ class PerfReportTests(unittest.TestCase):
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(len(manifest["jobs"]), 70)
+        self.assertEqual(len(manifest["jobs"]), 73)
         self.assertEqual(manifest["manifest_id"], "soc_cpu_smoke_quick_v0")
-        self.assertEqual(manifest["jobs"][-2]["workload"], "transformer_prefill_gemm_tiny")
+        self.assertEqual(manifest["jobs"][-5]["workload"], "transformer_prefill_gemm_tiny")
+        self.assertEqual(manifest["jobs"][-4]["workload"], "transformer_attention_qk_s8_d8")
+        self.assertEqual(manifest["jobs"][-3]["workload"], "transformer_attention_softmax_s8")
+        self.assertEqual(manifest["jobs"][-2]["workload"], "transformer_attention_pv_s8_d8")
         self.assertEqual(manifest["jobs"][-1]["workload"], "transformer_decode_skinny_gemm_m8_compat")
         self.assertEqual(
             manifest["workload_metadata"]["transformer_prefill_gemm_tiny"]["metadata"]["scenario"],
             "transformer_prefill",
+        )
+        self.assertEqual(
+            manifest["workload_metadata"]["transformer_attention_qk_s8_d8"]["metadata"]["attention_stage"],
+            "qk",
+        )
+        self.assertEqual(
+            manifest["workload_metadata"]["transformer_attention_softmax_s8"]["metadata"]["attention_stage"],
+            "softmax",
+        )
+        self.assertEqual(
+            manifest["workload_metadata"]["transformer_attention_pv_s8_d8"]["metadata"]["attention_stage"],
+            "pv",
         )
         self.assertTrue(
             manifest["workload_metadata"]["transformer_kv_cache_traffic_tiny"]["metadata"]["model_only"]

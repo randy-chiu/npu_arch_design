@@ -126,6 +126,13 @@ def build_workload_proxy(
             "cycles": int(workload["total_cycles"]),
             "core_matmul_cycles": int(workload.get("core_matmul_cycles", 0)),
             "data_mover_words": int(workload.get("data_mover", {}).get("words", 0)),
+            "attention_group": transformer_metrics.get("attention_group"),
+            "attention_stage": transformer_metrics.get("attention_stage"),
+            "numerical_contract": transformer_metrics.get("numerical_contract"),
+            "stage_provenance": transformer_metrics.get("stage_provenance"),
+            "qk_cycles": transformer_metrics.get("qk_cycles"),
+            "attention_softmax_cycles": transformer_metrics.get("attention_softmax_cycles"),
+            "pv_cycles": transformer_metrics.get("pv_cycles"),
             "effective_mac_per_cycle": (
                 round(float(transformer_metrics["effective_mac_ops"]) / float(workload["total_cycles"]), 6)
                 if transformer_metrics.get("effective_mac_ops") is not None and int(workload["total_cycles"]) > 0
@@ -402,6 +409,7 @@ def write_html(report: dict[str, Any], path: Path) -> None:
         "<tr>"
         f"<td>{html.escape(item['name'])}</td>"
         f"<td>{item['performance']['cycles']}</td>"
+        f"<td>{html.escape(str(item['performance'].get('attention_stage')))}</td>"
         f"<td>{item['energy_proxy']['events']['int8_mac_accumulate']}</td>"
         f"<td>{html.escape(str(item['performance'].get('matrix_utilization')))}</td>"
         f"<td>{html.escape(str(item['performance'].get('gemv_utilization')))}</td>"
@@ -500,7 +508,7 @@ def write_html(report: dict[str, Any], path: Path) -> None:
   <section>
     <h2>Workloads</h2>
     <table>
-      <thead><tr><th>Name</th><th>Measured cycles</th><th>Derived MAC ops</th><th>Matrix util</th><th>GEMV util</th><th>KV read bytes</th><th>Moved words</th><th>Energy proxy</th></tr></thead>
+      <thead><tr><th>Name</th><th>Measured cycles</th><th>Attention stage</th><th>Derived MAC ops</th><th>Matrix util</th><th>GEMV util</th><th>KV read bytes</th><th>Moved words</th><th>Energy proxy</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>
   </section>

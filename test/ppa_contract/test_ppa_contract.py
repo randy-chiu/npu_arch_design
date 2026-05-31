@@ -194,6 +194,14 @@ class PPAContractTests(unittest.TestCase):
         self.assertIn("transformer_prefill", scenarios)
         self.assertIn("transformer_decode", scenarios)
         self.assertTrue(any(workload["op"] == "memory_traffic" for workload in manifest["workloads"]))
+        self.assertTrue(
+            any(
+                workload.get("attention_stage") == "qk"
+                and workload["status"] == "planned_current_matmul_extension"
+                for workload in manifest["workloads"]
+            )
+        )
+        self.assertTrue(any(workload.get("attention_group") == "attention_prefill_s8_d8" for workload in manifest["workloads"]))
         for workload in manifest["workloads"]:
             self.assertIn("activity_scope", workload)
             self.assertIn("external_memory", workload)
@@ -267,6 +275,99 @@ class PPAContractTests(unittest.TestCase):
         )
         self.assertEqual(kv["performance"]["provenance"], "modeled_manifest_only")
         self.assertEqual(kv["energy_proxy"]["events"]["external_memory_byte"], 1536)
+
+    def test_proxy_report_exposes_attention_stage_metadata(self):
+        perf = {
+            "source": {"performance": "measured_architectural_perf_csr_snapshot"},
+            "workloads": [
+                {
+                    "name": "transformer_attention_qk_s8_d8",
+                    "kind": "transformer_micro",
+                    "jobs": 1,
+                    "total_cycles": 96,
+                    "core_matmul_cycles": 10,
+                    "data_mover": {"words": 256, "read_words": 192, "write_words": 64},
+                    "metadata": {
+                        "workload_family": "transformer_prefill",
+                        "attention_group": "attention_prefill_s8_d8",
+                        "attention_stage": "qk",
+                        "numerical_contract": "attention_bringup_v0_qk_exact",
+                        "stage_provenance": "measured_current_matmul_path",
+                        "logical_shape": {"m": 8, "n": 8, "k": 8},
+                        "shape_class": "skinny_gemm",
+                        "external_memory": {
+                            "activation_read_bytes": 64,
+                            "activation_write_bytes": 256,
+                            "weight_read_bytes": 64,
+                            "kv_cache_read_bytes": 0,
+                            "kv_cache_write_bytes": 0,
+                        },
+                    },
+                }
+            ],
+            "model_only_workloads": [
+                {
+                    "name": "transformer_attention_softmax_s8",
+                    "kind": "transformer_model_only",
+                    "jobs": 0,
+                    "total_cycles": 0,
+                    "core_matmul_cycles": 0,
+                    "data_mover": {},
+                    "metadata": {
+                        "model_only": True,
+                        "attention_group": "attention_prefill_s8_d8",
+                        "attention_stage": "softmax",
+                        "numerical_contract": "attention_bringup_v0_shift_scale_sfu9seg",
+                        "external_memory": {
+                            "activation_read_bytes": 256,
+                            "activation_write_bytes": 128,
+                        },
+                    },
+                }
+            ],
+            "highlights": [],
+        }
+
+        perf["workloads"][0]["transformer_metrics"] = {
+            "attention_group": "attention_prefill_s8_d8",
+            "attention_stage": "qk",
+            "numerical_contract": "attention_bringup_v0_qk_exact",
+            "stage_provenance": "measured_current_matmul_path",
+            "effective_mac_ops": 512,
+            "matrix_utilization": 0.8,
+            "gemv_utilization": None,
+            "skinny_gemm_utilization": 0.8,
+            "kv_read_bytes": 0,
+            "kv_write_bytes": 0,
+            "bytes_per_token": None,
+            "qk_cycles": 96,
+            "attention_softmax_cycles": None,
+            "pv_cycles": None,
+        }
+        perf["model_only_workloads"][0]["transformer_metrics"] = {
+            "attention_group": "attention_prefill_s8_d8",
+            "attention_stage": "softmax",
+            "numerical_contract": "attention_bringup_v0_shift_scale_sfu9seg",
+            "stage_provenance": "model_only_fixed_spec",
+            "effective_mac_ops": None,
+            "kv_read_bytes": 0,
+            "kv_write_bytes": 0,
+            "bytes_per_token": None,
+            "qk_cycles": None,
+            "attention_softmax_cycles": None,
+            "pv_cycles": None,
+        }
+
+        report = build_proxy_report(perf, read_jsonc(AREA_PROXY_PATH), read_jsonc(ENERGY_PROXY_PATH))
+        validate_proxy_report(report)
+        qk = report["workloads"][0]
+        softmax = report["workloads"][1]
+
+        self.assertEqual(qk["performance"]["attention_stage"], "qk")
+        self.assertEqual(qk["performance"]["qk_cycles"], 96)
+        self.assertEqual(qk["energy_proxy"]["events"]["int8_mac_accumulate"], 512)
+        self.assertEqual(softmax["performance"]["attention_stage"], "softmax")
+        self.assertEqual(softmax["performance"]["provenance"], "modeled_manifest_only")
 
     @unittest.skipUnless(shutil.which("iverilog"), "iverilog not installed")
     def test_npu_subsystem_boundary_elaborates(self):

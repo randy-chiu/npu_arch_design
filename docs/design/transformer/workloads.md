@@ -39,7 +39,8 @@ names such as `m8_compat` instead of bare `proxy`.
 | Level | Purpose | Initial content |
 | --- | --- | --- |
 | Micro kernel | isolate architectural resources | GEMM, GEMV, softmax, RMSNorm, KV-cache traffic |
-| Attention/FFN group | measure coupled operations and movement | QKV, `Q*K^T`, softmax, `P*V`, FFN up/down |
+| Attention group | measure coupled operations and movement | `Q*K^T`, row softmax, `P*V`, KV traffic |
+| FFN group | measure dense projection pressure | FFN up/down |
 | Tiny decoder block | verify a recognizable inference block | norm + attention + residual + FFN |
 | Trace-driven model view | study realistic shape/traffic trends | scaled prefill/decode manifests |
 
@@ -66,9 +67,14 @@ workloads/transformer/traces/decode/
 | FFN up/down | dominant projection compute | GEMM scaling and activation path |
 | KV-cache traffic | decode memory pressure | bytes/token and external-energy estimate |
 
-The current RTL supports only part of this list. A manifest may be introduced
-before RTL implementation to define required shapes and metrics. Adding an RTL
-op still requires an architecture/spec decision backed by a measured need.
+The current RTL supports only part of this list. Attention is now the primary
+Transformer workload family for upcoming PPA decisions. It is represented as a
+sequence over matrix/vector/reduction/SFU primitives rather than as a dedicated
+RTL attention macro.
+
+A manifest may be introduced before RTL implementation to define required
+shapes and metrics. Adding an RTL op still requires an architecture/spec
+decision backed by a measured need.
 
 KV-cache traffic is included because autoregressive decode repeatedly reads
 previous keys/values and writes the new token's key/value state. This often
@@ -128,30 +134,33 @@ synthesized, but it must be reported as a distinct contribution.
 ## 7. Post-CSR Baseline Decision / CSR 基线后的执行顺序
 
 The production performance path now reads architectural completed-job CSR
-snapshots. Transformer support should start without adding speculative RTL
-operators:
+snapshots. Transformer support should now pivot to attention without adding a
+dedicated attention RTL macro:
 
-1. Extend the workload manifest identity with `scenario` (`prefill`/`decode`),
-   logical shape, precision, activity scope, and external/KV-cache traffic
-   fields.
-2. Add executable INT8 projection proxies using the existing matmul and
-   K-stream execution path:
-   - prefill projection GEMM, tiled into current `8x8x8` jobs;
-   - decode skinny-GEMM `m8_compat` workload with `M=8`, explicitly labeled as
-     current-array-compatible rather than true single-token GEMV.
-3. Add model-only KV-cache read/write traffic accounting alongside decode
-   results before treating latency/energy as architecture evidence.
-4. Use measured projection utilization and modeled KV traffic to choose the
-   first RTL extension.
+1. Extend the workload manifest identity with attention parent/stage fields,
+   `scenario` (`prefill`/`decode`), logical shape, precision, activity scope,
+   and external/KV-cache traffic fields.
+2. Add attention-centered workloads:
+   - measured/current-RTL-compatible QK stage first;
+   - model-only row softmax until vector/reduction/SFU scheduler path exists;
+   - model-only PV until probability format policy is reviewed;
+   - grouped `attention_prefill_s8_d8` report view.
+3. Keep current projection and decode skinny-GEMM workloads as supporting
+   matrix-utilization evidence, not the main Transformer decision surface.
+4. Add model-only KV-cache read/write traffic accounting alongside decode
+   attention workloads.
+5. Use measured QK utilization, softmax/PV gaps, and modeled KV traffic to
+   choose the first datapath/runtime extension.
 
 Candidate RTL extensions, in evidence order:
 
 | Candidate | Triggering evidence | Do not implement before |
 | --- | --- | --- |
-| descriptor/command-list support for repeated tiles and tensor layout | projection jobs are dominated by CPU/control/staging or descriptor traffic | executable projection manifests and traffic identity |
-| skinny-GEMM/GEMV utilization support such as valid-row/valid-column handling | decode `m8_compat` shows poor useful-MAC ratio on the `8x8` array | compare prefill versus decode `m8_compat` results |
+| descriptor/command-list support for repeated tiles and tensor layout | attention stage jobs are dominated by CPU/control/staging or descriptor traffic | executable attention QK manifests and traffic identity |
+| vector/reduction/SFU scheduler path | attention softmax remains model-only and blocks full measured attention PPA | row softmax golden and stage metadata are stable |
+| PV probability format support | `P*V` cannot be measured without excessive precision loss or unsupported mixed precision | attention softmax policy is reviewed |
+| skinny-GEMM/GEMV utilization support such as valid-row/valid-column handling | decode attention shows poor useful-MAC ratio on the `8x8` array | compare prefill QK versus decode `m8_compat` results |
 | KV-cache/external movement accounting or interface support | modeled decode bytes/token dominates event energy | external traffic fields are reportable |
-| RMSNorm/reduction/SFU extension | a tiny block cannot be represented using current operators | projection and traffic baselines are stable |
 
 `mac_ops`, `instr_count`, and execution error/timeout CSRs remain planned
 contracts. `mac_ops` becomes high priority before comparing shapes whose useful
@@ -181,3 +190,6 @@ The v1 workload surface also defines golden/model-only entries under
 `softmax_row`, `attn_pv`, `rmsnorm_row`, `ffn_up_down`, and
 `kv_cache_read_write`. These entries prepare manifest, golden, and PPA fields
 before the corresponding vector/reduction/SFU/KV streamer RTL is accepted.
+
+Upcoming attention-specific entries should use the parent/stage naming and
+provenance rules in `attention_workload_ppa.md`.

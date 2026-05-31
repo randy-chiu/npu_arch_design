@@ -2,9 +2,19 @@
 
 ## Goal
 
-Prepare the next implementation rounds after the directory cleanup. The
-priority is still a verifiable Transformer-oriented NPU baseline, not a full
-LLM or fused attention pipeline.
+Prepare the next implementation rounds around Transformer attention. Attention
+is the primary workload and PPA driver for the next phase, but it is not a
+dedicated RTL macro. The implementation target is a compiler/runtime scheduled
+sequence over matrix, vector, reduction, SFU, data mover, and scheduler
+primitives.
+
+The immediate architectural question is:
+
+```text
+Which existing primitive blocks are sufficient for attention, which contracts
+are underspecified, and which missing features must be added before attention
+measurements are valid PPA evidence?
+```
 
 ## V1 Module Status
 
@@ -20,41 +30,93 @@ LLM or fused attention pipeline.
 | SFU | `docs/design/transformer/sfu_v1.md` | standalone `sfu/sfu_lut.sv` implemented | EXP/RECIP/RSQRT and sequence tests pass | refine LUT/tolerance before model accuracy claims |
 | memory / scratchpad / data mover | common docs in `docs/design/` | v0 wrapper data mover exists | perf/PPA pass | add v1 internal scratchpad contract before widening |
 | KV cache subsystem | `arch/specs/transformer/v1/transformer_npu_v1.md` | spec/model-only counters only | perf/PPA model-only traffic visible | no RTL until decode traffic evidence justifies it |
-| Transformer micro workloads | `docs/design/transformer/workloads.md` | executable tiny matmul plus model-only/golden entries and primitive sequence golden | quick profile enters perf/PPA; primitive sequences pass standalone RTL | connect primitive sequences to scheduler later |
+| Transformer attention workloads | `docs/design/transformer/attention_workload_ppa.md` | current manifest has QK/PV/softmax-like model-only entries and tiny executable matmul workloads | quick profile enters perf/PPA for current executable matmul; full attention group is pending | make attention parent/stage workload identity the main PPA surface |
 
 ## Ordered Work
 
-### 0. Primitive Contract Cleanup
+### 0. Attention Sequence Contract
 
 Status:
 
-- Implemented: Transformer primitive dimensions, local op encodings, current
-  SFU bring-up LUT constants, and RECIP/RSQRT Q formats are sourced from
-  `arch/configs/npu_transformer_v1.jsonc`.
-- Implemented: `make transformer-config` emits SV/C/Python constants under
-  `build/generated/`.
-- Implemented: `hw/npu_core/rtl/transformer_primitive_engines.sv` is the
-  design-side primitive integration point and explicitly passes generated
-  parameters into vector/reduction/SFU RTL.
-- Still deferred: production SFU LUT/Newton, valid/ready pipeline, full
-  requant.
-
-### 0.1 SFU EXP 257-entry LUT Expansion
-
-Detailed design: `docs/design/transformer/sfu_exp_lut257_design.md`.
+- Implemented in documentation: `attention_sequence_v1.md` defines attention
+  as QK matrix, score scale/mask/clamp, row softmax, and PV sequence over
+  existing primitives.
+- Implemented in documentation: attention workload/PPA and compiler/runtime
+  documents define parent/stage grouping, model-only versus measured evidence,
+  and software-owned lowering.
+- Still deferred: full attention golden/workload implementation, scheduler
+  command-list ABI, and measured primitive sequence execution.
 
 Acceptance criteria:
 
-- Generate the 257-entry Q0.15 EXP table from the numerical spec source and
-  config scale/Q fields.
-- Replace current `bringup_exp_q15_segments` usage in RTL with the generated
-  257-entry table.
-- Keep `softmax_reference_*`, `softmax_fixed_spec_*`, and
-  `softmax_rtl_model_*` separate while the old and new SFU models coexist.
-- Update README status from 9-segment bring-up to 257-entry implemented only
-  after RTL/golden/tests match.
+- Attention formula and primitive mapping are documented.
+- Matrix/vector/reduction/SFU docs state current support and attention-driven
+  gaps.
+- No v1 plan introduces a dedicated attention RTL macro.
 
-### 0.2 Valid/Ready and Counter Expansion
+### 0.1 Attention Golden And Workload Identity
+
+Detailed design:
+
+- `docs/design/transformer/attention_sequence_v1.md`
+- `docs/design/transformer/attention_workload_ppa.md`
+
+Acceptance criteria:
+
+- Add Python golden functions for:
+  - QK score matmul;
+  - score scale/mask/clamp;
+  - row softmax Q0.15;
+  - PV policy;
+  - full `attention_prefill_s8_d8`.
+- Add manifest entries with parent/stage identity:
+  - `transformer_attention_qk_s8_d8`;
+  - `transformer_attention_softmax_s8`;
+  - `transformer_attention_pv_s8_d8`;
+  - `transformer_attention_prefill_s8_d8`;
+  - decode KV traffic attention view.
+- Model-only fields remain model-only until launched through firmware/runtime.
+- Numerical contract IDs identify whether a workload uses simplified bring-up
+  policies or target attention policies.
+
+### 0.2 Measured QK Stage On Current Matrix Path
+
+Acceptance criteria:
+
+- Execute `attention_qk_s8_d8` using current `8x8x8` matrix path.
+- Compiler/generator emits K-transposed tile layout and exact int32 expected
+  score tile.
+- Perf/PPA reports show QK stage cycles, useful MACs, data movement, and
+  matrix utilization.
+- Existing CNN, operator smoke, and current Transformer quick workloads keep
+  passing.
+
+### 0.3 SFU EXP/RECIP Contract For Attention Softmax
+
+Detailed design:
+
+- `docs/design/transformer/sfu_v1.md`
+- `docs/design/transformer/sfu_exp_lut257_design.md`
+
+Acceptance criteria:
+
+- Generate the 257-entry Q0.15 EXP table from a deterministic numerical source
+  and config scale/Q fields.
+- Replace current 9-segment `bringup_exp_q15_segments` RTL path only after
+  golden and RTL agree.
+- Define RECIP input range, Q0.24 output, normalization shift, zero behavior,
+  and test vectors.
+- Keep target fixed-spec and current RTL approximation functions separately
+  named.
+- Attention softmax remains model-only or bring-up-labeled until this contract
+  is implemented.
+
+Upgrade trigger:
+
+- implement this before measured attention softmax is used as target PPA or
+  accuracy evidence; simplified SFU is acceptable only for plumbing bring-up.
+
+### 0.4 Valid/Ready and Counter Expansion
 
 Detailed design: `docs/design/transformer/primitive_valid_ready_v1.md`.
 
@@ -66,9 +128,12 @@ Acceptance criteria:
 - Preserve the existing single-start bring-up tests as compatibility tests
   until the scheduler path consumes the valid/ready interface.
 
-### 0.3 Requant v2 Expansion
+### 0.5 Requant v2 And Attention Mask Semantics
 
-Detailed design: `docs/design/transformer/requant_v2_design.md`.
+Detailed design:
+
+- `docs/design/transformer/vector_engine_v1.md`
+- `docs/design/transformer/requant_v2_design.md`
 
 Acceptance criteria:
 
@@ -78,6 +143,26 @@ Acceptance criteria:
 - Keep current `shift_clamp` as a named v1 mode with regression coverage.
 - Only switch Transformer fixed-spec softmax/RMSNorm paths to v2 requant after
   RTL-like golden and primitive RTL tests agree.
+- Define attention mask semantics: unmasked first, then causal/padding mask
+  through mask-select or compiler-materialized negative sentinel.
+
+Upgrade trigger:
+
+- implement fixed-multiplier requant before claiming `1/sqrt(D)` target
+  scaling;
+- implement mask semantics before claiming decoder prefill or tiled-tail
+  attention correctness.
+
+### 0.6 Row Reduction Contract For Attention Softmax
+
+Detailed design: `docs/design/transformer/reduction_engine_v1.md`.
+
+Acceptance criteria:
+
+- Define row length, valid-lane, masked-lane, and empty-row behavior.
+- Define segmented row max/sum behavior for `S > lanes`.
+- Add measured or modeled `reduction_element_ops` semantics before PPA uses
+  reduction energy as evidence.
 
 ### 1. Accumulator File Integration
 
@@ -139,16 +224,17 @@ make primitive-engines-sim
 make npu-core-sim
 ```
 
-### 3. Softmax/RMSNorm Primitive Micro-Kernel Fixtures
+### 3. Attention Softmax Primitive Micro-Kernel Fixtures
 
 Acceptance criteria:
 
-- `softmax_row` and `rmsnorm_row` have generated fixture data and expected
+- `attention_softmax_s8` has generated fixture data and expected Q0.15
   outputs.
-- The workload manifest keeps these as `model_only` or `primitive_rtl_unit`
-  until firmware execution exists.
+- The workload manifest keeps it as `model_only` or `primitive_rtl_unit` until
+  firmware/runtime execution exists.
 - Perf/PPA fields stay `null` for unavailable runtime cycles rather than
   pretending they are measured.
+- RMSNorm remains covered but is not the next PPA driver.
 
 Status:
 
@@ -160,10 +246,13 @@ Status:
 - These are not yet firmware-executable workloads and do not report measured
   runtime cycles in perf/PPA.
 
-### 4. GEMV / Skinny GEMM Execution Path
+### 4. PV Policy And GEMV / Skinny GEMM Execution Path
 
 Acceptance criteria:
 
+- Decide PV policy:
+  - probability requantized to int8 and reused by matrix engine; or
+  - mixed Q0.15 x int8 weighted-sum/matrix support.
 - Add a true `GEMV_TILE` or valid-row/valid-column skinny-GEMM path.
 - Report distinguishes:
   - full tile GEMM;
@@ -173,7 +262,27 @@ Acceptance criteria:
   `gemv_utilization`, and `tail_waste_mac_capacity` are still visible in
   perf/PPA output.
 
-### 5. KV Cache Counter Path
+Upgrade trigger:
+
+- int8 probability PV is acceptable as an explicitly labeled approximation;
+- mixed Q0.15 x int8 PV becomes necessary when probability requantization error
+  blocks attention output accuracy or when PPA comparison needs the more
+  faithful datapath.
+
+### 5. Attention Runtime / Command-List Path
+
+Detailed design: `docs/design/transformer/software_runtime_compiler_attention.md`.
+
+Acceptance criteria:
+
+- Add compiler lowering from logical attention to primitive stage sequence.
+- Add runtime launch model:
+  - multi-descriptor firmware loop for measured QK first;
+  - command-list executor before full measured attention.
+- Define intermediate score/probability/output buffer allocation.
+- Preserve generated `job_id` to manifest correlation.
+
+### 6. KV Cache Counter Path
 
 Acceptance criteria:
 
@@ -189,6 +298,7 @@ Acceptance criteria:
 - No full Transformer block.
 - No fused attention pipeline.
 - No macro-op hardware expansion.
+- No dedicated attention RTL macro.
 - No INT4/FP8.
 - No real LPDDR controller.
 - No CNN regression deletion.
