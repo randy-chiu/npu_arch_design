@@ -104,6 +104,19 @@ multi-cycle reduction tree or streaming latency model.
 `active` mirrors `start`. `done` pulses for one cycle when `start` is sampled.
 There is no valid/ready pipeline and no real stall counter.
 
+Before scheduler integration, replace this bring-up contract with
+`primitive_valid_ready_v1.md` semantics:
+
+- `cmd_valid/cmd_ready` accepts one reduction command and stable payload;
+- `rsp_valid/rsp_ready` transfers the reduction result;
+- `reduction_active_cycles`, `reduction_input_stall_cycles`, and
+  `reduction_output_stall_cycles` are counted from handshake events;
+- `reduction_element_ops` counts valid reduced elements, not just command
+  count, and must define segmented-row accounting before PPA use.
+
+The start/done path can remain as a compatibility shim for primitive bring-up
+tests, but it is not the production scheduler contract.
+
 ## Rounding/saturation behavior
 
 `REDUCE_MAX` sign-extends the selected input. `REDUCE_SUM` accumulates in
@@ -115,6 +128,13 @@ Current RTL does not saturate on accumulator overflow.
 Required v1 reporting includes `reduction_active_cycles` and
 `stall_cycles_by_engine`. Current standalone RTL exposes only `active`; real
 counter integration is deferred.
+
+Counter exposure order:
+
+1. define row-length, mask, empty-row, and segmented-row behavior;
+2. implement handshake-visible local event sources;
+3. verify event and element counts in primitive directed tests;
+4. aggregate through scheduler/wrapper and expose CSR/report fields.
 
 ## Current RTL status
 

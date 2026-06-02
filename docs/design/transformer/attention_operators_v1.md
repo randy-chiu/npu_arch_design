@@ -226,8 +226,10 @@ o_i32         = matmul_u16s8_q15_i32_tile(prob_q15, v)
 Current status:
 
 - QK, softmax, and PV are measured as separate SoC jobs;
-- the parent logical attention workload remains metadata/model-only until a
-  compiler-produced runtime plan launches the whole sequence as one group.
+- the parent logical attention workload is a compiler-produced
+  `software_group_measured_stages` group for measured QK, softmax, and PV;
+- scale/mask is still materialized, and the group does not yet prove a fully
+  chained attention subnetwork.
 
 ## Proposed Metadata File
 

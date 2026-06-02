@@ -55,6 +55,12 @@ buffer IDs, memory-map constants, fixture paths, expected-output lengths, and
 tolerances must be consumed from their canonical source or generated metadata,
 not retyped independently in compiler, RTL, testbench, and tests.
 
+Module design ownership follows the same rule. Each RTL module has one
+module-level design source; subfeatures stay inside that owning document unless
+they become a separate RTL module. Cross-cutting documents may reference the
+module contract but must not redefine the module's interface, counters, latency,
+or numerical behavior.
+
 ## 2. Spec Change Protocol
 
 Every architecture spec change must be treated as a system change.

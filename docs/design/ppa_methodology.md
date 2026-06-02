@@ -339,3 +339,16 @@ ppa/baselines/
 4. `L2_power`: add job-scoped activity-based on-chip power extraction.
 5. `L3_physical`: use SKY130HD/OpenROAD/OpenLane for selected variants after
    memory accounting and Transformer evaluation shapes are stable.
+
+Transformer counter expansion order:
+
+1. keep current wrapper CSR snapshot as the production performance source;
+2. define primitive valid/ready event semantics before adding new counters;
+3. add local matrix/vector/reduction/SFU/scheduler event sources and directed
+   tests;
+4. aggregate stable events through wrapper-visible completed-job snapshots;
+5. extend `PERF_JOB` and PPA schema with provenance labels for each new field;
+6. update energy coefficients only after event names and units are stable.
+
+Reports must not mix measured primitive counters with derived/model-only
+attention fields without separate provenance fields.

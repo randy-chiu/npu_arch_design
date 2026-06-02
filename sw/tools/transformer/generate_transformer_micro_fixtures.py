@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from npu_compiler.attention import build_attention_plan_from_manifest
 from npu_phase0.rtl_fixture import softmax_q0_8
 from transformer.golden import (
     TILE_K,
@@ -62,6 +63,7 @@ def generate_transformer_micro_fixtures(spec_path: Path = TRANSFORMER_SPEC_PATH)
     spec = read_jsonc(spec_path)
     validate_transformer_micro_spec(spec)
     precision = spec["precision_baseline"]
+    attention_plans = _build_attention_plans(spec)
     executable = []
     model_only = []
     for index, workload in enumerate(spec["workloads"]):
@@ -71,12 +73,69 @@ def generate_transformer_micro_fixtures(spec_path: Path = TRANSFORMER_SPEC_PATH)
             executable.append(_generate_softmax_workload(workload, precision, seed=index + 1))
         else:
             model_only.append(_model_only_metadata(workload, precision))
+    _attach_attention_plan_metadata(executable, attention_plans)
+    _attach_attention_plan_metadata(model_only, attention_plans)
     return {
         "spec_name": spec["name"],
         "version": int(spec["version"]),
+        "attention_plans": list(attention_plans.values()),
         "executable_workloads": executable,
         "model_only_workloads": model_only,
     }
+
+
+def _build_attention_plans(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    groups = {
+        workload.get("attention_group")
+        for workload in spec.get("workloads", [])
+        if workload.get("logical_op") == "scaled_dot_product_attention"
+    }
+    plans: dict[str, dict[str, Any]] = {}
+    for group in sorted(group for group in groups if group):
+        if group == "attention_prefill_s8_d8":
+            plans[group] = build_attention_plan_from_manifest(spec, group)
+    return plans
+
+
+def _attach_attention_plan_metadata(items: list[dict[str, Any]], plans: dict[str, dict[str, Any]]) -> None:
+    for item in items:
+        metadata = item.get("metadata", {})
+        group = metadata.get("attention_group")
+        if not group or group not in plans:
+            continue
+        plan = plans[group]
+        stage_id = metadata.get("attention_stage")
+        metadata["attention_plan"] = {
+            "workload_name": plan["workload_name"],
+            "attention_group": plan["attention_group"],
+            "group_state": plan["group_state"],
+            "group_cycle_policy": plan["group_cycle_policy"],
+        }
+        if stage_id == "full_attention":
+            metadata["attention_plan"]["stages"] = [stage["stage_id"] for stage in plan["stages"]]
+            metadata["attention_plan"]["runtime_jobs"] = [job["stage_id"] for job in plan["runtime_jobs"]]
+            continue
+        for index, stage in enumerate(plan["stages"]):
+            if stage["stage_id"] == stage_id:
+                metadata["attention_plan_stage"] = {
+                    "stage_index": index,
+                    "operator": stage["operator"],
+                    "inputs": stage["inputs"],
+                    "outputs": stage["outputs"],
+                    "execution": stage.get("execution", "descriptor_job"),
+                }
+                break
+        for job in plan["runtime_jobs"]:
+            if job["stage_id"] == stage_id:
+                metadata["attention_plan_runtime_job"] = {
+                    "job_id_symbol": job["job_id_symbol"],
+                    "descriptor_op": job["descriptor_op"],
+                    "input0": job["input0"],
+                    "input1": job["input1"],
+                    "output": job["output"],
+                    "perf_scope": job["perf_scope"],
+                }
+                break
 
 
 def _generate_matmul_workload(workload: dict[str, Any], precision: dict[str, str], seed: int) -> dict[str, Any]:

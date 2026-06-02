@@ -460,88 +460,91 @@ static int run_transformer_decode_skinny_gemm_m8_compat(void)
                        TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS, 0xc00u);
 }
 
-static int run_transformer_attention_qk_s8_d8(void)
+static int run_transformer_attention_runtime_job(const transformer_runtime_job_t *runtime_job)
 {
-    for (uint32_t chunk = 0; chunk < TRANSFORMER_ATTENTION_QK_S8_D8_CHUNKS; ++chunk) {
-        copy_words(transformer_attention_qk_s8_d8_a_sram[chunk],
-                   transformer_attention_qk_s8_d8_a[chunk],
-                   TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS);
-        copy_words(transformer_attention_qk_s8_d8_b_sram[chunk],
-                   transformer_attention_qk_s8_d8_b[chunk],
-                   TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS);
+    if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_QK) {
+        for (uint32_t chunk = 0; chunk < TRANSFORMER_ATTENTION_QK_S8_D8_CHUNKS; ++chunk) {
+            copy_words(transformer_attention_qk_s8_d8_a_sram[chunk],
+                       transformer_attention_qk_s8_d8_a[chunk],
+                       TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS);
+            copy_words(transformer_attention_qk_s8_d8_b_sram[chunk],
+                       transformer_attention_qk_s8_d8_b[chunk],
+                       TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS);
+        }
+        job_desc.program_addr = ptr32(matmul_program_sram);
+        job_desc.program_words = MATMUL_PROGRAM_LEN;
+        job_desc.input0_addr = ptr32(transformer_attention_qk_s8_d8_a_sram);
+        job_desc.input0_words = TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS;
+        job_desc.input1_addr = ptr32(transformer_attention_qk_s8_d8_b_sram);
+        job_desc.input1_words = TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS;
+        job_desc.output_addr = ptr32(transformer_attention_qk_s8_d8_c_sram);
+        job_desc.output_words = TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS;
+        job_desc.k_chunks = TRANSFORMER_ATTENTION_QK_S8_D8_CHUNKS;
+    } else if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_SOFTMAX) {
+        copy_words(transformer_attention_softmax_s8_x_sram,
+                   transformer_attention_softmax_s8_x,
+                   TRANSFORMER_ATTENTION_SOFTMAX_S8_X_WORDS);
+        job_desc.program_addr = ptr32(softmax_program_sram);
+        job_desc.program_words = SOFTMAX_PROGRAM_LEN;
+        job_desc.input0_addr = ptr32(transformer_attention_softmax_s8_x_sram);
+        job_desc.input0_words = TRANSFORMER_ATTENTION_SOFTMAX_S8_X_WORDS;
+        job_desc.input1_addr = 0u;
+        job_desc.input1_words = 0u;
+        job_desc.output_addr = ptr32(transformer_attention_softmax_s8_y_sram);
+        job_desc.output_words = TRANSFORMER_ATTENTION_SOFTMAX_S8_Y_WORDS;
+        job_desc.k_chunks = 0u;
+    } else if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_PV) {
+        for (uint32_t chunk = 0; chunk < TRANSFORMER_ATTENTION_PV_S8_D8_CHUNKS; ++chunk) {
+            copy_words(transformer_attention_pv_s8_d8_a_sram[chunk],
+                       transformer_attention_pv_s8_d8_a[chunk],
+                       TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS);
+            copy_words(transformer_attention_pv_s8_d8_b_sram[chunk],
+                       transformer_attention_pv_s8_d8_b[chunk],
+                       TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS);
+        }
+        job_desc.program_addr = ptr32(matmul_program_sram);
+        job_desc.program_words = MATMUL_PROGRAM_LEN;
+        job_desc.input0_addr = ptr32(transformer_attention_pv_s8_d8_a_sram);
+        job_desc.input0_words = TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS;
+        job_desc.input1_addr = ptr32(transformer_attention_pv_s8_d8_b_sram);
+        job_desc.input1_words = TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS;
+        job_desc.output_addr = ptr32(transformer_attention_pv_s8_d8_c_sram);
+        job_desc.output_words = TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS;
+        job_desc.k_chunks = 0u;
+    } else {
+        test_status_fail_code(0xd00u | (runtime_job->stage & 0xffu));
+        return 0;
     }
 
-    job_desc.op_type = SOC_NPU_JOB_OP_MATMUL_K_STREAM;
-    job_desc.job_id = JOB_ID_TRANSFORMER_ATTENTION_QK_S8_D8;
-    job_desc.program_addr = ptr32(matmul_program_sram);
-    job_desc.program_words = MATMUL_PROGRAM_LEN;
-    job_desc.input0_addr = ptr32(transformer_attention_qk_s8_d8_a_sram);
-    job_desc.input0_words = TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS;
-    job_desc.input1_addr = ptr32(transformer_attention_qk_s8_d8_b_sram);
-    job_desc.input1_words = TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS;
-    job_desc.output_addr = ptr32(transformer_attention_qk_s8_d8_c_sram);
-    job_desc.output_words = TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS;
-    job_desc.k_chunks = TRANSFORMER_ATTENTION_QK_S8_D8_CHUNKS;
+    job_desc.op_type = runtime_job->op_type;
+    job_desc.job_id = runtime_job->job_id;
     run_job();
 
-    return check_words(transformer_attention_qk_s8_d8_c_sram,
-                       transformer_attention_qk_s8_d8_expected_c,
-                       TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS, 0xd00u);
-}
-
-static int run_transformer_attention_softmax_s8(void)
-{
-    copy_words(transformer_attention_softmax_s8_x_sram,
-               transformer_attention_softmax_s8_x,
-               TRANSFORMER_ATTENTION_SOFTMAX_S8_X_WORDS);
-
-    job_desc.op_type = SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1;
-    job_desc.job_id = JOB_ID_TRANSFORMER_ATTENTION_SOFTMAX_S8;
-    job_desc.program_addr = ptr32(softmax_program_sram);
-    job_desc.program_words = SOFTMAX_PROGRAM_LEN;
-    job_desc.input0_addr = ptr32(transformer_attention_softmax_s8_x_sram);
-    job_desc.input0_words = TRANSFORMER_ATTENTION_SOFTMAX_S8_X_WORDS;
-    job_desc.input1_addr = 0u;
-    job_desc.input1_words = 0u;
-    job_desc.output_addr = ptr32(transformer_attention_softmax_s8_y_sram);
-    job_desc.output_words = TRANSFORMER_ATTENTION_SOFTMAX_S8_Y_WORDS;
-    job_desc.k_chunks = 0u;
-    run_job();
-
-    return check_words_abs_tol(transformer_attention_softmax_s8_y_sram,
-                               transformer_attention_softmax_s8_expected_y,
-                               TRANSFORMER_ATTENTION_SOFTMAX_S8_Y_WORDS,
-                               128u,
-                               0xe00u);
-}
-
-static int run_transformer_attention_pv_s8_d8(void)
-{
-    for (uint32_t chunk = 0; chunk < TRANSFORMER_ATTENTION_PV_S8_D8_CHUNKS; ++chunk) {
-        copy_words(transformer_attention_pv_s8_d8_a_sram[chunk],
-                   transformer_attention_pv_s8_d8_a[chunk],
-                   TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS);
-        copy_words(transformer_attention_pv_s8_d8_b_sram[chunk],
-                   transformer_attention_pv_s8_d8_b[chunk],
-                   TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS);
+    if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_QK) {
+        return check_words(transformer_attention_qk_s8_d8_c_sram,
+                           transformer_attention_qk_s8_d8_expected_c,
+                           TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS, 0xd00u);
     }
-
-    job_desc.op_type = SOC_NPU_JOB_OP_MATMUL_U16S8_Q15;
-    job_desc.job_id = JOB_ID_TRANSFORMER_ATTENTION_PV_S8_D8;
-    job_desc.program_addr = ptr32(matmul_program_sram);
-    job_desc.program_words = MATMUL_PROGRAM_LEN;
-    job_desc.input0_addr = ptr32(transformer_attention_pv_s8_d8_a_sram);
-    job_desc.input0_words = TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS;
-    job_desc.input1_addr = ptr32(transformer_attention_pv_s8_d8_b_sram);
-    job_desc.input1_words = TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS;
-    job_desc.output_addr = ptr32(transformer_attention_pv_s8_d8_c_sram);
-    job_desc.output_words = TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS;
-    job_desc.k_chunks = 0u;
-    run_job();
-
+    if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_SOFTMAX) {
+        return check_words_abs_tol(transformer_attention_softmax_s8_y_sram,
+                                   transformer_attention_softmax_s8_expected_y,
+                                   TRANSFORMER_ATTENTION_SOFTMAX_S8_Y_WORDS,
+                                   128u,
+                                   0xe00u);
+    }
     return check_words(transformer_attention_pv_s8_d8_c_sram,
                        transformer_attention_pv_s8_d8_expected_c,
                        TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS, 0xf00u);
+}
+
+static int run_transformer_attention_prefill_s8_d8_runtime_plan(void)
+{
+    for (uint32_t index = 0; index < TRANSFORMER_ATTENTION_RUNTIME_JOBS; ++index) {
+        if (!run_transformer_attention_runtime_job(&attention_prefill_s8_d8_runtime_jobs[index])) {
+            return 0;
+        }
+    }
+    return 1;
 }
 #endif
 
@@ -620,13 +623,7 @@ int main(void)
     if (!run_transformer_prefill_gemm_tiny()) {
         return 1;
     }
-    if (!run_transformer_attention_qk_s8_d8()) {
-        return 1;
-    }
-    if (!run_transformer_attention_softmax_s8()) {
-        return 1;
-    }
-    if (!run_transformer_attention_pv_s8_d8()) {
+    if (!run_transformer_attention_prefill_s8_d8_runtime_plan()) {
         return 1;
     }
     if (!run_transformer_decode_skinny_gemm_m8_compat()) {

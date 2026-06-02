@@ -94,7 +94,7 @@ Required metadata:
 ```json
 {
   "attention_stage": "pv",
-  "probability_policy": "model_only_until_reviewed",
+  "probability_policy": "q0_15_u16_measured_mixed_matrix",
   "logical_shape": {"seq_len": 8, "head_dim": 8}
 }
 ```
@@ -109,6 +109,18 @@ QK stage + softmax stage + PV stage
 
 The group may contain measured and model-only stage evidence. The PPA report
 must label provenance per stage.
+
+Group-state policy:
+
+| State | Allowed evidence | Parent cycle policy |
+| --- | --- | --- |
+| `model_only_full_attention` | stage rows may be measured separately, but no compiler/runtime group launched them as one plan | parent cycles are model-only or null |
+| `software_group_measured_stages` | compiler/runtime launched ordered stage jobs from one plan | parent cycles are sum of measured stage snapshots, with CPU overhead included or excluded by an explicit field |
+| `command_list_measured_full_attention` | one descriptor/command list launched the group and internal scopes measured stages | parent cycles come from the command-list job snapshot |
+
+If scale/mask remains materialized by fixtures or CPU-only preprocessing, the
+parent can be `software_group_measured_stages` but not target full-attention
+accuracy/PPA evidence.
 
 ### `transformer_attention_decode_s1_ctx32_d16`
 
@@ -149,9 +161,20 @@ Every attention workload should expose:
 | `probability_intermediate_bytes` | probability buffer footprint/traffic |
 | `kv_read_bytes`, `kv_write_bytes` | decode KV traffic |
 | `external_memory_bytes` | modeled external traffic sum |
+| `runtime_overhead_cycles` | CPU/runtime launch overhead when measured; otherwise `null` |
+| `group_cycle_policy` | `sum_measured_stages`, `sum_plus_runtime_overhead`, `command_list_snapshot`, or `model_only` |
 
 Unavailable measured fields must be `null`, not zero, when a stage is
 model-only. Zero is reserved for a measured event count that is actually zero.
+
+Scale/mask bridge fields:
+
+| Field | Meaning |
+| --- | --- |
+| `scale_mask_provenance` | measured NPU, CPU/materialized, fixture/materialized, or model-only |
+| `scale_mask_cycles` | measured cycles only when a runtime job or command-list scope exists |
+| `scale_policy` | power-of-two, multiplier-shift, or pre-scaled fixture |
+| `mask_policy` | none, causal, padding, tile-tail, or model-only |
 
 ## Energy Events
 
@@ -216,9 +239,11 @@ mixed `u16(Q0.15) x s8` mode. This removes the previous int8-probability proxy.
 The L0 area/energy proxy still uses generic MAC coefficients, so it does not
 yet model the larger `16x8` multiplier cost.
 
-The parent `transformer_attention_prefill_s8_d8` row remains model-only until a
-single runtime sequence can launch QK, softmax, and PV as one grouped attention
-operation with reviewed intermediate-buffer movement.
+The parent `transformer_attention_prefill_s8_d8` row is now
+`software_group_measured_stages`: a generated runtime table launches measured
+QK, softmax, and PV stages. It is not yet complete attention evidence because
+scale/mask is materialized, intermediate buffers are not producer-to-consumer
+chained, and runtime overhead is not measured.
 
 ## Acceptance Gates
 

@@ -2,8 +2,9 @@
 
 [TOC]
 
-This document describes the current `npu_v0_top` compute core and the A1 matmul
-array. It focuses on what the RTL implements today, not the final target NPU.
+This document describes the current `npu_v0_top` compute core, the A1 matmul
+array, and the first Transformer primitive bring-up paths integrated into the
+core. It focuses on what the RTL implements today, not the final target NPU.
 
 ## 1. Role
 
@@ -16,8 +17,10 @@ Current core properties:
 - no direct SRAM/DRAM master interface;
 - no autonomous program fetch from SoC memory;
 - no queue or multi-job context;
-- no real vector/SFU pipeline yet;
+- no production valid/ready vector/SFU pipeline yet;
 - matmul compute path has A1 output-parallel array behavior.
+- Transformer attention stage bring-up uses explicit `op` modes for row
+  softmax and mixed probability-value matmul.
 
 The wrapper owns all SoC memory movement today.
 
@@ -29,7 +32,7 @@ The wrapper owns all SoC memory movement today.
 | --- | --- | --- |
 | `clk/rst_n` | input | clock/reset |
 | `start` | input | one-cycle start pulse from wrapper |
-| `op` | input | reserved; execution is currently driven by uops |
+| `op[1:0]` | input | launch mode: uop program, attention softmax v1, or mixed PV matmul |
 | `done` | output | asserted when program reaches done state |
 | `host_we[CORE_HOST_LANES-1:0]` | input | lane write enables for host preload windows |
 | `host_addr` | input | 12-bit base host window word address |
@@ -53,17 +56,32 @@ host_we[lane] && state == ST_IDLE
 This prevents the wrapper from changing inputs/program while the core is
 executing.
 
+`op` mode behavior:
+
+| `op` | Mode | Current behavior |
+| ---: | --- | --- |
+| `0` | uop program | fetch and execute the preloaded Phase 0 uop stream |
+| `1` | attention softmax v1 | run the integrated row-softmax primitive sequence over `dram_x` and write Q0.15-style words to `dram_y` |
+| `2` | mixed PV matmul | run the shared matmul path in `u16 x s8 -> int32` Q15-shifted mode |
+| `3` | reserved | treated as unsupported/reserved for current flows |
+
+The `op=1` and `op=2` paths are Transformer bring-up entry points. They reuse
+the current host preload/output windows and wrapper descriptor launch path; they
+are not yet a general primitive scheduler or grouped attention command list.
+
 ## 3. Internal Memories
 
 | Storage | Width | Entries | Purpose |
 | --- | ---: | ---: | --- |
-| `dram_a` | signed 8 | 64 | matmul A preload window |
+| `dram_a` | unsigned/signed 16 | 64 | matmul A/probability preload window; low 8 bits are used for normal int8 matmul |
+| `dram_a_bank1` | unsigned/signed 16 | 64 | alternate host preload bank for A/probability staging |
 | `dram_b` | signed 8 | 64 | matmul B preload window |
+| `dram_b_bank1` | signed 8 | 64 | alternate host preload bank for B staging |
 | `dram_c` | signed 32 | 64 | matmul C output window |
 | `dram_x` | signed 8 | 8 | softmax X preload window |
-| `dram_y` | unsigned 8 | 8 | softmax Y output window |
+| `dram_y` | unsigned 32 | 8 | softmax Y output window; attention softmax uses low 16 bits as Q0.15 |
 | `instr_mem` | 32 | 16 | encoded uop program |
-| `spad_a` | signed 8 | 64 | matmul A scratchpad |
+| `spad_a` | unsigned/signed 16 | 64 | matmul A/probability scratchpad |
 | `spad_b` | signed 8 | 64 | matmul B scratchpad |
 | `accumulator_file` | signed 32 | 2 banks x 64 | matmul accumulator/output staging; v0 currently uses bank 0 |
 | `vec_buf` | signed 16 | 8 | softmax vector staging |
@@ -73,8 +91,8 @@ current RTL, not external DRAM.
 
 For K-streaming matmul, `matrix/accumulator_file.sv` is the resident
 partial-sum storage. The A/B preload and scratchpad arrays remain one `8x8`
-tile each; they are overwritten for every K chunk while accumulator bank 0
-persists until the final store.
+tile each for the active compute bank; they are overwritten for every K chunk
+while accumulator bank 0 persists until the final store.
 
 对于 K-streaming matmul，`matrix/accumulator_file.sv` 是常驻 partial-sum
 storage。A/B preload 和 scratchpad 数组仍然各自只保存一个 `8x8` tile；每个
@@ -96,7 +114,7 @@ The core does not validate window overflows beyond these simple address ranges.
 
 ## 5. Program Execution
 
-State machine:
+For `op=0`, the core runs the uop state machine:
 
 ```text
 ST_IDLE
@@ -127,18 +145,80 @@ Supported uops:
 Most non-matmul uops are implemented as single-cycle RTL tasks. This is useful
 for functional bring-up but is not a realistic vector pipeline timing model.
 
+For `op=1`, the core bypasses the uop stream and runs a fixed attention
+row-softmax sequence:
+
+```text
+prepare input row
+  -> REDUCE_MAX
+  -> vector subtract row max
+  -> vector clamp to EXP range
+  -> per-lane SFU EXP
+  -> REDUCE_SUM
+  -> SFU RECIP
+  -> vector normalization
+  -> ST_DONE
+```
+
+This path uses the standalone `vector_engine`, `reduction_engine`, and
+`sfu_lut` modules through start/done pulses. It is descriptor-visible and useful
+for stage-level attention bring-up, but it is still not the final scheduler
+contract because there is no valid/ready backpressure, response queue, or
+per-engine stall counter.
+
+For `op=2`, the core uses the same matmul FSM but drives
+`matmul_array.mixed_u16s8_q15=1`. This lets the A-side operand carry unsigned
+Q0.15 probabilities while B remains signed int8. The array accumulates Q15
+products internally and exposes `result >>> 15` as int32 output.
+
 ## 6. Matmul A1 Array
 
 `matmul_array.sv` is parameterized by `M`, `N`, and `K`. Current config is
 8x8x8.
 
-Data shape:
+Normal `op=0` data shape:
 
 ```text
 A: M x K, signed int8
 B: K x N, signed int8
 C: M x N, signed int32
 ```
+
+Mixed `op=2` data shape:
+
+```text
+A/P: M x K, unsigned Q0.15 in 16-bit lanes
+B:   K x N, signed int8
+C:   M x N, signed int32 after arithmetic shift by 15
+```
+
+For attention PV:
+
+```text
+P = softmax(scores)      unsigned Q0.15 probability
+V = value matrix         signed int8
+O = P * V               signed int32 output for current bring-up
+```
+
+For one output element:
+
+```text
+P_real          = P_q15 / 32768
+acc_q15[i,j]    = sum_k P_q15[i,k] * V_int8[k,j]
+O_int[i,j]      = acc_q15[i,j] >>> 15
+```
+
+Example:
+
+```text
+P_q15 = [24576, 8192]    // [0.75, 0.25]
+V     = [20, -12]
+acc_q15 = 24576 * 20 + 8192 * (-12) = 393216
+O_int   = 393216 >>> 15 = 12
+```
+
+The output is an integer value in the V domain. It is not an int8 activation
+until a separate output requant rule is applied.
 
 Behavior:
 
@@ -178,11 +258,25 @@ K-streaming matmul 不改变物理并行度。它只是对多个 K chunk 重复�
 `8x8x8` array operation，并在 `matmul_accumulate_enable` 置位时把提交语义从
 覆盖改为累加。
 
+Mixed mode changes the operand width and output scaling, not the physical
+parallelism: the array still updates 64 output elements per active K slice.
+Until the PPA model is upgraded, mixed `16x8` multiplier area/energy is reported
+as a proxy limitation, not a real ASIC cost.
+
 Detailed A1 explanation is in `docs/matmul_array_a1.md`.
+
+Mixed PV verification requirements:
+
+- Python golden for `attention_pv_q15_i8_i32`;
+- matrix RTL test for direct mixed `u16s8_q15` behavior;
+- CPU-to-NPU transformer workload `transformer_attention_pv_s8_d8` using
+  `SOC_NPU_JOB_OP_MATMUL_U16S8_Q15`;
+- PPA report labels PV provenance as measured mixed matrix path and states that
+  current L0 area/energy uses generic MAC proxy coefficients.
 
 ## 7. Softmax Path
 
-Current softmax program:
+Legacy `op=0` softmax uop program:
 
 ```text
 LOAD X -> VREDMAX -> VSUB -> VEXP -> VREDSUM -> VDIV -> STORE Y -> HALT
@@ -191,6 +285,12 @@ LOAD X -> VREDMAX -> VSUB -> VEXP -> VREDSUM -> VDIV -> STORE Y -> HALT
 The RTL implements each vector operation as an immediate task over the whole
 8-element vector. This means softmax timing is not yet representative of a real
 multi-cycle vector/SFU pipeline.
+
+Attention `op=1` softmax is a newer bring-up path. It sequences the standalone
+primitive modules from the core FSM and writes Q0.15-style outputs to `dram_y`.
+It is more representative of the intended decomposition than the legacy uop
+tasks, but its primitive engines still use start/done pulses and simplified SFU
+EXP/RECIP behavior.
 
 A3 should replace this with:
 
@@ -221,17 +321,29 @@ compute.
 - `instr_mem` has only 16 entries.
 - Program is preloaded before launch; no instruction streaming/prefetch.
 - Core cannot directly access SoC SRAM.
-- Vector/SFU operations are single-cycle tasks.
+- Legacy uop vector/SFU operations are single-cycle tasks.
+- Attention primitive engines still use start/done, not valid/ready.
+- `op=1` attention softmax is row-level bring-up, not grouped full attention.
+- `op=2` mixed PV has measured cycles but uses proxy `16x8` area/energy.
+- SFU EXP still uses the current bring-up approximation unless the target
+  257-entry LUT path is explicitly implemented and selected.
 - No issue queue, hazard tracking, or pipeline backpressure.
 - No scratchpad bank conflict model.
 - Host writes are blocked during execution instead of using double buffering.
 
 ## 10. Next Work
 
-Core changes should follow the movement work:
+Core changes should now follow the Transformer v1 evidence path:
 
-1. Keep A1 matmul array stable while A2 data mover counters are added.
-2. Add scratchpad/bank visibility once data mover timing is real.
-3. Add input-ready/core-stall counters before changing compute scheduling.
-4. Move softmax to A3 multi-cycle vector/SFU pipeline after movement bottlenecks
-   are visible.
+1. Keep the A1 matrix array stable while mixed PV and attention stage reports
+   remain regression-covered.
+2. Review and implement the primitive valid/ready contract before adding a
+   scheduler-visible vector/reduction/SFU issue path.
+3. Add per-engine active/stall/op counters from reviewed event sources before
+   exposing new Transformer CSRs or PPA fields.
+4. Replace fixture-specific attention smoke sequencing with compiler/runtime
+   generated QK -> scale/mask -> softmax -> PV stage groups.
+5. Upgrade requant, mask semantics, and SFU EXP/RECIP numerical contracts
+   before using measured softmax as target accuracy/PPA evidence.
+6. Add scratchpad/bank visibility and conflict modeling before widening the
+   core memory path or claiming overlap improvements.

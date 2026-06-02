@@ -52,7 +52,7 @@ Reasoning:
 Implementation plan:
 
 - Document the shared matrix mixed-precision mode in
-  `docs/design/transformer/matrix_mixed_precision_v1.md`.
+  `docs/design/npu_core.md`.
 - Extend `matmul_array.sv` and the CPU-to-NPU descriptor path with
   `matmul_u16s8_q15`.
 - Update transformer PV fixtures, firmware checks, and PPA metadata to use the

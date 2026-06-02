@@ -24,16 +24,16 @@ used as PPA evidence.
 
 Static configuration lives in `arch/configs/npu_transformer_v1.jsonc`.
 
-| Parameter | Config field |
-| --- | --- |
-| `DATA_WIDTH` | `modules.sfu.data_width` |
-| EXP input scale | `modules.sfu.exp_input_scale` |
-| EXP LUT entries | `modules.sfu.exp_lut_entries` |
-| EXP output Q | `modules.sfu.exp_output_q` |
-| Bring-up EXP segments | `modules.sfu.bringup_exp_q15_segments` |
-| RECIP output Q | `modules.sfu.recip_output_q` |
-| RSQRT output Q | `modules.sfu.rsqrt_output_q` |
-| `OP_SFU_*` | `primitive_op_encodings.sfu.*` |
+| Parameter | Config field | Target/current value |
+| --- | --- | --- |
+| `DATA_WIDTH` | `modules.sfu.data_width` | 32 |
+| EXP input scale | `modules.sfu.exp_input_scale` | 32 |
+| EXP LUT entries | `modules.sfu.exp_lut_entries` | target 257 |
+| EXP output Q | `modules.sfu.exp_output_q` | 15 |
+| Bring-up EXP segments | `modules.sfu.bringup_exp_q15_segments` | current 9-segment path |
+| RECIP output Q | `modules.sfu.recip_output_q` | 24 |
+| RSQRT output Q | `modules.sfu.rsqrt_output_q` | 24 |
+| `OP_SFU_*` | `primitive_op_encodings.sfu.*` | generated op encodings |
 
 Generated integration constants are emitted by `make transformer-config` into
 `build/generated/npu_transformer_v1_config_pkg.sv`.
@@ -104,6 +104,19 @@ Current gaps for attention:
 - There are no measured `sfu_active_cycles`, `sfu_exp_ops`, or
   `sfu_recip_ops` counters.
 
+Before scheduler integration, the SFU must adopt
+`primitive_valid_ready_v1.md` semantics:
+
+- `cmd_valid/cmd_ready` accepts one SFU command and stable operand/op payload;
+- `rsp_valid/rsp_ready` transfers the result;
+- EXP, RECIP, and RSQRT may have different declared response latencies and
+  initiation intervals;
+- `sfu_active_cycles`, `sfu_input_stall_cycles`, `sfu_output_stall_cycles`,
+  `sfu_exp_ops`, `sfu_recip_ops`, and `sfu_rsqrt_ops` are counted from
+  handshake events and accepted op type.
+
+CSR/report exposure must wait until these local event sources are tested.
+
 ## EXP Target
 
 ### Input
@@ -155,6 +168,43 @@ should produce both:
 - an RTL include/package table;
 - Python golden data or a golden helper using the same formula.
 
+Target EXP operation:
+
+```text
+x_clamped = clamp(x, -8 * EXP_INPUT_SCALE, 0)
+index = x_clamped + 8 * EXP_INPUT_SCALE
+y_real = exp(x_clamped / EXP_INPUT_SCALE)
+y_q15 = saturate_u16(round(y_real * ((1 << EXP_OUTPUT_Q) - 1)))
+```
+
+With `EXP_INPUT_SCALE=32`, `index` spans `0..256`.
+
+Table ordering:
+
+- `table[0]` corresponds to `x=-256`, real `-8.0`.
+- `table[256]` corresponds to `x=0`, real `0.0`.
+
+Lookup:
+
+```text
+y_q15 = table[index]
+```
+
+No interpolation is part of the v1 target. Interpolation may be considered in a
+later revision only after PPA/accuracy evidence.
+
+Table generation uses round-to-nearest via:
+
+```text
+scale = (1 << EXP_OUTPUT_Q) - 1
+raw = exp(x / EXP_INPUT_SCALE) * scale
+rounded = floor(raw + 0.5)
+y = min(max(rounded, 0), scale)
+```
+
+The runtime lookup itself has no rounding. Runtime clamp occurs before index
+calculation.
+
 Implementation plan:
 
 1. Add a generator that reads `EXP_INPUT_SCALE`, clamp range, and output Q from
@@ -172,6 +222,16 @@ Implementation plan:
    compatibility model until all tests migrate.
 5. Update perf/PPA provenance from bring-up SFU to target SFU only after RTL
    and golden agree.
+
+Migration plan:
+
+1. Add table generation and fixed-spec model tests.
+2. Keep current RTL unchanged until table generation is reviewed.
+3. Replace the 9-segment lookup in `sfu_lut.sv` with 257-entry lookup.
+4. Update `hw/npu_core/rtl/sfu/README.md` from "9-segment bring-up" to
+   "257-entry implemented".
+5. Keep RECIP/RSQRT documented as bring-up until their own implementation
+   strategy is reviewed.
 
 ### Why The 9-Segment LUT Is Not Enough
 
@@ -441,6 +501,8 @@ For each row, tests must check:
 
 - Existing standalone primitive tests keep passing.
 - New SFU LUT table generation is deterministic.
+- EXP table tests cover entry count, endpoints, clamp behavior, monotonicity,
+  and selected indices `0`, `1`, `32`, `64`, `128`, `192`, `255`, `256`.
 - Row-softmax primitive sequence matches fixed-point golden.
 - Perf/PPA reports include SFU provenance and counters only after scheduler
   integration exists.

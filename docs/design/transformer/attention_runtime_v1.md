@@ -22,17 +22,23 @@ Implemented today:
 - QK launches through `SOC_NPU_JOB_OP_MATMUL_K_STREAM`;
 - attention softmax launches through `SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1`;
 - PV launches through `SOC_NPU_JOB_OP_MATMUL_U16S8_Q15`;
+- firmware data generation emits a compiler-produced runtime-job table for the
+  current attention group;
+- CPU firmware iterates that runtime-job table to launch QK, softmax, and PV in
+  compiler order;
 - firmware checks each stage output;
 - perf report captures per-job counters and attention stage metadata.
 
 Current limitation:
 
 ```text
-QK job, softmax job, and PV job are separate smoke functions.
+Scale/mask is still materialized by fixture data, not an executable NPU stage.
 ```
 
-They are not yet launched from one compiler-produced attention plan, so the
-parent full-attention workload remains model-only.
+The parent full-attention workload can now be reported as
+`software_group_measured_stages` for measured QK/softmax/PV stage execution,
+but it is not target full-attention numerical/PPA evidence until scale/mask is
+executable or explicitly accounted with measured runtime overhead.
 
 ## Runtime Responsibilities
 
@@ -80,6 +86,21 @@ Limits:
 - intermediate tensors round-trip through SRAM/staging buffers;
 - group execution is software-sequenced, not a hardware command list;
 - full attention parent PPA must state whether runtime overhead is included.
+
+Model A acceptance criteria:
+
+- the compiler emits one `AttentionPlan` with ordered `runtime_jobs[]`;
+- firmware/data generation consumes that plan instead of hard-coding stage
+  execution behavior in fixture-specific smoke code;
+- QK, scale/mask, softmax, and PV all appear as stage entries even when
+  scale/mask is materialized or model-only;
+- parent group metadata records whether group cycles are the sum of measured
+  stage snapshots, measured stage snapshots plus CPU runtime overhead, or still
+  model-only;
+- intermediate buffers have typed producer/consumer metadata.
+
+The parent `attention_prefill_s8_d8` may move from `model_only_full_attention`
+to `software_group_measured_stages` only after these criteria are met.
 
 ### Model B: Grouped Command-List Descriptor
 
@@ -187,6 +208,16 @@ execution = materialized_or_model_only_bridge
 ```
 
 and PPA must not count it as measured NPU compute.
+
+Executable bridge acceptance criteria:
+
+- unmasked `S=8,D=8` scale path is generated from compiler metadata;
+- if the bridge is CPU/materialized, report provenance is `model_only` or
+  `materialized_by_fixture`, not measured NPU;
+- if launched on NPU, descriptor/runtime job metadata names the vector/requant
+  op sequence and exposes a measured stage snapshot;
+- causal, padding, and tail masks are not claimed until invalid-lane behavior
+  is tested against the numerical contract.
 
 ### Softmax Stage
 
@@ -296,8 +327,9 @@ for each runtime_job in attention_group.jobs:
         fail(runtime_job.job_id, MISMATCH)
 ```
 
-Initial implementation may keep current hand-written smoke functions while
-adding generated metadata, but the direction is table-driven runtime dispatch.
+The current implementation uses a generated runtime-job table for the attention
+group. More generic descriptor filling is still pending for additional shapes
+and operators.
 
 ## Intermediate Buffer Contract
 
@@ -354,6 +386,11 @@ PPA requirements:
 - scale/mask bridge is visible even if not measured;
 - group total does not silently mix model-only and measured stages;
 - runtime overhead is explicitly included or excluded.
+- full attention parent state transitions are monotonic:
+  `model_only_full_attention` -> `software_group_measured_stages` ->
+  `command_list_measured_full_attention`;
+- if any stage in a group is model-only, the parent group cannot be labeled as
+  fully measured.
 
 ## Verification
 
@@ -372,7 +409,8 @@ SoC tests:
 - transformer attention QK/softmax/PV pass when launched from generated runtime
   metadata;
 - PPA report contains the same stage rows as before;
-- parent group remains model-only until grouped runtime launcher exists.
+- parent group uses `software_group_measured_stages` only when the runtime-job
+  table launches the measured stage jobs in compiler order.
 
 Regression tests:
 

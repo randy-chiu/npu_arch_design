@@ -27,8 +27,10 @@ The SoC can already measure three attention-related stage jobs:
 | PV | `matmul_u16s8_q15` | shared matrix mixed mode | measured as Q0.15 probability x int8 value |
 
 The full attention parent workload is still not a single measured runtime
-execution. It remains a group/metadata row until compiler output drives runtime
-launch of the full sequence.
+descriptor execution. The current CPU firmware does consume a compiler-produced
+runtime-job table for QK, softmax, and PV, so the group can be treated as
+software-sequenced measured stages. Scale/mask remains materialized by fixture
+data.
 
 ## Target Software Flow
 

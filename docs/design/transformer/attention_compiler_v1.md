@@ -29,11 +29,24 @@ Implemented today:
 Missing:
 
 - typed Transformer attention operator IR;
-- lowering from `scaled_dot_product_attention_v1` to primitive stages;
-- explicit intermediate buffer planning for score and probability tensors;
-- compiler-owned stage/job identity;
+- full lowering from `scaled_dot_product_attention_v1` to primitive stages;
 - generated runtime command descriptors;
 - compiler-owned grouped PPA metadata.
+
+Implemented starter pieces:
+
+- `sw/tools/npu_compiler/attention.py` emits the current `S=8,D=8`
+  QK -> scale/mask -> softmax -> PV plan from the Transformer workload
+  manifest. Unsupported shapes fail validation instead of silently using the
+  bring-up plan.
+- `sw/tools/npu_compiler/attention_plan_schema.py` validates stage order,
+  typed intermediate buffers, and current runtime descriptor ops.
+- `sw/tools/transformer/generate_transformer_micro_fixtures.py` now attaches
+  the plan, stage metadata, and runtime-job metadata to generated Transformer
+  fixture records.
+- The plan marks the parent group as `software_group_measured_stages` once
+  firmware runtime consumes the generated runtime-job table. Scale/mask remains
+  `materialized_by_fixture`.
 
 ## Compiler Inputs
 
@@ -287,10 +300,13 @@ sw/tools/npu_compiler/attention_plan_schema.py
 ```
 
 `attention.py` owns metadata loading, attention lowering, K-stream planning for
-QK/PV, runtime job plan emission, and PPA metadata.
+QK/PV, runtime job plan emission, and PPA metadata. The current implementation
+is a manifest-driven `S=8,D=8` plan that emits a software-sequenced runtime job
+table for QK, softmax, and PV.
 
 `attention_plan_schema.py` owns required fields and validation for shape, dtype,
-layout, stage dependencies, and buffer lifetimes.
+layout, stage dependencies, and buffer lifetimes. The current schema validates
+the initial plan shape and must grow before supporting larger/tiled attention.
 
 ## Verification
 
@@ -312,7 +328,9 @@ Integration tests:
 - existing QK/softmax/PV smoke data remains bit-compatible unless a reviewed
   numerical contract changes;
 - PPA report still emits per-stage measured rows;
-- parent full attention remains model-only until grouped runtime launch lands.
+- parent full attention is reported as `software_group_measured_stages` once
+  generated runtime jobs launch measured QK, softmax, and PV stages; scale/mask
+  remains materialized until its bridge becomes executable.
 
 ## Iteration Plan
 
@@ -324,6 +342,14 @@ Deliverables:
 - `AttentionPlan` generated for current `S=8,D=8` prefill smoke;
 - fixture generator consumes plan stage metadata;
 - no RTL changes required.
+
+Current status:
+
+- manifest-driven plan/schema implemented for current `S=8,D=8` workload;
+- fixture generator consumes plan metadata without changing tensor/golden
+  values;
+- firmware data emitter emits the generated attention runtime-job table;
+- operator metadata loading remains pending.
 
 Trigger: before adding more attention shapes or decode masks.
 

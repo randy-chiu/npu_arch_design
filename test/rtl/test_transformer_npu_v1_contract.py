@@ -48,10 +48,7 @@ class TransformerNpuV1ContractTests(unittest.TestCase):
             "docs/design/transformer/vector_engine_v1.md",
             "docs/design/transformer/reduction_engine_v1.md",
             "docs/design/transformer/sfu_v1.md",
-            "docs/design/transformer/requant_v1.md",
-            "docs/design/transformer/sfu_exp_lut257_design.md",
             "docs/design/transformer/primitive_valid_ready_v1.md",
-            "docs/design/transformer/requant_v2_design.md",
         ):
             self.assertTrue(Path(path).is_file(), path)
 

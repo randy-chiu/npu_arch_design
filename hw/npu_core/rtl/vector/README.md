@@ -1,7 +1,6 @@
 # Vector Engine RTL
 
-Design: `docs/design/transformer/vector_engine_v1.md` and
-`docs/design/transformer/requant_v1.md`.
+Design: `docs/design/transformer/vector_engine_v1.md`.
 
 ## Current status
 

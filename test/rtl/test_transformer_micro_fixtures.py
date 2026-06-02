@@ -27,6 +27,14 @@ class TransformerMicroFixtureTests(unittest.TestCase):
         executable = generated["executable_workloads"]
         model_only = generated["model_only_workloads"]
         self.assertEqual(
+            [plan["attention_group"] for plan in generated["attention_plans"]],
+            ["attention_prefill_s8_d8"],
+        )
+        self.assertEqual(
+            [stage["stage_id"] for stage in generated["attention_plans"][0]["stages"]],
+            ["qk", "scale_mask", "softmax", "pv"],
+        )
+        self.assertEqual(
             [item["name"] for item in executable],
             [
                 "transformer_prefill_gemm_tiny",
@@ -39,9 +47,14 @@ class TransformerMicroFixtureTests(unittest.TestCase):
         self.assertEqual(executable[0]["k_chunks"], 2)
         self.assertEqual(executable[1]["k_chunks"], 1)
         self.assertEqual(executable[1]["metadata"]["attention_stage"], "qk")
+        self.assertEqual(executable[1]["metadata"]["attention_plan_runtime_job"]["descriptor_op"], "matmul_k_stream")
         self.assertEqual(executable[2]["op"], "attention_softmax_v1")
         self.assertEqual(executable[2]["metadata"]["attention_stage"], "softmax")
         self.assertEqual(executable[2]["metadata"]["stage_provenance"], "measured_current_softmax_path")
+        self.assertEqual(
+            executable[2]["metadata"]["attention_plan_stage"]["inputs"],
+            ["score_softmax_in"],
+        )
         self.assertEqual(
             executable[2]["metadata"]["softmax"]["implementation"],
             "npu_v1_vector_reduction_sfu_sequence",
@@ -49,6 +62,10 @@ class TransformerMicroFixtureTests(unittest.TestCase):
         self.assertEqual(executable[3]["k_chunks"], 1)
         self.assertEqual(executable[3]["op"], "matmul_u16s8_q15")
         self.assertEqual(executable[3]["metadata"]["attention_stage"], "pv")
+        self.assertEqual(
+            executable[3]["metadata"]["attention_plan_runtime_job"]["descriptor_op"],
+            "matmul_u16s8_q15",
+        )
         self.assertEqual(
             executable[3]["metadata"]["attention"]["probability_policy"],
             "q0.15_u16",
@@ -58,6 +75,9 @@ class TransformerMicroFixtureTests(unittest.TestCase):
         self.assertTrue(any(item["name"] == "transformer_kv_cache_traffic_tiny" for item in model_only))
         self.assertTrue(any(item["name"] == "transformer_softmax_row" for item in model_only))
         self.assertTrue(any(item["name"] == "transformer_attention_prefill_s8_d8" for item in model_only))
+        parent = next(item for item in model_only if item["name"] == "transformer_attention_prefill_s8_d8")
+        self.assertEqual(parent["metadata"]["attention_plan"]["group_state"], "software_group_measured_stages")
+        self.assertEqual(parent["metadata"]["attention_plan"]["runtime_jobs"], ["qk", "softmax", "pv"])
         self.assertEqual(executable[0]["metadata"]["shape_class"], "skinny_gemm")
         self.assertEqual(executable[4]["metadata"]["workload_family"], "transformer_decode")
 

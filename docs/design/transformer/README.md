@@ -4,6 +4,10 @@ This directory owns Transformer-oriented NPU v1 design work. It keeps v1
 architecture, workload, integration, and execution-plan material separate from
 the public SoC/wrapper/perf/PPA contracts in `docs/design/`.
 
+Each RTL module should have one module-level design source. Subfeatures such as
+SFU EXP LUT generation or vector requantization live inside their owning module
+document unless they become a separate RTL module.
+
 | Document | Scope |
 | --- | --- |
 | `transformer_npu_v1.md` | Unified tensor NPU v1 architecture baseline, primitive uops, counters, and staged implementation |
@@ -17,7 +21,6 @@ the public SoC/wrapper/perf/PPA contracts in `docs/design/`.
 | `attention_operators_v1.md` | Operator contracts for attention QK, score scale/mask, softmax, PV, and composite SDPA |
 | `attention_compiler_v1.md` | Compiler plan for lowering SDPA to primitive stages, buffers, and runtime jobs |
 | `attention_runtime_v1.md` | Runtime design for descriptor launch, SRAM buffers, firmware dispatch, and grouped PPA |
-| `matrix_mixed_precision_v1.md` | Shared matrix extension for attention PV `Q0.15 x int8` mixed precision |
 | `vector_engine_v1.md` | Vector primitive engine contract for ADD/SUB/MUL/SCALE/REQUANT/CLAMP |
 | `reduction_engine_v1.md` | Reduction primitive engine contract for MAX/SUM/SUMSQ |
 | `sfu_v1.md` | Fixed-point EXP/RECIP/RSQRT SFU contract |

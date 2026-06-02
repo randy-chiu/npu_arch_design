@@ -157,7 +157,7 @@ Candidate RTL extensions, in evidence order:
 | Candidate | Triggering evidence | Do not implement before |
 | --- | --- | --- |
 | descriptor/command-list support for repeated tiles and tensor layout | attention stage jobs are dominated by CPU/control/staging or descriptor traffic | executable attention QK manifests and traffic identity |
-| vector/reduction/SFU scheduler path | attention softmax remains model-only and blocks full measured attention PPA | row softmax golden and stage metadata are stable |
+| vector/reduction/SFU scheduler path | attention softmax is measured only through the current bring-up path and lacks reviewed scheduler/counter semantics for target PPA | row softmax golden and stage metadata are stable |
 | PV probability format support | `P*V` cannot be measured without excessive precision loss or unsupported mixed precision | attention softmax policy is reviewed |
 | skinny-GEMM/GEMV utilization support such as valid-row/valid-column handling | decode attention shows poor useful-MAC ratio on the `8x8` array | compare prefill QK versus decode `m8_compat` results |
 | KV-cache/external movement accounting or interface support | modeled decode bytes/token dominates event energy | external traffic fields are reportable |

@@ -15,6 +15,7 @@
 | `design/npu_wrapper.md` | NPU wrapper、descriptor FSM、core host window、A2 data mover 的详细设计 |
 | `design/npu_subsystem.md` | PPA 主要综合边界：wrapper/data mover/core 与外部 memory 接口 |
 | `design/npu_core.md` | NPU core、内部 memory、uop 执行、matmul array、softmax 路径的详细设计 |
+| `design/npu_core_module_status.md` | NPU core 各模块的设计源、RTL 集成状态、counter 状态、测试入口和 blocker 矩阵 |
 | `design/software_hardware_flow.md` | compiler/assembler/firmware/descriptor/wrapper/core 的软硬件交互流程 |
 | `design/performance_instrumentation.md` | cycle 级 perf 计数、PERF_JOB、HTML timeline、counter 下沉策略 |
 | `design/verification_strategy.md` | 当前测试层级、验证入口、coverage 边界和下一步测试计划 |

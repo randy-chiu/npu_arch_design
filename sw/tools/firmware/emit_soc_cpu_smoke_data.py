@@ -109,6 +109,7 @@ def main() -> None:
         transformer_micro["executable_workloads"],
     )
     _append_job_id_defines(lines, jobs)
+    _append_transformer_runtime_plan_data(lines, transformer_micro)
     lines.append("#endif")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -492,8 +493,9 @@ def _append_transformer_micro_data(lines: list[str]) -> dict:
 def _append_transformer_disabled(lines: list[str]) -> dict:
     lines.append("#define TRANSFORMER_MICRO_ENABLED 0u")
     lines.append("#define TRANSFORMER_MICRO_EXECUTABLE_WORKLOADS 0u")
+    lines.append("#define TRANSFORMER_ATTENTION_RUNTIME_JOBS 0u")
     lines.append("")
-    return {"executable_workloads": [], "model_only_workloads": []}
+    return {"attention_plans": [], "executable_workloads": [], "model_only_workloads": []}
 
 
 def _append_job_id_defines(lines: list[str], jobs: list[dict]) -> None:
@@ -506,6 +508,53 @@ def _append_job_id_defines(lines: list[str], jobs: list[dict]) -> None:
         macro = workload.upper()
         suffix = "_BASE" if sum(job["workload"] == workload for job in jobs) > 1 else ""
         lines.append(f"#define JOB_ID_{macro}{suffix} {first_id}u")
+    lines.append("")
+
+
+def _append_transformer_runtime_plan_data(lines: list[str], transformer_micro: dict) -> None:
+    plans = transformer_micro.get("attention_plans", [])
+    if not plans:
+        lines.append("#define TRANSFORMER_ATTENTION_RUNTIME_JOBS 0u")
+        lines.append("")
+        return
+    if len(plans) != 1:
+        raise ValueError("current firmware smoke supports one attention runtime plan")
+    plan = plans[0]
+    jobs = plan["runtime_jobs"]
+    lines.append("#define TRANSFORMER_RUNTIME_STAGE_QK 1u")
+    lines.append("#define TRANSFORMER_RUNTIME_STAGE_SOFTMAX 2u")
+    lines.append("#define TRANSFORMER_RUNTIME_STAGE_PV 3u")
+    lines.append("#define TRANSFORMER_RUNTIME_CHECK_EXACT 1u")
+    lines.append("#define TRANSFORMER_RUNTIME_CHECK_ABS_TOL 2u")
+    lines.append(f"#define TRANSFORMER_ATTENTION_RUNTIME_JOBS {len(jobs)}u")
+    lines.append("")
+    lines.append("typedef struct {")
+    lines.append("    uint32_t stage;")
+    lines.append("    uint32_t op_type;")
+    lines.append("    uint32_t job_id;")
+    lines.append("    uint32_t check_policy;")
+    lines.append("} transformer_runtime_job_t;")
+    lines.append("")
+    lines.append(
+        f"static const transformer_runtime_job_t {plan['attention_group']}_runtime_jobs[{len(jobs)}] = {{"
+    )
+    for job in jobs:
+        stage_macro = {
+            "qk": "TRANSFORMER_RUNTIME_STAGE_QK",
+            "softmax": "TRANSFORMER_RUNTIME_STAGE_SOFTMAX",
+            "pv": "TRANSFORMER_RUNTIME_STAGE_PV",
+        }[job["stage_id"]]
+        op_macro = {
+            "matmul_k_stream": "SOC_NPU_JOB_OP_MATMUL_K_STREAM",
+            "attention_softmax_v1": "SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1",
+            "matmul_u16s8_q15": "SOC_NPU_JOB_OP_MATMUL_U16S8_Q15",
+        }[job["descriptor_op"]]
+        check_macro = {
+            "exact": "TRANSFORMER_RUNTIME_CHECK_EXACT",
+            "absolute_tolerance": "TRANSFORMER_RUNTIME_CHECK_ABS_TOL",
+        }[job["check_policy"]]
+        lines.append(f"    {{{stage_macro}, {op_macro}, {job['job_id_symbol']}, {check_macro}}},")
+    lines.append("};")
     lines.append("")
 
 

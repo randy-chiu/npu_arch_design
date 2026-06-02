@@ -63,10 +63,19 @@ Semantics:
 | `mac_ops` | Count of architecturally committed MAC operations. |
 | `instr_count` | Completed NPU instructions/uops. |
 | extended `error/status` | Illegal command, timeout, and other execution-error attribution. |
+| `matrix_active_cycles_by_mode` | Matrix active cycles split by int8 and mixed PV mode. |
+| `vector_active_cycles` | Cycles with accepted vector work not yet retired. |
+| `reduction_active_cycles` | Cycles with accepted reduction work not yet retired. |
+| `sfu_active_cycles` | Cycles with accepted SFU work not yet retired. |
+| `*_input_stall_cycles` / `*_output_stall_cycles` | Primitive handshake backpressure counters. |
+| `reduction_element_ops` | Count of valid reduced elements, including segmented-row accounting. |
+| `sfu_exp_ops` / `sfu_recip_ops` / `sfu_rsqrt_ops` | Accepted SFU operation counts. |
 
-`mac_ops` and `instr_count` remain deferred because their committed-event
-definitions are not yet carried as stable core signals. They must not be
-inferred silently in an architectural CSR.
+These counters remain deferred because their committed-event definitions are not
+yet carried as stable core signals. They must not be inferred silently in an
+architectural CSR. Transformer primitive counters must first be defined by
+`docs/design/transformer/primitive_valid_ready_v1.md`, verified locally, then
+aggregated through scheduler/wrapper snapshot logic.
 
 ## Integration Status / 集成状态
 

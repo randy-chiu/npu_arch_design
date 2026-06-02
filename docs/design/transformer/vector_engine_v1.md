@@ -104,7 +104,7 @@ standalone fallback.
 
 Inputs and outputs are signed integer lanes of `DATA_WIDTH` bits. Current
 bring-up tests use signed 32-bit lanes. `VEC_REQUANT` current mode is
-`shift_clamp`; see `requant_v1.md`.
+`shift_clamp`; the target full mode is `mul_round_shift_clamp`.
 
 ## Operation semantics
 
@@ -121,6 +121,84 @@ For active lanes in `valid_mask`, operations are lane-wise:
 
 Inactive lanes produce zero in current RTL.
 
+### Requantization Modes
+
+`VEC_REQUANT` is owned by this vector engine document. It does not have a
+separate module-level design source.
+
+Current mode:
+
+```text
+requant_mode = shift_clamp
+y = clamp(a >>> shift, clamp_low, clamp_high)
+```
+
+This is the current RTL behavior. It uses arithmetic right shift with
+truncation, then clamps to explicit bounds. It does not provide a multiplier,
+round-to-nearest, zero-point, or final dtype saturation beyond the explicit
+clamp limits.
+
+Target mode:
+
+```text
+requant_mode = mul_round_shift_clamp
+wide = a * multiplier
+rounded = round(wide, rounding_mode, shift)
+shifted = rounded >>> shift
+biased = shifted + zero_point
+y = clamp(biased, clamp_low, clamp_high)
+```
+
+`zero_point` may be disabled by mode/config/uop field. If disabled, it is
+treated as zero.
+
+Static config fields must be added before RTL implementation:
+
+| Parameter | Proposed config field |
+| --- | --- |
+| Multiplier width | `modules.vector_engine.requant.multiplier_width` |
+| Wide product width | `modules.vector_engine.requant.product_width` |
+| Supported rounding modes | `modules.vector_engine.requant.rounding_modes` |
+| Zero-point support | `modules.vector_engine.requant.zero_point_supported` |
+| Requant modes | `modules.vector_engine.requant.modes` |
+
+Runtime/uop fields:
+
+| Field | Meaning |
+| --- | --- |
+| `requant_mode` | `shift_clamp` or `mul_round_shift_clamp` |
+| `multiplier` | signed fixed-point multiplier |
+| `shift` | right shift amount |
+| `rounding_mode` | selected rounding policy |
+| `zero_point` | optional output offset |
+| `clamp_low` | minimum output value |
+| `clamp_high` | maximum output value |
+
+Initial v2 recommendation: signed multiplier, signed input, signed wide
+product, and one rounding mode:
+
+```text
+round_nearest_away_from_zero
+```
+
+For signed `wide` and positive `shift`:
+
+```text
+offset = 1 << (shift - 1)
+if wide >= 0:
+    rounded = wide + offset
+else:
+    rounded = wide - offset
+shifted = rounded >>> shift
+```
+
+For `shift = 0`, no rounding offset is applied.
+
+Review is complete only when config fields, runtime/uop fields, golden model
+names, rounding mode, intermediate widths, and valid/ready latency are accepted
+together. Requant v2 is a numerical contract change, not just a datapath
+change.
+
 ## Latency model
 
 Current RTL is single-cycle start-to-done in the cycle after the sampled
@@ -131,17 +209,52 @@ Current RTL is single-cycle start-to-done in the cycle after the sampled
 `active` mirrors `start`. `done` pulses for one cycle when `start` is sampled.
 There is no valid/ready interface, no back-pressure, and no real stall counter.
 
+Before scheduler integration, replace this bring-up contract with
+`primitive_valid_ready_v1.md` semantics:
+
+- `cmd_valid/cmd_ready` accepts one vector command and stable payload;
+- `rsp_valid/rsp_ready` transfers the packed lane result;
+- `vector_active_cycles`, `vector_input_stall_cycles`, and
+  `vector_output_stall_cycles` are counted from handshake events;
+- response latency and initiation interval are declared in this document before
+  RTL changes.
+
+The old start/done tests should remain as compatibility tests through a shim,
+but production scheduler integration must not depend on start/done pulses.
+
 ## Rounding/saturation behavior
 
 `VEC_SCALE` and current `VEC_REQUANT` use arithmetic right shift with truncation.
 `VEC_CLAMP` and `VEC_REQUANT` saturate only to explicit clamp bounds. Add/sub/mul
 do not provide full overflow saturation.
 
+Target `mul_round_shift_clamp` clamps after zero-point addition:
+
+```text
+if biased < clamp_low: y = clamp_low
+else if biased > clamp_high: y = clamp_high
+else y = biased
+```
+
+Product and biased intermediates must be wide enough for all supported runtime
+fields in the target config. Silent wrap must not become the numerical policy.
+
 ## PPA counters
 
 Required v1 reporting includes `vector_active_cycles` and
 `stall_cycles_by_engine`. Current standalone RTL exposes only `active`; counter
 integration is deferred to the wrapper/scheduler path.
+
+Counter exposure order:
+
+1. implement handshake-visible local event sources;
+2. verify event counts in primitive directed tests;
+3. aggregate through scheduler/wrapper;
+4. expose CSR/report fields only after the event source is stable.
+
+`VEC_REQUANT` does not get a dedicated standalone counter in the first plan.
+Its operations are counted through vector accepted-op/lane events once the
+valid/ready scheduler path exists.
 
 ## Current RTL status
 
@@ -150,6 +263,29 @@ integration point is `hw/npu_core/rtl/transformer_primitive_engines.sv`, which
 imports generated config and passes vector parameters/op encodings explicitly.
 Integrated tests instantiate that wrapper and include a smaller direct override
 instance to prove parameters are not relying on defaults.
+
+Golden model names should remain explicit:
+
+- `requant_shift_clamp_rtl_model_*` for current behavior.
+- `requant_mul_round_shift_clamp_fixed_spec_*` for target behavior.
+
+Softmax/RMSNorm fixed-spec models should not silently switch to target requant
+until RTL-like golden and RTL tests agree. Attention scale/mask and softmax
+normalization must record the selected requant mode in workload metadata. A
+measured workload using `shift_clamp` cannot be labeled with the target
+`mul_round_shift_clamp` numerical contract.
+
+Target requant verification requires:
+
+- existing `shift_clamp` regressions remain unchanged;
+- positive and negative rounded values match the reviewed signed rounding rule;
+- `shift = 0` applies no rounding offset;
+- zero-point enabled and disabled paths are both tested;
+- clamp low and clamp high both saturate correctly;
+- extreme multiplier/input cases do not silently wrap outside the reviewed
+  intermediate width policy;
+- workload metadata test confirms numerical contract and requant mode agree
+  across golden, firmware expected data, and PPA report fields.
 
 ## Known gaps
 
@@ -160,4 +296,6 @@ instance to prove parameters are not relying on defaults.
 - No scheduler-owned issue/retire protocol.
 - No attention mask-select semantics.
 - Current `VEC_MUL` is not a reviewed softmax normalization multiply.
-- Probability-to-int8 policy for PV is not defined.
+- Probability-to-int8 policy for PV is superseded for the first measured path
+  by mixed `Q0.15 x int8` matrix mode, but final output requant policy remains
+  undefined.

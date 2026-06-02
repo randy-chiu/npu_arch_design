@@ -4,6 +4,12 @@ This directory contains active module-level design documents. These are
 implementation contracts and should be updated before and after non-trivial
 development work.
 
+Each RTL module should have one module-level design source. Subfeatures such as
+an SFU EXP table, vector requant mode, or matrix mixed-precision mode live
+inside their owning module document unless they become a separate RTL module.
+Overview, workload, compiler, runtime, and PPA documents may reference module
+contracts, but must not redefine them.
+
 | Document | Scope |
 | --- | --- |
 | `soc_architecture.md` | SoC top, memory map, bus, ROM/SRAM, NPU attachment |
@@ -11,6 +17,7 @@ development work.
 | `npu_wrapper.md` | NPU wrapper, descriptor FSM, host windows, A2 data mover |
 | `npu_subsystem.md` | primary PPA top around wrapper/data mover/core with external memory boundary |
 | `npu_core.md` | NPU core memories, uop execution, matmul array, softmax path |
+| `npu_core_module_status.md` | NPU core module status matrix: design source, RTL status, counters, tests, and blockers |
 | `software_hardware_flow.md` | compiler, assembler, firmware, descriptor ABI, CPU/NPU flow |
 | `performance_instrumentation.md` | cycle counters, PERF_JOB schema, report lanes, perf-counter strategy |
 | `verification_strategy.md` | verification layers, current baselines, gaps, and test update rules |

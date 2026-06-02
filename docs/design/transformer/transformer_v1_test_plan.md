@@ -121,7 +121,9 @@ Goals:
   PPA reports;
 - derive QK/PV useful MACs from logical shape;
 - report softmax as measured cycles but zero matrix MACs;
-- keep full attention group model-only until grouped runtime sequencing exists.
+- report the full attention group as `software_group_measured_stages` when the
+  generated runtime table launches measured QK, softmax, and PV stages; keep
+  scale/mask materialization explicit.
 
 Command:
 
@@ -140,7 +142,9 @@ The current implementation is accepted only if:
 - measured attention stage fields are non-null where appropriate:
   `qk_cycles` for QK, `attention_softmax_cycles` for softmax, and `pv_cycles`
   for PV;
-- the full attention parent remains model-only and clearly labeled.
+- the full attention parent is clearly labeled as a software-sequenced measured
+  stage group, with scale/mask materialization and runtime-overhead policy
+  visible in metadata.
 
 ## Deferred Verification
 
