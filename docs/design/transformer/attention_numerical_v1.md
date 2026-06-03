@@ -164,6 +164,67 @@ creates `257` entries:
 -256, -255, ..., -1, 0
 ```
 
+### 中文说明：EXP 输入定点编码
+
+这里的 `32` 是 SFU EXP 输入的定点编码 scale，不是 attention 公式中的
+`sqrt(D)`。attention 先需要完成：
+
+```text
+scaled_score_real = score / sqrt(D)
+```
+
+然后再把这个 real 值编码成 EXP LUT 可寻址的整数：
+
+```text
+scaled_score_int = round(scaled_score_real * EXP_INPUT_SCALE)
+```
+
+实际硬件或编译器实现通常不会先生成浮点 `scaled_score_real`，而是把两个
+scale 合并成一个整数 requant：
+
+```text
+scaled_score_int ~= round(score * EXP_INPUT_SCALE / sqrt(D))
+```
+
+也就是说，`EXP_INPUT_SCALE=32` 定义的是“一个整数 code 代表 `1/32` 个 real
+EXP 输入单位”。它不会保证所有 real 值都能精确表示。比如：
+
+```text
+scaled_score_real = -0.701
+scaled_score_real * 32 = -22.432
+scaled_score_int = round(-22.432) = -22
+scaled_score_real_approx = -22 / 32 = -0.6875
+```
+
+所以这是一个量化近似。更大的 `EXP_INPUT_SCALE` 会让相邻 real 输入格点更密，
+但同样 `[-8.0, 0.0]` 范围下 LUT 表项也会更多。
+
+LUT 不能直接用 real score 查询，因为 real 值不是有限硬件地址。表项在生成
+阶段按照整数 grid 预先计算：
+
+```text
+table[index] = round(exp((index - 256) / 32) * 32767)
+```
+
+运行时 RTL 只使用整数 delta 做 clamp 和查表：
+
+```text
+delta_int = scaled_score_int - row_max_int
+x_int = clamp(delta_int, -256, 0)
+index = x_int + 256
+```
+
+忽略量化误差时：
+
+```text
+delta_int / 32 = scaled_score_real - row_max_real
+```
+
+因此 SFU 近似计算的是 `exp(scaled_score_real - row_max_real)`。这和直接用
+`exp(scaled_score_real)` 做 softmax 得到的最终概率等价，因为 row max 引入的
+`exp(-row_max_real)` 是整行共享因子，会在 softmax 分母中抵消。差异来自
+round 量化误差和低于 `-8.0` 的 delta 被 clamp 到 `-8.0`。
+
 ## EXP Output Q0.15
 
 EXP output is represented as:

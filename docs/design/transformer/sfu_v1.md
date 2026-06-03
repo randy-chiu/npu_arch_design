@@ -41,9 +41,16 @@ Generated integration constants are emitted by `make transformer-config` into
 ## Attention Softmax Derivation
 
 The fixed-point background and worked examples for EXP scale, Q0.15 output, and
-Q0.24 reciprocal are in
-`docs/design/transformer/attention_numerical_v1.md`. This section defines the
-SFU-specific contract.
+Q0.24 reciprocal are in these sections of
+`docs/design/transformer/attention_numerical_v1.md`:
+
+- `Softmax Derivation`
+- `EXP Input Scale 32`
+- `EXP Output Q0.15`
+- `Reciprocal Q0.24`
+- `Softmax Normalization Back To Q0.15`
+
+This section defines the SFU-specific contract.
 
 For one score row:
 
@@ -118,6 +125,290 @@ Before scheduler integration, the SFU must adopt
 CSR/report exposure must wait until these local event sources are tested.
 
 ## EXP Target
+
+The SFU `EXP` target is not a general-purpose `exp()` implementation. It is the
+bounded exponential primitive needed by stable attention softmax after row-max
+subtraction. The `DATA_WIDTH=32` operand width is the transport/interface width;
+the EXP numerical domain is the post-clamp domain.
+
+For attention, software or the row-softmax primitive sequence supplies a
+score-delta input:
+
+```text
+delta = masked_scaled_score - row_max
+```
+
+This delta is always non-positive before clamping because `row_max` is the
+largest valid element in the row. It is not guaranteed to be greater than or
+equal to `-256`; values below `-256` are intentionally saturated to `-256`.
+With `EXP_INPUT_SCALE=32`, that clamp means all lower real inputs are treated as
+`-8.0`.
+
+The division by `EXP_INPUT_SCALE` is the fixed-point interpretation of the
+integer EXP input, not a runtime divider requirement:
+
+```text
+x_real = x_int / EXP_INPUT_SCALE
+```
+
+This scale does not preserve softmax equivalence by itself. Softmax is
+invariant to subtracting the row maximum, but it is sensitive to multiplying or
+dividing all logits by a constant. Therefore `EXP_INPUT_SCALE=32` is part of
+the reviewed attention numerical contract: the upstream score scale/requant
+path must produce `x_int` values whose intended real value is `x_int / 32`.
+If the upstream path instead produced integer logits in a different unit, using
+this EXP table would change the softmax temperature and the probabilities.
+
+For attention, the upstream producer is the score path:
+
+```text
+score = Q * K^T
+scaled_score ~= score / sqrt(D)
+delta = masked_scaled_score - row_max
+```
+
+The scale/requant stage must encode `masked_scaled_score` and `delta` in the
+same `1/EXP_INPUT_SCALE` units expected by the SFU. This makes the v1 SFU EXP
+an attention-softmax primitive with a fixed input unit, not a universal softmax
+block for arbitrary logit scales. A different producer may reuse it only if it
+emits the same fixed-point unit or explicitly converts into that unit.
+
+`EXP_INPUT_SCALE` is separate from the attention `sqrt(D)` score scale. For a
+head dimension `D`, the compiler/numerical contract must first apply the
+attention scale:
+
+```text
+scaled_score_real = score / sqrt(D)
+```
+
+Then it must encode that real scaled score into the EXP input unit:
+
+```text
+scaled_score_int = round(scaled_score_real * EXP_INPUT_SCALE)
+```
+
+This multiplication does not make every real value exactly representable. It is
+a quantization rule: `scaled_score_int` is an integer code whose real
+interpretation is `scaled_score_int / EXP_INPUT_SCALE`. With
+`EXP_INPUT_SCALE=32`, the representable values are spaced by `1/32`, so the
+encoding error is at most about half a step before any later clamp.
+
+`EXP_INPUT_SCALE=32` is not a proof that every attention score delta keeps
+enough precision. A value such as `scaled_score_real=-0.701` still produces a
+non-integer product:
+
+```text
+scaled_score_real * 32 = -22.432
+scaled_score_int = round(-22.432) = -22
+scaled_score_real_approx = -22 / 32 = -0.6875
+```
+
+Very small real-score differences can therefore collapse to the same integer
+code. For example, values whose encoded products round to `-22` all use the
+same EXP table entry. This is the normal fixed-point quantization tradeoff:
+larger `EXP_INPUT_SCALE` gives finer real-input spacing but also increases the
+number of LUT entries for the same real range, or reduces the covered real
+range for a fixed entry count.
+
+The selected scale is acceptable only if golden tests and workload error
+analysis show that probability ordering, row sums, and downstream `P*V` error
+remain within the reviewed tolerance. If `1/32` spacing is too coarse, the
+architecture must change `EXP_INPUT_SCALE`, the clamp range, or use
+interpolation/piecewise approximation, then regenerate RTL tables, golden data,
+fixtures, and metadata together.
+
+The hardware/compiler path does not need to materialize a floating-point
+`scaled_score_real`. It can combine the attention scale and EXP input scale into
+one fixed-point requantization:
+
+```text
+scaled_score_int ~= round(score * EXP_INPUT_SCALE / sqrt(D))
+```
+
+An implementation should realize that expression with a reviewed integer
+multiplier, rounding offset, and shift, for example:
+
+```text
+scaled_score_int = round(score * SCALE_MUL / 2^SCALE_SHIFT)
+SCALE_MUL ~= round((EXP_INPUT_SCALE / sqrt(D)) * 2^SCALE_SHIFT)
+```
+
+The chosen `SCALE_MUL`, `SCALE_SHIFT`, rounding mode, and clamp behavior are
+part of the attention numerical contract and must be generated or recorded with
+the workload metadata.
+
+The table is not indexed by the unencoded real value `scaled_score_real` because
+that value is not a finite hardware address. The multiply-by-scale step chooses
+a discrete grid for the real EXP input:
+
+```text
+scaled_score_int = round(scaled_score_real * EXP_INPUT_SCALE)
+scaled_score_real_approx = scaled_score_int / EXP_INPUT_SCALE
+```
+
+The EXP table then stores the exponential for each grid point. For example, if
+`scaled_score_real=-0.7`, then with `EXP_INPUT_SCALE=32`:
+
+```text
+scaled_score_int = round(-0.7 * 32) = -22
+table index = -22 + 256
+table entry = round(exp(-22 / 32) * 32767)
+```
+
+This approximates `exp(-0.7)` with `exp(-0.6875)`. A table that was indexed
+directly by raw matrix scores or unscaled score deltas would be much larger and
+would depend on head dimension, quantization scales, and the chosen
+`1/sqrt(D)` requantization. Keeping the EXP LUT indexed by a fixed-point EXP
+input code separates the upstream score conversion from the reusable bounded
+EXP primitive.
+
+The row max and delta must be computed in this same encoded integer domain:
+
+```text
+row_max_int = max_j scaled_score_int[j]
+delta_int[j] = scaled_score_int[j] - row_max_int
+```
+
+Ignoring rounding for clarity:
+
+```text
+delta_int[j] / EXP_INPUT_SCALE
+  = (scaled_score_real[j] * EXP_INPUT_SCALE
+     - row_max_real * EXP_INPUT_SCALE) / EXP_INPUT_SCALE
+  = scaled_score_real[j] - row_max_real
+```
+
+Therefore the SFU computes an approximation of:
+
+```text
+exp(scaled_score_real[j] - row_max_real)
+```
+
+not `exp(scaled_score_real[j] / EXP_INPUT_SCALE)`. This is equivalent to
+`exp(scaled_score_real[j])` for softmax normalization because the shared
+`exp(-row_max_real)` factor cancels in the row sum:
+
+```text
+exp(score[j] - row_max) / sum_t exp(score[t] - row_max)
+  = exp(score[j]) / sum_t exp(score[t])
+```
+
+The remaining differences from real-valued softmax are intentional fixed-point
+effects: rounding when `scaled_score_real` is encoded to integer units and
+clamping deltas below `-8.0` to the `-256` table endpoint.
+
+For example, if `D=1024`, then `sqrt(D)=32`, but this numerical coincidence
+does not mean `EXP_INPUT_SCALE` came from `sqrt(D)`. If a later workload uses
+`D=2048`, the upstream `1/sqrt(D)` multiplier changes, while the SFU EXP LUT
+can remain at `EXP_INPUT_SCALE=32` as long as the requant stage still emits
+values in `1/32` EXP-input units. Changing the EXP input unit itself is a
+separate spec/config change and requires regenerating the LUT plus golden data.
+
+`EXP_INPUT_SCALE=32` is also a sampling choice for the LUT. One integer step
+corresponds to `1/32` in real EXP input space, so adjacent table entries differ
+by `exp(1/32)` rather than by `exp(1)`. This avoids a table where neighboring
+integer deltas are too far apart, while keeping the bounded `[-8.0, 0.0]`
+domain small enough for 257 entries.
+
+The RTL lookup does not compute `x_real` or divide by `32` at runtime. The table
+is generated ahead of time from the mathematical definition:
+
+```text
+table[index] = round(exp((index - 256) / 32) * 32767)
+```
+
+Equivalently, generation follows this pseudo-code:
+
+```text
+for x_int in [-256, -255, ..., 0]:
+    index = x_int + 256
+    table[index] = round(exp(x_int / EXP_INPUT_SCALE) * 32767)
+```
+
+At runtime the SFU uses the clamped integer input as the table address:
+
+```text
+x_clamped = clamp(x_int, -256, 0)
+index = x_clamped + 256
+y_q15 = table[index]
+```
+
+For example, runtime input `x_int=-32` addresses `table[224]`. That table entry
+was generated from `exp(-32 / 32) = exp(-1.0)`, so no divider is needed in the
+EXP datapath.
+
+Changing `EXP_INPUT_SCALE` changes the softmax temperature/numerical contract
+unless score scaling, fixtures, golden data, and metadata are updated together.
+
+### 中文说明：EXP 输入缩放与查表
+
+这里的 SFU `EXP` 不是通用 `exp()`，而是为 attention softmax 服务的有界
+指数单元。`DATA_WIDTH=32` 表示接口上传输的是 32-bit 整数；真正用于 EXP
+查表的数学输入域，是 clamp 之后的 `[-256, 0]`。
+
+attention softmax 前面的 score 路径是：
+
+```text
+score = Q * K^T
+scaled_score ~= score / sqrt(D)
+delta = masked_scaled_score - row_max
+```
+
+`EXP_INPUT_SCALE=32` 不是 `sqrt(D)`，也不是说系统默认 `D=1024`。`sqrt(D)`
+属于 attention score scaling；`EXP_INPUT_SCALE` 属于 SFU EXP 输入的定点
+编码单位。对于不同的 `D`，上游 `1/sqrt(D)` 的 requant 参数会变；只要上游
+仍然把结果编码成 `1/32` 为单位的整数，SFU EXP LUT 可以不变。
+
+如果把除以 `sqrt(D)` 之后的实数 score 记为 `A`，那么上游需要把它量化成
+SFU 能接收的整数编码：
+
+```text
+B = round(A * EXP_INPUT_SCALE)
+```
+
+这不是无损转换。`A * 32` 仍然可能是小数，所以必须 round 到最近的整数格点。
+例如：
+
+```text
+A = -0.701
+B = round(-0.701 * 32) = -22
+B / 32 = -0.6875
+```
+
+因此 `EXP_INPUT_SCALE=32` 只是选择了 `1/32` 的 real 输入间隔。间隔越小，
+LUT 越精细，但同样 `[-8.0, 0.0]` 范围下表项越多。`1/32` 是否够用必须由
+golden test、概率排序、row sum 误差和下游 `P*V` 误差来验证。
+
+运行时 RTL 不会真的计算 `B / 32`，也不会用浮点数查表。LUT 在生成阶段已经
+把 `/32` 折进表项：
+
+```text
+table[index] = round(exp((index - 256) / 32) * 32767)
+```
+
+运行时只做整数 clamp 和地址计算：
+
+```text
+x_clamped = clamp(B1, -256, 0)
+index = x_clamped + 256
+y_q15 = table[index]
+```
+
+其中 `B1 = B - row_max_int`。忽略 round 误差时：
+
+```text
+B1 / 32 = A - max(A)
+```
+
+所以 SFU 实际近似计算的是：
+
+```text
+exp(A - max(A))
+```
+
+这和直接用 `exp(A)` 做 softmax 的最终概率等价，因为 `exp(-max(A))` 是整行
+共享因子，会在归一化分母中抵消。剩下的误差来自 fixed-point round 和
+`[-8.0, 0.0]` clamp。
 
 ### Input
 
