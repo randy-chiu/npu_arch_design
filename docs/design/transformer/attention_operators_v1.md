@@ -225,11 +225,14 @@ o_i32         = matmul_u16s8_q15_i32_tile(prob_q15, v)
 
 Current status:
 
-- QK, softmax, and PV are measured as separate SoC jobs;
+- QK, unmasked scale/mask, softmax, and PV are measured as separate SoC jobs;
 - the parent logical attention workload is a compiler-produced
-  `software_group_measured_stages` group for measured QK, softmax, and PV;
-- scale/mask is still materialized, and the group does not yet prove a fully
-  chained attention subnetwork.
+  `software_group_measured_stages` group for measured QK, scale/mask, softmax,
+  and PV;
+- the fixed `S=8,D=8` runtime chains QK output to scale, the complete scaled
+  tile to eight-row softmax, and the produced probability tile to PV;
+- the group remains fixed-shape bring-up evidence, not target mask/tiling/SFU
+  evidence.
 
 ## Proposed Metadata File
 

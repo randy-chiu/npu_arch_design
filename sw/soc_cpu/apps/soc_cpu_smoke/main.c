@@ -53,10 +53,10 @@ static uint32_t transformer_attention_qk_s8_d8_a_sram[TRANSFORMER_ATTENTION_QK_S
 static uint32_t transformer_attention_qk_s8_d8_b_sram[TRANSFORMER_ATTENTION_QK_S8_D8_CHUNKS][TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS];
 static uint32_t transformer_attention_qk_s8_d8_c_sram[TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS];
 
-static uint32_t transformer_attention_softmax_s8_x_sram[TRANSFORMER_ATTENTION_SOFTMAX_S8_X_WORDS];
+static uint32_t transformer_attention_scale_mask_s8_d8_scores_sram[TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8_SCORE_WORDS];
+
 static uint32_t transformer_attention_softmax_s8_y_sram[TRANSFORMER_ATTENTION_SOFTMAX_S8_Y_WORDS];
 
-static uint32_t transformer_attention_pv_s8_d8_a_sram[TRANSFORMER_ATTENTION_PV_S8_D8_CHUNKS][TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS];
 static uint32_t transformer_attention_pv_s8_d8_b_sram[TRANSFORMER_ATTENTION_PV_S8_D8_CHUNKS][TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS];
 static uint32_t transformer_attention_pv_s8_d8_c_sram[TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS];
 
@@ -480,13 +480,20 @@ static int run_transformer_attention_runtime_job(const transformer_runtime_job_t
         job_desc.output_addr = ptr32(transformer_attention_qk_s8_d8_c_sram);
         job_desc.output_words = TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS;
         job_desc.k_chunks = TRANSFORMER_ATTENTION_QK_S8_D8_CHUNKS;
+    } else if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_SCALE_MASK) {
+        job_desc.program_addr = 0u;
+        job_desc.program_words = 0u;
+        job_desc.input0_addr = ptr32(transformer_attention_qk_s8_d8_c_sram);
+        job_desc.input0_words = TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8_SCORE_WORDS;
+        job_desc.input1_addr = 0u;
+        job_desc.input1_words = 0u;
+        job_desc.output_addr = ptr32(transformer_attention_scale_mask_s8_d8_scores_sram);
+        job_desc.output_words = TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8_SCORE_WORDS;
+        job_desc.k_chunks = 0u;
     } else if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_SOFTMAX) {
-        copy_words(transformer_attention_softmax_s8_x_sram,
-                   transformer_attention_softmax_s8_x,
-                   TRANSFORMER_ATTENTION_SOFTMAX_S8_X_WORDS);
-        job_desc.program_addr = ptr32(softmax_program_sram);
-        job_desc.program_words = SOFTMAX_PROGRAM_LEN;
-        job_desc.input0_addr = ptr32(transformer_attention_softmax_s8_x_sram);
+        job_desc.program_addr = 0u;
+        job_desc.program_words = 0u;
+        job_desc.input0_addr = ptr32(transformer_attention_scale_mask_s8_d8_scores_sram);
         job_desc.input0_words = TRANSFORMER_ATTENTION_SOFTMAX_S8_X_WORDS;
         job_desc.input1_addr = 0u;
         job_desc.input1_words = 0u;
@@ -495,16 +502,13 @@ static int run_transformer_attention_runtime_job(const transformer_runtime_job_t
         job_desc.k_chunks = 0u;
     } else if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_PV) {
         for (uint32_t chunk = 0; chunk < TRANSFORMER_ATTENTION_PV_S8_D8_CHUNKS; ++chunk) {
-            copy_words(transformer_attention_pv_s8_d8_a_sram[chunk],
-                       transformer_attention_pv_s8_d8_a[chunk],
-                       TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS);
             copy_words(transformer_attention_pv_s8_d8_b_sram[chunk],
                        transformer_attention_pv_s8_d8_b[chunk],
                        TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS);
         }
         job_desc.program_addr = ptr32(matmul_program_sram);
         job_desc.program_words = MATMUL_PROGRAM_LEN;
-        job_desc.input0_addr = ptr32(transformer_attention_pv_s8_d8_a_sram);
+        job_desc.input0_addr = ptr32(transformer_attention_softmax_s8_y_sram);
         job_desc.input0_words = TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS;
         job_desc.input1_addr = ptr32(transformer_attention_pv_s8_d8_b_sram);
         job_desc.input1_words = TRANSFORMER_ATTENTION_PV_S8_D8_TILE_WORDS;
@@ -531,6 +535,11 @@ static int run_transformer_attention_runtime_job(const transformer_runtime_job_t
                                    TRANSFORMER_ATTENTION_SOFTMAX_S8_Y_WORDS,
                                    128u,
                                    0xe00u);
+    }
+    if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_SCALE_MASK) {
+        return check_words(transformer_attention_scale_mask_s8_d8_scores_sram,
+                           transformer_attention_scale_mask_s8_d8_expected_scores,
+                           TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8_SCORE_WORDS, 0xe80u);
     }
     return check_words(transformer_attention_pv_s8_d8_c_sram,
                        transformer_attention_pv_s8_d8_expected_c,

@@ -1,22 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "ppa_proxy_report.schema.json",
-  "title": "NPU Level 0 PPA Proxy Report",
+  "$id": "ppa_report.schema.json",
+  "title": "NPU Level 0 PPA Report",
   "type": "object",
   "required": [
     "schema",
     "evidence_level",
     "design",
-    "proxy_config",
+    "model_config",
     "metric_provenance",
-    "area_proxy",
+    "area_model",
     "workloads",
     "limitations",
     "comparison"
   ],
   "properties": {
-    "schema": {"const": "npu_ppa_proxy_report_v0"},
-    "evidence_level": {"const": "L0_proxy"},
+    "schema": {"const": "npu_ppa_report_v0"},
+    "evidence_level": {"const": "L0_model"},
     "source_perf_report": {"type": "string"},
     "workload_manifest_id": {"type": ["string", "null"]},
     "run_metadata": {
@@ -30,7 +30,7 @@
       }
     },
     "design": {"type": "object", "required": ["top", "variant"]},
-    "proxy_config": {
+    "model_config": {
       "type": "object",
       "required": [
         "area_coefficient_version",
@@ -45,7 +45,7 @@
       "type": "object",
       "required": ["performance", "area", "energy", "timing", "power"]
     },
-    "area_proxy": {
+    "area_model": {
       "type": "object",
       "required": ["units", "resources", "coefficients", "normalized_area_units"],
       "properties": {
@@ -57,13 +57,13 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "performance", "energy_proxy"],
+        "required": ["name", "performance", "energy_model"],
         "properties": {
           "performance": {
             "type": "object",
             "required": ["cycles", "core_matmul_cycles", "data_mover_words", "provenance"]
           },
-          "energy_proxy": {
+          "energy_model": {
             "type": "object",
             "required": ["units", "events", "coefficients", "normalized_energy_units"],
             "properties": {

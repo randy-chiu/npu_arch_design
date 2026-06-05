@@ -51,15 +51,15 @@ Required metadata:
 ### `transformer_attention_softmax_s8`
 
 ```text
-scores row: 8 x int32
-probability row: 8 x Q0.15
+scores tile: 8 x 8 x int32
+probability tile: 8 x 8 x Q0.15
 ```
 
 Status target:
 
 - measured through CPU-to-NPU RTL using the V1 vector/reduction/SFU primitive
   engines;
-- one 8-element row per descriptor in the current bring-up path;
+- all eight 8-element rows per descriptor in the current fixed-shape path;
 - Q0.15 output checked with fixed tolerance against the bring-up golden.
 
 Required metadata:
@@ -144,9 +144,10 @@ Every attention workload should expose:
 | Field | Meaning |
 | --- | --- |
 | `attention_group` | parent attention workload name |
-| `attention_stage` | `qk`, `softmax`, `pv`, `kv_cache`, or `full_attention` |
+| `attention_stage` | `qk`, `scale_mask`, `softmax`, `pv`, `kv_cache`, or `full_attention` |
 | `stage_provenance` | measured CSR, standalone RTL, model-only |
 | `qk_cycles` | cycles attributed to QK matrix stage |
+| `scale_mask_cycles` | cycles attributed to executable score scale/mask bridge |
 | `softmax_cycles` | cycles attributed to row softmax stage |
 | `pv_cycles` | cycles attributed to PV stage |
 | `matrix_active_cycles` | measured matrix active cycles |
@@ -192,11 +193,11 @@ Level 0 event-energy should break attention into groups:
 | `data_mover_write_word` | existing measured data mover counter |
 | `external_memory_byte` | manifest-modeled Q/K/V/O/KV bytes |
 
-Current `energy_proxy_v0.jsonc` does not yet split matrix/vector/reduction/SFU
+Current `energy_model_v0.jsonc` does not yet split matrix/vector/reduction/SFU
 events this way. Until it does, reports must state which attention events are
 folded into existing generic coefficients.
 
-## Current L0 Proxy Result
+## Current Level 0 Result
 
 Generated with:
 
@@ -206,10 +207,13 @@ make ppa-l0-report WORKLOAD_PROFILE=transformer
 
 Report artifacts:
 
-- `build/perf/perf.json`
-- `build/perf/perf_report.html`
-- `build/ppa/proxy/ppa_proxy.json`
-- `build/ppa/proxy/ppa_proxy_report.html`
+- `build/ppa/data/perf.json`
+- `build/ppa/data/pipeline_report.html`
+- `build/ppa/ppa.json`
+- `build/ppa/ppa_overview.html`
+- `build/ppa/perf.html`
+- `build/ppa/power.html`
+- `build/ppa/area.html`
 
 Measured attention stages:
 
@@ -219,7 +223,7 @@ Measured attention stages:
 | `transformer_attention_softmax_s8` | `softmax` | `measured_current_softmax_path` | 67 | 0 | 32 | 0 | n/a |
 | `transformer_attention_pv_s8_d8` | `pv` | `measured_mixed_matrix_path` | 82 | 10 | 208 | 512 | 0.8 |
 
-L0 energy proxy for measured attention stages:
+Level 0 energy model for measured attention stages:
 
 | Workload | Normalized energy | On-chip event contribution | Modeled external-memory contribution | External bytes | Energy per useful MAC |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -235,15 +239,15 @@ normalization use the current coarse SFU/scale behavior, but it is no longer
 the old Phase 0 Q0.8 softmax path.
 
 `transformer_attention_pv_s8_d8` is measured through the shared matrix path in
-mixed `u16(Q0.15) x s8` mode. This removes the previous int8-probability proxy.
-The L0 area/energy proxy still uses generic MAC coefficients, so it does not
+mixed `u16(Q0.15) x s8` mode. This removes the previous int8-probability model.
+The Level 0 area/energy model still uses generic MAC coefficients, so it does not
 yet model the larger `16x8` multiplier cost.
 
 The parent `transformer_attention_prefill_s8_d8` row is now
-`software_group_measured_stages`: a generated runtime table launches measured
-QK, softmax, and PV stages. It is not yet complete attention evidence because
-scale/mask is materialized, intermediate buffers are not producer-to-consumer
-chained, and runtime overhead is not measured.
+`software_group_measured_stages`: a generated runtime table launches and
+buffer-chains measured QK, unmasked scale/mask, eight-row softmax, and PV
+stages. It is not yet target attention evidence because masks, general tiling,
+target SFU accuracy, and runtime-overhead measurement remain incomplete.
 
 ## Acceptance Gates
 

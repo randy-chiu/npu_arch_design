@@ -40,6 +40,7 @@ module npu_v0_tb;
         run_matmul_fixture_test();
         run_softmax_fixture_test();
         run_mixed_u16s8_q15_matmul_test();
+        run_attention_scale_mask_test();
         run_core_host_lane_smoke();
 
         $display("PASS npu_v0 RTL generated-fixture tests");
@@ -62,6 +63,17 @@ module npu_v0_tb;
             host_we <= 4'b0000;
         end
     endtask
+
+    function automatic signed [31:0] scale_score_d8(input logic signed [31:0] value);
+        logic signed [63:0] product;
+        logic signed [63:0] scaled;
+        begin
+            product = value * 64'sd11585;
+            if (product >= 0) scaled = (product + 64'sd16384) >>> 15;
+            else scaled = -(((-product) + 64'sd16384) >>> 15);
+            scale_score_d8 = scaled[31:0];
+        end
+    endfunction
 
     task automatic host_read_check(input logic [11:0] addr, input logic [31:0] expected);
         begin
@@ -186,6 +198,30 @@ module npu_v0_tb;
             for (i = 0; i < SOFTMAX_OUTPUT_COUNT; i = i + 1) begin
                 if (dut.dram_y[i] !== expected_y[i]) begin
                     $display("FAIL softmax[%0d] actual=%0d expected=%0d", i, dut.dram_y[i], expected_y[i]);
+                    $fatal(1);
+                end
+            end
+        end
+    endtask
+
+    task automatic run_attention_scale_mask_test;
+        integer i;
+        logic signed [31:0] input_value;
+        logic signed [31:0] expected_value;
+        begin
+            for (i = 0; i < RTL_MATMUL_ELEMS; i = i + 1) begin
+                input_value = (i - 32) * 97;
+                dut.dram_c[i] = input_value;
+            end
+            op <= 2'd3;
+            launch_and_wait();
+            op <= 2'd0;
+
+            for (i = 0; i < RTL_MATMUL_ELEMS; i = i + 1) begin
+                input_value = (i - 32) * 97;
+                expected_value = scale_score_d8(input_value);
+                if (dut.dram_c[i] !== expected_value) begin
+                    $display("FAIL scale_mask[%0d] actual=%0d expected=%0d", i, dut.dram_c[i], expected_value);
                     $fatal(1);
                 end
             end

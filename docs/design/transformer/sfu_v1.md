@@ -698,6 +698,11 @@ rsp_y
 
 Handshake semantics are defined in `primitive_valid_ready_v1.md`.
 
+The standalone `sfu_lut_handshake` compatibility shim now implements this
+boundary with one command in flight and one held response slot. It preserves
+the current SFU numerical parameters, while the current SoC path continues to
+use start/done.
+
 Attention requires the valid/ready form before full measured softmax because
 the row kernel issues multiple EXP operations and one RECIP operation per row.
 Without back-pressure and response stability rules, scheduler integration cannot
@@ -815,4 +820,5 @@ Before SFU can support measured attention softmax:
 - EXP target table is not implemented.
 - RECIP/RSQRT production implementation is not reviewed.
 - No scheduler issue path exists.
-- No SFU counters are exposed through wrapper perf CSR.
+- Handshake-shim local cycle and EXP/RECIP/RSQRT op counters are implemented,
+  but no SFU counters are exposed through wrapper perf CSR.

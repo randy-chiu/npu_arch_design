@@ -107,7 +107,7 @@ sw/tools/firmware/emit_soc_cpu_smoke_data.py
 The first implementation should keep one production manifest:
 
 ```text
-build/perf/workload_manifest.json
+build/ppa/data/workload_manifest.json
 ```
 
 and one firmware data surface:
@@ -123,7 +123,7 @@ emit_soc_cpu_smoke_data.py
   -> calls sw/tools/transformer/generate_transformer_micro_fixtures.py helpers
   -> appends Transformer C arrays / constants
   -> appends Transformer JOB_ID_* values
-  -> appends Transformer entries to build/perf/workload_manifest.json
+  -> appends Transformer entries to build/ppa/data/workload_manifest.json
 ```
 
 This keeps the key rule intact:
@@ -446,7 +446,7 @@ Responsibilities:
 - call Transformer generator;
 - append generated C arrays/constants;
 - append generated `JOB_ID_*` values;
-- append Transformer jobs and metadata to `build/perf/workload_manifest.json`.
+- append Transformer jobs and metadata to `build/ppa/data/workload_manifest.json`.
 
 Acceptance:
 

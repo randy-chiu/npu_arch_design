@@ -39,12 +39,13 @@ def validate_attention_plan(plan: dict[str, Any]) -> None:
 
     runtime_jobs = plan["runtime_jobs"]
     runtime_stage_ids = [job["stage_id"] for job in runtime_jobs]
-    if runtime_stage_ids != ["qk", "softmax", "pv"]:
-        raise ValueError("current Model A runtime jobs must be qk, softmax, pv; scale_mask is materialized")
+    if runtime_stage_ids != ["qk", "scale_mask", "softmax", "pv"]:
+        raise ValueError("current Model A runtime jobs must be qk, scale_mask, softmax, pv")
 
     descriptor_ops = {job["stage_id"]: job["descriptor_op"] for job in runtime_jobs}
     expected_ops = {
         "qk": "matmul_k_stream",
+        "scale_mask": "attention_scale_mask_v1",
         "softmax": "attention_softmax_v1",
         "pv": "matmul_u16s8_q15",
     }
@@ -56,5 +57,5 @@ def validate_attention_plan(plan: dict[str, Any]) -> None:
     if plan.get("group_state") == "software_group_measured_stages":
         if plan.get("group_cycle_policy") != "sum_measured_stages":
             raise ValueError("software grouped attention must use sum_measured_stages cycle policy")
-        if plan.get("scale_mask_provenance") not in ("materialized_by_fixture", "model_only"):
+        if plan.get("scale_mask_provenance") not in ("measured_npu_vector_bridge",):
             raise ValueError("software grouped attention must state scale/mask provenance")

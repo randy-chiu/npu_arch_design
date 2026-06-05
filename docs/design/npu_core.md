@@ -20,7 +20,7 @@ Current core properties:
 - no production valid/ready vector/SFU pipeline yet;
 - matmul compute path has A1 output-parallel array behavior.
 - Transformer attention stage bring-up uses explicit `op` modes for row
-  softmax and mixed probability-value matmul.
+  softmax, mixed probability-value matmul, and unmasked score scale.
 
 The wrapper owns all SoC memory movement today.
 
@@ -61,11 +61,11 @@ executing.
 | `op` | Mode | Current behavior |
 | ---: | --- | --- |
 | `0` | uop program | fetch and execute the preloaded Phase 0 uop stream |
-| `1` | attention softmax v1 | run the integrated row-softmax primitive sequence over `dram_x` and write Q0.15-style words to `dram_y` |
+| `1` | attention softmax v1 | run the integrated row-softmax primitive sequence over all eight rows of `dram_c` and write Q0.15-style words back to `dram_c` |
 | `2` | mixed PV matmul | run the shared matmul path in `u16 x s8 -> int32` Q15-shifted mode |
-| `3` | reserved | treated as unsupported/reserved for current flows |
+| `3` | attention score scale/mask v1 | scale one unmasked `8x8 int32` score tile through vector requant v2 |
 
-The `op=1` and `op=2` paths are Transformer bring-up entry points. They reuse
+The `op=1`, `op=2`, and `op=3` paths are Transformer bring-up entry points. They reuse
 the current host preload/output windows and wrapper descriptor launch path; they
 are not yet a general primitive scheduler or grouped attention command list.
 
@@ -79,7 +79,14 @@ are not yet a general primitive scheduler or grouped attention command list.
 | `dram_b_bank1` | signed 8 | 64 | alternate host preload bank for B staging |
 | `dram_c` | signed 32 | 64 | matmul C output window |
 | `dram_x` | signed 8 | 8 | softmax X preload window |
-| `dram_y` | unsigned 32 | 8 | softmax Y output window; attention softmax uses low 16 bits as Q0.15 |
+| `dram_y` | unsigned 32 | 8 | legacy softmax Y output window |
+
+Attention softmax v1 reuses the 64-word C window because scaled scores are
+int32 and contain eight rows, while the legacy X window is only eight signed
+bytes. It processes each C row through the shared vector/reduction/SFU sequence
+and overwrites that dead score row with Q0.15 probabilities. The wrapper then
+stores C to the runtime probability buffer. This preserves the legacy softmax
+X/Y behavior and avoids adding another tile storage module.
 | `instr_mem` | 32 | 16 | encoded uop program |
 | `spad_a` | unsigned/signed 16 | 64 | matmul A/probability scratchpad |
 | `spad_b` | signed 8 | 64 | matmul B scratchpad |
@@ -104,7 +111,7 @@ K chunk 都会覆盖它们，而 accumulator bank 0 会一直保持到最终 sto
 | ---: | --- | --- |
 | `0x000` - `0x03f` | write | `dram_a` |
 | `0x100` - `0x13f` | write | `dram_b` |
-| `0x200` - `0x23f` | read | `dram_c` |
+| `0x200` - `0x23f` | read/write while idle | `dram_c`; write is used by int32 scale/mask descriptor input |
 | `0x300` - `0x307` | write | `dram_x` |
 | `0x380` - `0x387` | read | `dram_y` |
 | `0x400` - `0x40f` | write | `instr_mem` |
@@ -170,6 +177,11 @@ For `op=2`, the core uses the same matmul FSM but drives
 `matmul_array.mixed_u16s8_q15=1`. This lets the A-side operand carry unsigned
 Q0.15 probabilities while B remains signed int8. The array accumulates Q15
 products internally and exposes `result >>> 15` as int32 output.
+
+For `op=3`, the wrapper loads an int32 score tile into `dram_c`. The core
+processes eight rows through `VEC_REQUANT_V2` using multiplier `11585`, shift
+`15`, and round-nearest-away-from-zero, then writes scaled int32 values back to
+`dram_c`. Mask policy is `none`; causal/padding/tail masks are not claimed.
 
 ## 6. Matmul A1 Array
 
@@ -323,7 +335,8 @@ compute.
 - Core cannot directly access SoC SRAM.
 - Legacy uop vector/SFU operations are single-cycle tasks.
 - Attention primitive engines still use start/done, not valid/ready.
-- `op=1` attention softmax is row-level bring-up, not grouped full attention.
+- `op=1` attention softmax is a fixed `8x8` tile loop, not a general tiled or
+  grouped full-attention command.
 - `op=2` mixed PV has measured cycles but uses proxy `16x8` area/energy.
 - SFU EXP still uses the current bring-up approximation unless the target
   257-entry LUT path is explicitly implemented and selected.

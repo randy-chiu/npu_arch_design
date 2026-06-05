@@ -12,6 +12,7 @@ PERF_PREFIX = "PERF_JOB "
 DEFAULT_MODEL = {
     "matmul_tile": [8, 8, 8],
     "peak_macs_per_cycle": 64,
+    "vector_lanes": 8,
     "matmul_array_control_cycles": 4,
     "data_mover_words_per_cycle": 4,
     "data_mover_setup_cycles_per_segment": 1,
@@ -24,6 +25,7 @@ def load_measurement_model(arch_path: Path, soc_path: Path) -> dict:
     return {
         "matmul_tile": [int(value) for value in arch["rtl"]["matmul_tile"]],
         "peak_macs_per_cycle": int(arch["compute"].get("mac_lanes", 64)),
+        "vector_lanes": int(arch["rtl"]["softmax_vector_len"]),
         "matmul_array_control_cycles": int(arch["rtl"]["matmul_array_control_cycles"]),
         "data_mover_words_per_cycle": int(soc["npu_data_mover"]["words_per_cycle"]),
         "data_mover_setup_cycles_per_segment": int(
@@ -118,7 +120,11 @@ def add_timeline(job: dict) -> dict:
         ],
     }
     if job.get("source") == "architectural_perf_csr_snapshot":
-        job["timeline"] = [cpu_lane]
+        job["timeline"] = _architectural_timeline(job, cpu_lane)
+        job["timeline_provenance"] = {
+            "summary_counters": "measured_architectural_perf_csr_snapshot",
+            "span_placement": "derived_from_reviewed_state_machine",
+        }
         return job
 
     wrapper_order = [
@@ -225,6 +231,69 @@ def add_timeline(job: dict) -> dict:
     return job
 
 
+def _architectural_timeline(job: dict, cpu_lane: dict) -> list[dict]:
+    total = int(job["total_cycles"])
+    core_cycles = int(job.get("core", {}).get("total", 0))
+    matmul_cycles = int(job.get("core", {}).get("matmul", 0))
+    mover = job.get("data_mover", {})
+    read_cycles = ceil_div(int(mover.get("read_words", 0)), 4)
+    write_cycles = ceil_div(int(mover.get("write_words", 0)), 4)
+    descriptor_cycles = min(11, max(1, total - core_cycles - read_cycles - write_cycles - 2))
+    core_start = min(
+        max(descriptor_cycles + read_cycles, 1),
+        max(1, total - core_cycles - write_cycles - 1),
+    )
+    core_end = min(total, core_start + core_cycles)
+    write_start = max(core_end, total - write_cycles - 1)
+
+    wrapper_spans = [
+        _span("Descriptor read", 0, descriptor_cycles, "work"),
+        _span("Input/program fetch", descriptor_cycles, core_start, "work"),
+        _span("Core wait", core_start, core_end, "wait"),
+        _span("Output writeback", write_start, min(total - 1, write_start + write_cycles), "work"),
+        _span("Done latch", max(0, total - 1), total, "work"),
+    ]
+    data_mover_spans = [
+        _span("Read/load", descriptor_cycles, min(total, descriptor_cycles + read_cycles), "work"),
+        _span("Write/store", write_start, min(total, write_start + write_cycles), "work"),
+    ]
+
+    module_lanes = []
+    if matmul_cycles:
+        module_lanes.append(
+            {"module": "Matrix engine", "spans": [_span("Measured matrix active", core_start, core_start + matmul_cycles, "work")]}
+        )
+    elif job.get("name") == "attention_scale_mask_v1":
+        module_lanes.append(
+            {"module": "Vector engine", "spans": [_span("8 row requant operations", core_start, core_end, "work")]}
+        )
+    elif job.get("name") == "attention_softmax_v1":
+        # The current state machine is serial: vector -> reduction -> SFU per row.
+        # Split measured core duration by reviewed primitive issue counts.
+        issue_counts = [("Vector engine", 32), ("Reduction engine", 16), ("SFU", 72)]
+        issue_total = sum(count for _, count in issue_counts)
+        cursor = core_start
+        for index, (module, count) in enumerate(issue_counts):
+            end = core_end if index == len(issue_counts) - 1 else cursor + round(core_cycles * count / issue_total)
+            module_lanes.append(
+                {"module": module, "spans": [_span(f"Derived {module.lower()} occupancy", cursor, end, "work")]}
+            )
+            cursor = end
+
+    return [
+        cpu_lane,
+        {"module": "NPU wrapper", "spans": [span for span in wrapper_spans if span["cycles"] > 0]},
+        {"module": "Data mover", "spans": [span for span in data_mover_spans if span["cycles"] > 0]},
+        {"module": "NPU core", "spans": [_span("Measured core active", core_start, core_end, "work")]},
+        *module_lanes,
+    ]
+
+
+def _span(label: str, start: int, end: int, kind: str) -> dict:
+    end = max(start, end)
+    return {"label": label, "start": start, "end": end, "cycles": end - start, "kind": kind}
+
+
 def parse_perf_log(path: Path, manifest_path: Path | None = None, model: dict = DEFAULT_MODEL) -> dict:
     jobs = []
     with path.open("r", encoding="utf-8") as f:
@@ -265,6 +334,7 @@ def parse_perf_log(path: Path, manifest_path: Path | None = None, model: dict = 
                 "schema": workload_manifest["schema"],
                 "id": workload_manifest["manifest_id"],
                 "run_name": workload_manifest["run_name"],
+                "workload_profile": workload_manifest.get("workload_profile", "unspecified"),
                 "source": str(manifest_path),
             }
             if workload_manifest is not None
@@ -687,6 +757,14 @@ def transformer_metrics(workload: dict, model: dict = DEFAULT_MODEL) -> dict:
         peak_mac_capacity = None
         matrix_utilization = None
 
+    cycle_analysis = _transformer_cycle_analysis(
+        workload,
+        metadata,
+        effective_mac_ops_for_report,
+        model,
+        is_model_only,
+    )
+
     external_memory = metadata.get("external_memory", {})
     kv_read = int(metadata.get("kv_read_bytes", external_memory.get("kv_cache_read_bytes", 0)))
     kv_write = int(metadata.get("kv_write_bytes", external_memory.get("kv_cache_write_bytes", 0)))
@@ -695,11 +773,14 @@ def transformer_metrics(workload: dict, model: dict = DEFAULT_MODEL) -> dict:
         bytes_per_token = kv_read + kv_write
     attention_stage = metadata.get("attention_stage")
     qk_cycles = None
+    scale_mask_cycles = None
     softmax_cycles = None
     pv_cycles = None
     if not is_model_only:
         if attention_stage == "qk":
             qk_cycles = int(workload.get("total_cycles", 0))
+        elif attention_stage == "scale_mask":
+            scale_mask_cycles = int(workload.get("total_cycles", 0))
         elif attention_stage == "softmax":
             softmax_cycles = int(workload.get("total_cycles", 0))
         elif attention_stage == "pv":
@@ -738,11 +819,87 @@ def transformer_metrics(workload: dict, model: dict = DEFAULT_MODEL) -> dict:
         "kv_write_bytes": kv_write,
         "bytes_per_token": bytes_per_token,
         "qk_cycles": qk_cycles,
+        "scale_mask_cycles": scale_mask_cycles,
         "attention_softmax_cycles": softmax_cycles,
         "pv_cycles": pv_cycles,
         "softmax_cycles": int(workload.get("core", {}).get("softmax", 0)) if not is_model_only else None,
         "rmsnorm_cycles": int(workload.get("core", {}).get("rmsnorm", 0)) if not is_model_only else None,
         "sfu_cycles": int(workload.get("core", {}).get("sfu", 0)) if not is_model_only else None,
+        **cycle_analysis,
+    }
+
+
+def _transformer_cycle_analysis(
+    workload: dict,
+    metadata: dict,
+    effective_mac_ops: int | None,
+    model: dict,
+    is_model_only: bool,
+) -> dict:
+    empty = {
+        "theoretical_compute_cycles": None,
+        "measured_compute_cycles": None,
+        "compute_overhead_cycles": None,
+        "compute_efficiency": None,
+        "measured_total_cycles": None,
+        "non_compute_overhead_cycles": None,
+        "end_to_end_efficiency": None,
+        "theoretical_cycle_basis": None,
+        "measured_compute_provenance": None,
+    }
+    if is_model_only:
+        return empty
+
+    stage = metadata.get("attention_stage")
+    jobs = max(1, int(workload.get("jobs", 0)))
+    core = workload.get("core", {})
+    theoretical = None
+    measured_compute = None
+    basis = None
+    measured_provenance = None
+
+    if effective_mac_ops is not None:
+        peak = int(model.get("peak_macs_per_cycle", 64))
+        theoretical = ceil_div(effective_mac_ops, peak)
+        measured_compute = int(workload.get("core_matmul_cycles", 0))
+        basis = f"ceil(effective_mac_ops={effective_mac_ops}/peak_macs_per_cycle={peak})"
+        measured_provenance = "measured_matrix_active_cycles"
+    elif stage == "scale_mask":
+        shape = metadata.get("logical_shape", {})
+        elements = int(shape.get("m", 0)) * int(shape.get("n", 0))
+        lanes = int(model.get("vector_lanes", 8))
+        theoretical = ceil_div(elements * jobs, lanes) if elements else None
+        measured_compute = int(core.get("total", 0))
+        basis = f"ceil(score_elements={elements * jobs}/vector_lanes={lanes})"
+        measured_provenance = "measured_core_active_cycles_aggregate"
+    elif stage == "softmax":
+        softmax = metadata.get("softmax", {})
+        elements = int(metadata.get("logical_shape", {}).get("elements", 0))
+        rows = int(softmax.get("row_count_measured", jobs))
+        fixed_ops_per_row = 6
+        theoretical = rows * (elements + fixed_ops_per_row) if elements else None
+        measured_compute = int(core.get("total", 0))
+        basis = (
+            f"rows={rows}*(EXP_per_lane={elements}+"
+            "REDUCE_MAX+VEC_SUB+VEC_CLAMP+REDUCE_SUM+RECIP+VEC_SCALE=6)"
+        )
+        measured_provenance = "measured_core_active_cycles_aggregate"
+
+    if theoretical is None or measured_compute is None or measured_compute <= 0:
+        return empty
+    measured_total = int(workload.get("total_cycles", 0))
+    return {
+        "theoretical_compute_cycles": theoretical,
+        "measured_compute_cycles": measured_compute,
+        "compute_overhead_cycles": measured_compute - theoretical,
+        "compute_efficiency": round(theoretical / measured_compute, 6),
+        "measured_total_cycles": measured_total,
+        "non_compute_overhead_cycles": measured_total - measured_compute,
+        "end_to_end_efficiency": (
+            round(theoretical / measured_total, 6) if measured_total > 0 else None
+        ),
+        "theoretical_cycle_basis": basis,
+        "measured_compute_provenance": measured_provenance,
     }
 
 
@@ -1082,7 +1239,11 @@ def write_html(report: dict, path: Path) -> None:
       "CPU firmware": "#7b61d1",
       "NPU wrapper": "#2068d8",
       "Data mover": "#c46b1f",
-      "NPU core": "#1a9a7a"
+      "NPU core": "#1a9a7a",
+      "Matrix engine": "#1666b1",
+      "Vector engine": "#8b5a2b",
+      "Reduction engine": "#b04759",
+      "SFU": "#7b61d1"
     }};
     const wrappers = [
       ["desc_read", "Descriptor read"],
@@ -1338,6 +1499,31 @@ def write_html(report: dict, path: Path) -> None:
       }});
     }}
     if (workloads.length) {{
+      const graphGroups = new Map();
+      workloads.forEach((w) => {{
+        const m = w.metadata || {{}};
+        const group = m.attention_group || m.graph || m.workload_family || w.kind;
+        if (!graphGroups.has(group)) graphGroups.set(group, []);
+        graphGroups.get(group).push(w);
+      }});
+      graphGroups.forEach((items, group) => {{
+        const graph = document.createElement("div");
+        graph.className = "highlight";
+        graph.innerHTML = `<h3>${{group}}</h3><div class="subtle">Computation graph / tested operator sequence</div>`;
+        const flow = document.createElement("div");
+        flow.className = "legend";
+        items.forEach((w, index) => {{
+          const m = w.metadata || {{}};
+          const shape = m.logical_shape ? JSON.stringify(m.logical_shape) : "shape not declared";
+          const op = m.logical_op || w.name;
+          const box = document.createElement("span");
+          box.innerHTML = `<i style="background:${{colors[index % colors.length]}}"></i><strong>${{op}}</strong> ${{shape}}`;
+          flow.appendChild(box);
+          if (index + 1 < items.length) flow.append(" -> ");
+        }});
+        graph.appendChild(flow);
+        workloadRoot.appendChild(graph);
+      }});
       const table = document.createElement("table");
       table.className = "workload-table";
       table.innerHTML = `
@@ -1349,7 +1535,10 @@ def write_html(report: dict, path: Path) -> None:
             <th>Total cycles</th>
             <th>Core matmul</th>
             <th>SRAM movement</th>
-            <th>Metadata</th>
+            <th>Theoretical compute</th>
+            <th>Measured compute</th>
+            <th>Efficiency</th>
+            <th>Operator / shape / formula</th>
           </tr>
         </thead>
         <tbody>
@@ -1361,7 +1550,10 @@ def write_html(report: dict, path: Path) -> None:
               <td>${{w.total_cycles}}</td>
               <td>${{w.core_matmul_cycles}}</td>
               <td>${{w.movement_sram_cycles}}</td>
-              <td>${{w.metadata && w.metadata.description ? w.metadata.description : ""}}</td>
+              <td>${{w.transformer_metrics && w.transformer_metrics.theoretical_compute_cycles !== null ? w.transformer_metrics.theoretical_compute_cycles : "-"}}</td>
+              <td>${{w.transformer_metrics && w.transformer_metrics.measured_compute_cycles !== null ? w.transformer_metrics.measured_compute_cycles : "-"}}</td>
+              <td>${{w.transformer_metrics && w.transformer_metrics.compute_efficiency !== null ? `${{(w.transformer_metrics.compute_efficiency * 100).toFixed(2)}}%` : "-"}}</td>
+              <td>${{w.metadata && w.metadata.logical_op ? w.metadata.logical_op : ""}} ${{w.metadata && w.metadata.logical_shape ? JSON.stringify(w.metadata.logical_shape) : ""}}<br><span class="subtle">${{w.transformer_metrics && w.transformer_metrics.theoretical_cycle_basis ? w.transformer_metrics.theoretical_cycle_basis : ""}}</span></td>
             </tr>
           `).join("")}}
         </tbody>
@@ -1383,6 +1575,12 @@ def write_html(report: dict, path: Path) -> None:
       section.addEventListener("toggle", () => {{
         if (!section.open || section.dataset.rendered) return;
         renderTimeline(section, job);
+        if (job.timeline_provenance) {{
+          const provenance = document.createElement("div");
+          provenance.className = "subtle";
+          provenance.textContent = `Timeline counters: ${{job.timeline_provenance.summary_counters}}; placement: ${{job.timeline_provenance.span_placement}}`;
+          section.appendChild(provenance);
+        }}
         renderEstimates(section, job);
         renderMovementEstimates(section, job);
         job.timeline.slice(1).forEach((laneData) => {{

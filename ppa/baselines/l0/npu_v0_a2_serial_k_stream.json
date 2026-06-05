@@ -1,12 +1,12 @@
 {
-  "schema": "npu_ppa_proxy_baseline_v0",
-  "evidence_level": "L0_proxy",
+  "schema": "npu_ppa_model_baseline_v0",
+  "evidence_level": "L0_model",
   "design": {
     "top": "npu_subsystem",
     "variant": "npu_v0_a2_serial_k_stream"
   },
-  "area_config": "arch/configs/ppa/area_proxy_v0_serial_k_stream.jsonc",
-  "energy_config": "arch/configs/ppa/energy_proxy_v0.jsonc",
+  "area_config": "arch/configs/ppa/area_model_v0_serial_k_stream.jsonc",
+  "energy_config": "arch/configs/ppa/energy_model_v0.jsonc",
   "workload_manifest_id": "soc_cpu_smoke_v0",
   "source": {
     "performance": "recorded_rtl_perf_job_counters",

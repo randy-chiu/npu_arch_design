@@ -44,13 +44,13 @@ silently regresses.
 Compatibility aliases remain available:
 
 ```text
-make ppa-proxy-report
-make ppa-proxy-from-perf
-make validate-ppa-proxy
+make ppa-model-report
+make ppa-model-from-perf
+make validate-ppa-model
 ```
 
 They call the new `ppa-l0-*` targets. New documentation should prefer the
-`ppa-l0-*` names because `proxy` can be mistaken for a software or network
+`ppa-l0-*` names because `model` can be mistaken for a software or network
 agent rather than a Level 0 estimate.
 
 Workload profiles:
@@ -139,7 +139,7 @@ small synthetic log.
 ## 8. PPA Contract And Subsystem Boundary
 
 The first PPA-framework gate does not claim synthesized area, timing, or power
-values. It verifies that the primary PPA boundary and its Level 0 proxy input
+values. It verifies that the primary PPA boundary and its Level 0 model input
 contracts are structurally usable:
 
 ```text
@@ -178,8 +178,8 @@ make ppa-l0-from-perf
 Generated outputs:
 
 ```text
-build/ppa/proxy/ppa_proxy.json
-build/ppa/proxy/ppa_proxy_report.html
+build/ppa/ppa.json
+build/ppa/ppa_overview.html
 ```
 
 ## 9. Current Baselines
@@ -204,17 +204,17 @@ real_mnist_cnn_fc2: 32 jobs, 2624 cycles
 perf summary: 68 jobs, 7 workloads, 631805 total cycles
 ```
 
-Current Level 0 proxy output, based on the same RTL performance report:
+Current Level 0 model output, based on the same RTL performance report:
 
 ```text
-npu_subsystem structural area proxy: 6998.4 normalized_area_units
+npu_subsystem structural area model: 6998.4 normalized_area_units
 npu_subsystem local-state storage:    7968 bits
-operator_smoke_matmul energy proxy:   1428.5 normalized_energy_units
+operator_smoke_matmul energy model:   1428.5 normalized_energy_units
 real_mnist_cnn_fc1_full_k_stream_layer:
   measured cycles:                    627488
   measured data_mover.words:          2360576
   derived int8 MAC operations:        9437184
-  event-energy proxy:                 19037384.0 normalized_energy_units
+  event-energy model:                 19037384.0 normalized_energy_units
 ```
 
 For the ping-pong comparison, RTL counters show `313056` saved cycles with
@@ -232,8 +232,8 @@ workload:  real_mnist_cnn_fc1_full_k_stream_layer
 measured cycles:       940544 -> 627488, -313056 (-33.285%), improvement
 measured mover words:  2360576 -> 2360576, invariant
 derived MAC work:      9437184 -> 9437184, invariant
-energy proxy:          19115648.0 -> 19037384.0, -78264.0 (-0.409%), improvement
-area proxy:            6947.2 -> 6998.4, +51.2 (+0.737%), cost
+energy model:          19115648.0 -> 19037384.0, -78264.0 (-0.409%), improvement
+area model:            6947.2 -> 6998.4, +51.2 (+0.737%), cost
 ```
 
 This is the intended report shape for future NPU iterations: improvements and

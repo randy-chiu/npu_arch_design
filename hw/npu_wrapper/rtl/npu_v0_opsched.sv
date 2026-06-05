@@ -218,7 +218,8 @@ module npu_v0_opsched #(
         .rst_n(rst_n),
         .start(start_pulse),
         .op((job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1) ? 2'd1 :
-            ((job_op_type == SOC_NPU_JOB_OP_MATMUL_U16S8_Q15) ? 2'd2 : 2'd0)),
+            ((job_op_type == SOC_NPU_JOB_OP_MATMUL_U16S8_Q15) ? 2'd2 :
+            ((job_op_type == SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1) ? 2'd3 : 2'd0))),
         .done(npu_done),
         .perf_active(core_perf_active),
         .perf_fetch_active(core_perf_fetch_active),
@@ -329,9 +330,11 @@ module npu_v0_opsched #(
                     mover_sram_base = job_input0_addr;
                 end
                 mover_words = job_input0_words[7:0];
-                if (job_op_type == SOC_NPU_JOB_OP_SOFTMAX ||
-                    job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1) begin
+                if (job_op_type == SOC_NPU_JOB_OP_SOFTMAX) begin
                     mover_host_base = RTL_HOST_X_BASE;
+                end else if (job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1 ||
+                             job_op_type == SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1) begin
+                    mover_host_base = RTL_HOST_C_BASE;
                 end else begin
                     mover_host_base = RTL_HOST_A_BASE;
                 end
@@ -365,8 +368,7 @@ module npu_v0_opsched #(
                 mover_store = 1'b1;
                 mover_sram_base = job_output_addr;
                 mover_words = job_output_words[7:0];
-                if (job_op_type == SOC_NPU_JOB_OP_SOFTMAX ||
-                    job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1) begin
+                if (job_op_type == SOC_NPU_JOB_OP_SOFTMAX) begin
                     mover_host_base = RTL_HOST_Y_BASE;
                 end else begin
                     mover_host_base = RTL_HOST_C_BASE;

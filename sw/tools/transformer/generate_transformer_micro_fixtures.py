@@ -24,6 +24,7 @@ from transformer.micro_golden import (
     attention_qk_scores_i8_i32,
     attention_softmax_fixed_spec_q15,
     classify_matrix_shape,
+    scale_scores_fixed_multiplier,
     softmax_row_primitive_lut_q15,
     transpose,
 )
@@ -68,9 +69,11 @@ def generate_transformer_micro_fixtures(spec_path: Path = TRANSFORMER_SPEC_PATH)
     model_only = []
     for index, workload in enumerate(spec["workloads"]):
         if workload["op"] in ("matmul", "matmul_u16s8_q15") and workload["status"] == "planned_current_matmul_extension":
-            executable.append(_generate_matmul_workload(workload, precision, seed=index + 1))
+            executable.append(_generate_matmul_workload(workload, precision, seed=index + 1, executable=executable))
         elif workload["op"] in ("softmax", "attention_softmax_v1") and workload["status"] == "planned_current_softmax_extension":
-            executable.append(_generate_softmax_workload(workload, precision, seed=index + 1))
+            executable.append(_generate_softmax_workload(workload, precision, seed=index + 1, executable=executable))
+        elif workload["op"] == "attention_scale_mask_v1" and workload["status"] == "planned_current_scale_mask_extension":
+            executable.append(_generate_scale_mask_workload(workload, precision, executable))
         else:
             model_only.append(_model_only_metadata(workload, precision))
     _attach_attention_plan_metadata(executable, attention_plans)
@@ -138,7 +141,12 @@ def _attach_attention_plan_metadata(items: list[dict[str, Any]], plans: dict[str
                 break
 
 
-def _generate_matmul_workload(workload: dict[str, Any], precision: dict[str, str], seed: int) -> dict[str, Any]:
+def _generate_matmul_workload(
+    workload: dict[str, Any],
+    precision: dict[str, str],
+    seed: int,
+    executable: list[dict[str, Any]],
+) -> dict[str, Any]:
     shape = workload["shape"]
     m_dim = int(shape["m"])
     n_dim = int(shape["n"])
@@ -157,7 +165,22 @@ def _generate_matmul_workload(workload: dict[str, Any], precision: dict[str, str
         b = transpose(k)
         attention_scores = attention_qk_scores_i8_i32(q, k)
     elif workload.get("logical_op") == "attention_probability_value":
-        probabilities = _deterministic_probability_q15(m_dim, k_dim)
+        softmax = next(
+            (
+                item
+                for item in executable
+                if item.get("metadata", {}).get("attention_group") == workload.get("attention_group")
+                and item.get("metadata", {}).get("attention_stage") == "softmax"
+            ),
+            None,
+        )
+        if softmax is None:
+            raise ValueError(f"{workload['name']}: executable softmax probabilities must be generated first")
+        flat_probabilities = softmax["expected_y"]
+        probabilities = [
+            flat_probabilities[row * k_dim : (row + 1) * k_dim]
+            for row in range(m_dim)
+        ]
         v = deterministic_i8_matrix(k_dim, n_dim, seed + 17)
         expected_c = [value for row in _attention_pv_q15_i8_shift15(probabilities, v) for value in row]
         metadata = {
@@ -251,21 +274,48 @@ def _generate_matmul_workload(workload: dict[str, Any], precision: dict[str, str
     }
 
 
-def _generate_softmax_workload(workload: dict[str, Any], precision: dict[str, str], seed: int) -> dict[str, Any]:
+def _generate_softmax_workload(
+    workload: dict[str, Any],
+    precision: dict[str, str],
+    seed: int,
+    executable: list[dict[str, Any]],
+) -> dict[str, Any]:
     shape = workload["shape"]
     elements = int(shape["elements"])
     if elements != 8:
         raise ValueError(f"{workload['name']}: current softmax RTL path requires exactly 8 elements")
 
     if workload.get("logical_op") == "attention_row_softmax":
-        row = [32, 0, -32, -64, -96, -128, -128, -128]
-        expected_y = softmax_row_primitive_lut_q15(row)["output_q15"]
+        scale_mask = next(
+            (
+                item
+                for item in executable
+                if item.get("metadata", {}).get("attention_group") == workload.get("attention_group")
+                and item.get("metadata", {}).get("attention_stage") == "scale_mask"
+            ),
+            None,
+        )
+        if scale_mask is None:
+            raise ValueError(f"{workload['name']}: executable scaled scores must be generated first")
+        row_count = int(shape.get("rows", 1))
+        flat_scores = scale_mask["expected_scores"]
+        rows = [
+            flat_scores[row * elements : (row + 1) * elements]
+            for row in range(row_count)
+        ]
+        expected_y = [
+            value
+            for row in rows
+            for value in softmax_row_primitive_lut_q15(row)["output_q15"]
+        ]
+        x = flat_scores
         output_dtype = "q0.15_uint16"
         implementation = "npu_v1_vector_reduction_sfu_sequence"
         op = "attention_softmax_v1"
     else:
         row = _deterministic_softmax_row_i8(elements, seed)
         expected_y = softmax_q0_8(row)
+        x = row
         output_dtype = "q0.8_uint8"
         implementation = "npu_v0_micro_op_softmax_lut"
         op = "softmax"
@@ -284,9 +334,9 @@ def _generate_softmax_workload(workload: dict[str, Any], precision: dict[str, st
         "kv_read_bytes": int(workload["external_memory"].get("kv_cache_read_bytes", 0)),
         "kv_write_bytes": int(workload["external_memory"].get("kv_cache_write_bytes", 0)),
         "softmax": {
-            "input_dtype": "int8",
+            "input_dtype": "int32" if op == "attention_softmax_v1" else "int8",
             "output_dtype": output_dtype,
-            "row_count_measured": 1,
+            "row_count_measured": int(shape.get("rows", 1)),
             "row_count_logical": int(shape.get("rows", 1)),
             "implementation": implementation,
         },
@@ -297,10 +347,60 @@ def _generate_softmax_workload(workload: dict[str, Any], precision: dict[str, st
         "op": op,
         "role": "transformer_micro",
         "metadata": metadata,
-        "x_words": elements,
-        "y_words": elements,
-        "x": row,
+        "x_words": len(x),
+        "y_words": len(expected_y),
+        "x": x,
         "expected_y": expected_y,
+    }
+
+
+def _generate_scale_mask_workload(
+    workload: dict[str, Any],
+    precision: dict[str, str],
+    executable: list[dict[str, Any]],
+) -> dict[str, Any]:
+    qk = next(
+        (
+            item
+            for item in executable
+            if item.get("metadata", {}).get("attention_group") == workload.get("attention_group")
+            and item.get("metadata", {}).get("attention_stage") == "qk"
+        ),
+        None,
+    )
+    if qk is None or qk.get("attention_scores") is None:
+        raise ValueError(f"{workload['name']}: executable QK scores must be generated first")
+    scaled = scale_scores_fixed_multiplier(qk["attention_scores"], head_dim=8, shift=15)
+    input_scores = [value for row in qk["attention_scores"] for value in row]
+    expected_scores = [value for row in scaled["scaled"] for value in row]
+    return {
+        "name": f"transformer_{workload['name']}",
+        "kind": "transformer_micro",
+        "op": "attention_scale_mask_v1",
+        "role": "transformer_micro",
+        "metadata": {
+            "scenario": workload["scenario"],
+            "logical_op": workload["logical_op"],
+            "logical_shape": workload["shape"],
+            "workload_family": _workload_family(workload),
+            "precision": precision,
+            "activity_scope": workload["activity_scope"],
+            "external_memory": workload["external_memory"],
+            "attention_group": workload["attention_group"],
+            "attention_stage": workload["attention_stage"],
+            "numerical_contract": workload["numerical_contract"],
+            "stage_provenance": "measured_npu_vector_bridge",
+            "attention": {
+                "scale_policy": scaled["policy"],
+                "scale_multiplier": scaled["multiplier"],
+                "scale_shift": scaled["shift"],
+                "rounding": "round_nearest_away_from_zero",
+                "mask_policy": "none",
+            },
+        },
+        "score_words": len(input_scores),
+        "input_scores": input_scores,
+        "expected_scores": expected_scores,
     }
 
 

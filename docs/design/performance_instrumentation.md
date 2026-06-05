@@ -20,6 +20,38 @@ The main UI requirement is a timeline where the x-axis is cycle time and the
 y-axis is module/resource. It should make overlap, waiting, and wasted time
 visible.
 
+The performance page must also show the tested computation structure before
+the timelines:
+
+```text
+workload/profile -> graph/model -> layer or attention group -> operator -> shape
+```
+
+Each executable operator card places its theoretical-cycle formula beside
+measured compute and total cycles. This lets a user distinguish datapath
+inefficiency from descriptor/data movement overhead without reading JSON.
+
+### Required Timeline Contract
+
+Every measured descriptor job must expose one aligned timeline with:
+
+| Lane | Purpose |
+| --- | --- |
+| wrapper/control | descriptor read, fetch, launch, wait, writeback, done |
+| data mover | program/input/output transfer intervals and stalls |
+| matrix | active matrix interval |
+| vector | active vector intervals |
+| reduction | active reduction intervals |
+| SFU | active EXP/RECIP/RSQRT intervals |
+
+The timeline must distinguish measured spans from analytically reconstructed
+spans. Reconstructed spans are allowed only when their ordering and duration
+come from the reviewed descriptor/core state machine; arbitrary placement from
+summary totals is not allowed.
+
+The page must summarize bottlenecks, including the longest active lane,
+non-compute overhead, and whether movement overlaps compute.
+
 ## 2. Current Collection Method
 
 The report source is the CPU-visible completed-job snapshot implemented in
@@ -72,9 +104,12 @@ PERF_JOB {"source":"architectural_perf_csr_snapshot", ...}
 `sw/tools/perf/report.py` parses these lines and generates:
 
 ```text
-build/perf/perf.json
-build/perf/perf_report.html
+build/ppa/data/perf.json
+build/ppa/data/pipeline_report.html
 ```
+
+`pipeline_report.html` is an internal detailed view linked or embedded by the
+selected PPA test-case page; it is not a separate top-level report family.
 
 For Transformer-oriented v1 reporting, `report.py` also joins each workload
 with manifest shape metadata and derives analysis fields that are not yet all
@@ -90,6 +125,61 @@ hardware CSRs:
 | `kv_read_bytes` / `kv_write_bytes` | manifest external-memory fields |
 | `bytes_per_token` | manifest/model-only KV traffic normalization when available |
 
+### Theoretical Versus Measured Cycle Analysis
+
+Raw measured cycles are insufficient for architecture analysis because they do
+not explain whether an observed cost is expected. Every executable Transformer
+stage should therefore report a theoretical compute lower bound beside the
+measured values.
+
+Required fields:
+
+| Field | Meaning |
+| --- | --- |
+| `theoretical_compute_cycles` | mathematical lower bound from logical work and declared peak engine parallelism |
+| `measured_compute_cycles` | measured active cycles of the relevant engine, or core-active model when no per-engine CSR exists |
+| `compute_overhead_cycles` | `measured_compute_cycles - theoretical_compute_cycles` |
+| `compute_efficiency` | `theoretical_compute_cycles / measured_compute_cycles` |
+| `measured_total_cycles` | descriptor launch-to-completion cycles |
+| `non_compute_overhead_cycles` | `measured_total_cycles - measured_compute_cycles` |
+| `end_to_end_efficiency` | `theoretical_compute_cycles / measured_total_cycles` |
+| `theoretical_cycle_basis` | human-readable formula and assumptions |
+
+Current formulas:
+
+```text
+matrix QK/PV:
+  theoretical = ceil(M * N * K * jobs / peak_macs_per_cycle)
+
+scale/mask:
+  theoretical = ceil(score_elements * jobs / vector_lanes)
+
+measured softmax rows:
+  theoretical primitive issues =
+      rows * (REDUCE_MAX + VEC_SUB + VEC_CLAMP + EXP_per_lane
+            + REDUCE_SUM + RECIP + VEC_SCALE)
+```
+
+The softmax formula is a primitive-issue lower bound, not a final latency
+promise. It assumes one cycle per primitive issue and no stalls. Until
+vector/reduction/SFU active-cycle CSRs are connected, scale/mask and softmax
+use measured core-active cycles as an explicitly labeled model.
+
+Example for current `8x8x8` QK:
+
+```text
+useful MACs                  = 8 * 8 * 8 = 512
+peak MACs/cycle              = 64
+theoretical compute cycles   = ceil(512 / 64) = 8
+measured matrix cycles       = 10
+compute overhead             = 2 cycles
+compute efficiency           = 8 / 10 = 80%
+measured descriptor cycles   = 84
+end-to-end efficiency        = 8 / 84 = 9.52%
+```
+
+This separates datapath efficiency from wrapper/data-movement overhead.
+
 When a workload is model-only or a hardware engine is not implemented yet, the
 corresponding utilization/cycle field is `null` or zero rather than reported as
 measured hardware behavior.
@@ -98,7 +188,7 @@ measured hardware behavior.
 
 `make perf-report` does not run a separate profiler. It rebuilds the
 CPU-controlled SoC simulation, redirects simulator stdout to
-`build/perf/cpu_soc_perf.log`, then runs `sw/tools/perf/report.py`.
+`build/ppa/data/cpu_soc_perf.log`, then runs `sw/tools/perf/report.py`.
 
 #### Data Mover Event Source
 
@@ -155,16 +245,24 @@ Inside the current flow:
 4. Independently, a small TB reference accumulator checks the internal
    snapshot implementation for total/core/mover/SRAM summary equivalence.
 
-Detailed wrapper FSM and inferred host-window phases are no longer emitted as
-formal production data. A future fine-grain timeline must come from a reviewed
-architectural event/trace contract rather than restored ad hoc observation.
+The earlier MNIST report displayed detailed timelines because testbench-only
+phase counters were present. After production reporting moved to CPU-readable
+CSR snapshots, only summary counters remained, and `report.py` intentionally
+fell back to a CPU-only lane rather than inventing phase placement. Therefore
+the missing timeline is a collection-contract regression, not an HTML
+rendering limitation.
+
+The correction is to add reviewed phase/module trace fields to the
+architectural report contract and render them for every workload. Until all
+new CSRs exist, fixed descriptor paths may emit state-machine-derived spans
+whose provenance is explicitly `derived_from_reviewed_state_machine`.
 
 #### Report Post-Processing
 
 `report.py` parses `PERF_JOB ` records, adds analytical estimates, and writes
 JSON and HTML. It can reconstruct timeline spans for legacy records containing
 old TB phase counters; the production
-build supplies `build/perf/workload_manifest.json`, so workload grouping uses
+build supplies `build/ppa/data/workload_manifest.json`, so workload grouping uses
 explicit `job_id` declarations rather than job order. `infer_workloads()` is
 still retained as a warned legacy-log fallback and its tests still encode the
 historical fixed job ordering.
@@ -218,7 +316,7 @@ data_mover write_words: 64
 chunk 执行重叠起来。NPU 侧 SRAM/data-mover/core-host 路径当前每拍搬运 4 word。
 
 Important consequence: the stable summary values in the current report and
-PPA proxy are values consumed through wrapper snapshot CSRs. The TB equality
+PPA are values consumed through wrapper snapshot CSRs. The TB equality
 check is now an implementation regression, not the measurement provenance.
 
 The SoC now has a ROM-to-SRAM DMA for firmware staging. This reduces

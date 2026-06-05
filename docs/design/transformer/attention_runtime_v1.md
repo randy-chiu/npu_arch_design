@@ -20,25 +20,28 @@ Implemented today:
 
 - CPU firmware launches descriptor jobs through `soc_npu_job_desc_t`;
 - QK launches through `SOC_NPU_JOB_OP_MATMUL_K_STREAM`;
+- unmasked score scale launches through
+  `SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1`;
 - attention softmax launches through `SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1`;
 - PV launches through `SOC_NPU_JOB_OP_MATMUL_U16S8_Q15`;
 - firmware data generation emits a compiler-produced runtime-job table for the
   current attention group;
-- CPU firmware iterates that runtime-job table to launch QK, softmax, and PV in
-  compiler order;
+- CPU firmware iterates that runtime-job table to launch QK, scale/mask,
+  softmax, and PV in compiler order;
 - firmware checks each stage output;
 - perf report captures per-job counters and attention stage metadata.
 
-Current limitation:
+Current scale/mask boundary:
 
 ```text
-Scale/mask is still materialized by fixture data, not an executable NPU stage.
+QK output SRAM -> executable unmasked scale bridge -> scaled-score SRAM
 ```
 
 The parent full-attention workload can now be reported as
-`software_group_measured_stages` for measured QK/softmax/PV stage execution,
-but it is not target full-attention numerical/PPA evidence until scale/mask is
-executable or explicitly accounted with measured runtime overhead.
+`software_group_measured_stages` for measured QK/scale-mask/softmax/PV stage
+execution. It is not target full-attention evidence because scaled scores are
+only supported for fixed `S=8,D=8`, masks are unsupported, the SFU remains a
+bring-up approximation, and runtime overhead is not measured.
 
 ## Runtime Responsibilities
 
@@ -180,10 +183,33 @@ score_raw_i32[8,8], exact int32 check
 
 ### Scale/Mask Stage
 
-Current first runtime step:
+The first executable bridge design is specified in
+the score-scale section of `vector_engine_v1.md`. This runtime document owns
+the descriptor and buffer-routing portion of that path.
 
-- may be materialized by fixture data for the smoke workload;
-- must still exist in compiler plan and generated metadata.
+The word "bridge" means a runtime/dataflow connection between QK and softmax;
+it is not a separate RTL module. The compute operation belongs to the vector
+engine. The runtime path is:
+
+```text
+QK output SRAM
+  -> attention_scale_mask_v1 descriptor
+  -> int32 core C window
+  -> eight VEC_REQUANT_V2 row operations
+  -> int32 core C window
+  -> scaled-score SRAM
+```
+
+This route solves the int32-width problem: existing A/B/X input windows would
+truncate raw QK scores. QK output SRAM is used directly as scale input, so
+firmware cannot silently replace executed QK results with fixture-owned data.
+
+Current runtime step:
+
+- executes one unmasked `8x8 int32` tile through vector requant v2;
+- consumes the SRAM output produced by the preceding QK descriptor;
+- emits a measured scale/mask stage snapshot;
+- feeds the produced scaled-score tile to the all-row softmax descriptor.
 
 Target Model A step:
 
@@ -201,13 +227,13 @@ This boundary is required because:
 - decode and padding correctness require mask handling;
 - softmax should not silently own score scaling and mask semantics.
 
-Until executable, runtime marks it:
+The current compiler/runtime marks it:
 
 ```text
-execution = materialized_or_model_only_bridge
+execution = descriptor_job
+scale_mask_provenance = measured_npu_vector_bridge
 ```
 
-and PPA must not count it as measured NPU compute.
 
 Executable bridge acceptance criteria:
 
@@ -221,28 +247,44 @@ Executable bridge acceptance criteria:
 
 ### Softmax Stage
 
-Input staging:
+#### Problem being solved
+
+The original attention-softmax bring-up descriptor reused the legacy softmax
+X/Y windows. Those windows contain only eight words, and X stores only the low
+signed byte. Consequently it could process only one row and would truncate the
+int32 output produced by scale/mask. Firmware therefore had to stage an
+independent fixture row, and PV could not consume produced probabilities.
+
+#### Tile-softmax descriptor design
+
+`ATTENTION_SOFTMAX_V1` is distinct from legacy `SOFTMAX`, so its descriptor
+routes a complete `8x8` tile through the existing 64-word core C window:
 
 ```text
-input0 = one scaled/masked score row or tile
+score_softmax_in SRAM -> core C window
+core row loop:
+  for row in 0..7:
+    int32 C[row, :] -> vector/reduction/SFU softmax -> Q0.15 C[row, :]
+core C window -> prob_q15 SRAM
 ```
+
+The C window is reused in place because scaled scores are dead after each row
+is normalized. Legacy softmax remains on the eight-word X/Y windows. This
+avoids a new storage module, preserves int32 score width, and allows one
+descriptor to produce the complete probability tile consumed by PV.
 
 Descriptor:
 
 ```text
 op_type      = ATTENTION_SOFTMAX_V1
 input0_addr  = score_softmax_in
+input0_words = 64
 output_addr  = prob_q15
+output_words = 64
 ```
 
-Output and check:
-
-```text
-prob_q15_u16[8], absolute tolerance from numerical contract
-```
-
-If the full `8x8` probability matrix is tested row-by-row, runtime must emit
-eight softmax jobs or use a future row-loop descriptor/command list.
+The first implementation remains fixed to `8x8`; larger rows or tiles require
+compiler tiling and a reviewed cross-tile reduction algorithm.
 
 ### PV Stage
 
@@ -268,6 +310,10 @@ Output and check:
 ```text
 o_i32[8,8], exact against current truncating shift15 fixed spec
 ```
+
+For the fixed `8x8` path, `input0_addr` must be the SRAM output address of the
+preceding tile-softmax descriptor. Firmware must not copy fixture probability
+data into that buffer.
 
 When RTL changes to rounded/saturating PV output, runtime checks and golden must
 move together under a new numerical contract.

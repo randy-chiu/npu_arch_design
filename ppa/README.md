@@ -20,33 +20,33 @@ docs/design/ppa_methodology.md
 Current executable level:
 
 ```text
-make ppa-proxy-report
+make ppa-model-report
 ```
 
-It generates Level 0 output under `build/ppa/proxy/`. Performance/traffic
-inputs are RTL-measured counters; area and energy outputs are normalized proxy
-values from `arch/configs/ppa/area_proxy_v0.jsonc` and
-`arch/configs/ppa/energy_proxy_v0.jsonc`.
+It generates Level 0 output under `build/ppa/model/`. Performance/traffic
+inputs are RTL-measured counters; area and energy outputs are normalized model
+values from `arch/configs/ppa/area_model_v0.jsonc` and
+`arch/configs/ppa/energy_model_v0.jsonc`.
 
 Current active frozen baseline:
 
 ```text
-baselines/l0/npu_v0_a2_serial_k_stream_proxy.json
+baselines/l0/npu_v0_a2_serial_k_stream_l0.json
 ```
 
 It records the verified serial K-stream `fc1` measurement prior to A/B
 ping-pong. The current report compares `npu_v0_a2_ping_pong` against that
-baseline and must show both the cycle/energy-proxy benefit and the additional
-buffer/area-proxy cost.
+baseline and must show both the cycle/energy-model benefit and the additional
+buffer/area-model cost.
 
-The Level 0 schema contract is `schema/ppa_proxy_schema_v0.md`; generated JSON
+The Level 0 schema contract is `schema/ppa_schema_v0.md`; generated JSON
 and the consumed frozen baseline are checked by `sw/tools/ppa/schema_check.py`.
 Baseline rules are described in `baselines/README.md`; the original serial
 counter input is retained as evidence for the frozen baseline.
 
-`make ppa-proxy-report` is the complete simulation-to-report gate.
-`make ppa-proxy-from-perf` regenerates and validates PPA output from an
-existing `build/perf/perf.json` during report/schema iteration without
+`make ppa-model-report` is the complete simulation-to-report gate.
+`make ppa-model-from-perf` regenerates and validates PPA output from an
+existing `build/ppa/data/perf.json` during report/schema iteration without
 rerunning SoC simulation.
 
 Baseline policy:

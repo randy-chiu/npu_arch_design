@@ -59,10 +59,19 @@ Canonical v1 references:
 Primitive uop, micro-kernel, macro-op expansion, and fused hardware pipeline
 are distinct:
 
-- primitive uop: directly issued hardware primitive;
+- primitive operation: a lowest-level scheduler-visible building block
+  executed by one engine, such as vector subtract, reduce max, SFU EXP, or one
+  matrix tile multiply;
+- primitive uop: an encoded command that directly issues one primitive
+  operation;
 - micro-kernel: compiler/software sequence of primitive uops;
 - macro-op expansion: future scheduler/compiler expansion of compact row ops;
 - fused pipeline: dedicated multi-stage hardware datapath, out of v1 scope.
+
+For example, attention softmax is a micro-kernel assembled from reduction,
+vector, and SFU primitive operations. The primitive valid/ready contract
+defines how those operations are accepted and how their results are returned
+without relying on fixed engine latency.
 
 The accumulator file becomes an explicit architectural module:
 

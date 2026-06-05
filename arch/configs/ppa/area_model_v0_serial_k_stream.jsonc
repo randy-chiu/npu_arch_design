@@ -1,12 +1,12 @@
 {
-  // Level 0 structural area proxy for the serial K-stream subsystem baseline.
+  // Level 0 structural area model for the serial K-stream subsystem baseline.
   // This baseline predates A/B ping-pong and therefore has one A preload bank
   // and one B preload bank. Units are normalized, not physical area.
-  "name": "area_proxy_v0_serial_k_stream",
+  "name": "area_model_v0_serial_k_stream",
   "version": 0,
-  "evidence_level": "L0_proxy",
+  "evidence_level": "L0_model",
   "units": "normalized_area_units",
-  "interpretation": "structural_proxy_not_synthesized_area",
+  "interpretation": "structural_model_not_synthesized_area",
   "design": {
     "top": "npu_subsystem",
     "variant": "npu_v0_a2_serial_k_stream"

@@ -19,7 +19,7 @@ For the minimal generated-firmware fallback, `emit_soc_cpu_smoke.py` emits its
 matching two-job manifest. `make perf-report` consumes the build artifact at:
 
 ```text
-build/perf/workload_manifest.json
+build/ppa/data/workload_manifest.json
 ```
 
 ## Schema

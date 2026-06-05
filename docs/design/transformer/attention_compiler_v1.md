@@ -45,8 +45,9 @@ Implemented starter pieces:
   the plan, stage metadata, and runtime-job metadata to generated Transformer
   fixture records.
 - The plan marks the parent group as `software_group_measured_stages` once
-  firmware runtime consumes the generated runtime-job table. Scale/mask remains
-  `materialized_by_fixture`.
+  firmware runtime consumes the generated runtime-job table.
+- The runtime-job table includes executable unmasked `scale_mask` using fixed
+  multiplier `11585`, shift `15`, and round-nearest-away-from-zero.
 
 ## Compiler Inputs
 
@@ -112,7 +113,7 @@ Required stage order:
 | Stage | Operator | Current executable? | Output |
 | --- | --- | --- | --- |
 | `qk` | `matmul_s8s8_i32_tile` | yes | `score_raw_i32` |
-| `scale_mask` | `attention_score_scale_mask_v1` | partially, fixture/materialized | `score_softmax_in_i32` |
+| `scale_mask` | `attention_score_scale_mask_v1` | yes for unmasked `S=8,D_k=8` | `score_softmax_in_i32` |
 | `softmax` | `attention_softmax_q15_v1` | yes | `prob_q15_u16` |
 | `pv` | `matmul_u16s8_q15_i32_tile` | yes | `o_i32` |
 
@@ -302,7 +303,7 @@ sw/tools/npu_compiler/attention_plan_schema.py
 `attention.py` owns metadata loading, attention lowering, K-stream planning for
 QK/PV, runtime job plan emission, and PPA metadata. The current implementation
 is a manifest-driven `S=8,D=8` plan that emits a software-sequenced runtime job
-table for QK, softmax, and PV.
+table for QK, unmasked scale/mask, softmax, and PV.
 
 `attention_plan_schema.py` owns required fields and validation for shape, dtype,
 layout, stage dependencies, and buffer lifetimes. The current schema validates
@@ -315,8 +316,7 @@ Compiler unit tests:
 - lowering `scaled_dot_product_attention_v1` emits `qk`, `scale_mask`,
   `softmax`, `pv` in order;
 - QK uses transposed K layout and records whether transpose was materialized;
-- score scale metadata for `D_k=8` is present even if smoke execution uses
-  pre-scaled input;
+- score scale metadata for `D_k=8` matches the executable requant v2 bridge;
 - causal mask plan marks future key lanes invalid for decode rows;
 - PV uses `matmul_u16s8_q15` and `uint16_q0.15` input0;
 - generated runtime job stage names match manifest attention stages;
@@ -329,8 +329,8 @@ Integration tests:
   numerical contract changes;
 - PPA report still emits per-stage measured rows;
 - parent full attention is reported as `software_group_measured_stages` once
-  generated runtime jobs launch measured QK, softmax, and PV stages; scale/mask
-  remains materialized until its bridge becomes executable.
+  generated runtime jobs launch measured QK, scale/mask, softmax, and PV
+  stages; full producer-to-consumer chaining remains incomplete.
 
 ## Iteration Plan
 

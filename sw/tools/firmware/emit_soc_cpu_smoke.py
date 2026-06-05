@@ -83,7 +83,7 @@ def main() -> None:
     parser.add_argument("--fixtures", type=Path, default=Path("build/rtl_fixture"))
     parser.add_argument("--out", type=Path, default=Path("build/firmware/soc_cpu_smoke.hex"))
     parser.add_argument("--asm-out", type=Path, default=Path("build/firmware/soc_cpu_smoke.S"))
-    parser.add_argument("--manifest-out", type=Path, default=Path("build/perf/workload_manifest.json"))
+    parser.add_argument("--manifest-out", type=Path, default=Path("build/ppa/data/workload_manifest.json"))
     parser.add_argument("--rom-words", type=int, default=8192)
     args = parser.parse_args()
 

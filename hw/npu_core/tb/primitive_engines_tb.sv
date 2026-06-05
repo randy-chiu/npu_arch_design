@@ -14,6 +14,7 @@ module primitive_engines_tb;
     localparam logic [2:0] VEC_SCALE = CFG_VEC_SCALE[2:0];
     localparam logic [2:0] VEC_REQUANT = CFG_VEC_REQUANT[2:0];
     localparam logic [2:0] VEC_CLAMP = CFG_VEC_CLAMP[2:0];
+    localparam logic [2:0] VEC_REQUANT_V2 = CFG_VEC_REQUANT_V2[2:0];
 
     localparam logic [1:0] REDUCE_MAX = CFG_REDUCE_MAX[1:0];
     localparam logic [1:0] REDUCE_SUM = CFG_REDUCE_SUM[1:0];
@@ -110,7 +111,8 @@ module primitive_engines_tb;
         .OP_VEC_MUL(CFG_VEC_MUL),
         .OP_VEC_SCALE(CFG_VEC_SCALE),
         .OP_VEC_REQUANT(CFG_VEC_REQUANT),
-        .OP_VEC_CLAMP(CFG_VEC_CLAMP)
+        .OP_VEC_CLAMP(CFG_VEC_CLAMP),
+        .OP_VEC_REQUANT_V2(CFG_VEC_REQUANT_V2)
     ) u_small_vector_engine (
         .clk(clk),
         .rst_n(rst_n),
@@ -249,6 +251,31 @@ module primitive_engines_tb;
             check_vec_y(1, -32'sd2);
             check_vec_y(2, 32'sd3);
             check_vec_y(3, 32'sd7);
+
+            vector_op = VEC_REQUANT_V2;
+            vector_scalar = 32'sd11585;
+            vector_shift = 5'd15;
+            vector_clamp_low = -32'sd1000;
+            vector_clamp_high = 32'sd1000;
+            set_vec_a(0, 32'sd1000);
+            set_vec_a(1, -32'sd1000);
+            set_vec_a(2, 32'sd1);
+            set_vec_a(3, -32'sd1);
+            launch_vector();
+            check_vec_y(0, 32'sd354);
+            check_vec_y(1, -32'sd354);
+            check_vec_y(2, 32'sd0);
+            check_vec_y(3, 32'sd0);
+
+            vector_scalar = 32'sd2;
+            vector_shift = 5'd0;
+            vector_clamp_low = -32'sd7;
+            vector_clamp_high = 32'sd7;
+            set_vec_a(0, 32'sd5);
+            set_vec_a(1, -32'sd5);
+            launch_vector();
+            check_vec_y(0, 32'sd7);
+            check_vec_y(1, -32'sd7);
         end
     endtask
 

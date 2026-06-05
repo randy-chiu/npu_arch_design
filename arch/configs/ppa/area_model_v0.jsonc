@@ -1,11 +1,11 @@
 {
-  // Level 0 structural area proxy for the current NPU subsystem.
+  // Level 0 structural area model for the current NPU subsystem.
   // Units are normalized ranking weights, not um^2 or synthesized cell area.
-  "name": "area_proxy_v0",
+  "name": "area_model_v0",
   "version": 0,
-  "evidence_level": "L0_proxy",
+  "evidence_level": "L0_model",
   "units": "normalized_area_units",
-  "interpretation": "structural_proxy_not_synthesized_area",
+  "interpretation": "structural_model_not_synthesized_area",
   "design": {
     "top": "npu_subsystem",
     "variant": "npu_v0_a2_ping_pong"

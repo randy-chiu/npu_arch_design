@@ -1,20 +1,20 @@
 {
-  "schema": "npu_ppa_proxy_report_v0",
-  "evidence_level": "L0_proxy",
+  "schema": "npu_ppa_report_v0",
+  "evidence_level": "L0_model",
   "source_perf_report": "recorded baseline input: ppa/baselines/l0/npu_v0_a2_serial_k_stream.json",
   "workload_manifest_id": "soc_cpu_smoke_v0",
   "run_metadata": {
-    "baseline_kind": "frozen_validated_proxy_report",
+    "baseline_kind": "frozen_validated_model_report",
     "rtl_revision": "recorded_serial_k_stream_pre_ping_pong",
     "functional_status": "recorded_rtl_counter_baseline",
     "activity_scope": "kernel_only",
-    "generation_command": "PYTHONPATH=sw/tools python -m ppa.proxy_report --perf-json ppa/baselines/l0/npu_v0_a2_serial_k_stream.json --area-config arch/configs/ppa/area_proxy_v0_serial_k_stream.jsonc --energy-config arch/configs/ppa/energy_proxy_v0.jsonc"
+    "generation_command": "PYTHONPATH=sw/tools python -m ppa.model_report --perf-json ppa/baselines/l0/npu_v0_a2_serial_k_stream.json --area-config arch/configs/ppa/area_model_v0_serial_k_stream.jsonc --energy-config arch/configs/ppa/energy_model_v0.jsonc"
   },
   "design": {
     "top": "npu_subsystem",
     "variant": "npu_v0_a2_serial_k_stream"
   },
-  "proxy_config": {
+  "model_config": {
     "area_coefficient_version": 0,
     "area_units": "normalized_area_units",
     "area_coefficients": {
@@ -35,15 +35,15 @@
   },
   "metric_provenance": {
     "performance": "recorded_rtl_perf_job_counters",
-    "area": "structural_proxy_not_synthesized_area",
-    "energy": "event_proxy_not_measured_power",
+    "area": "structural_model_not_synthesized_area",
+    "energy": "event_model_not_measured_power",
     "timing": "unavailable_until_mapped_or_physical_analysis",
     "power": "unavailable_until_activity_based_tool_flow"
   },
-  "area_proxy": {
+  "area_model": {
     "units": "normalized_area_units",
-    "interpretation": "structural_proxy_not_synthesized_area",
-    "config": "area_proxy_v0_serial_k_stream",
+    "interpretation": "structural_model_not_synthesized_area",
+    "config": "area_model_v0_serial_k_stream",
     "resources": {
       "int8_mac_lanes": 64,
       "data_mover_lanes": 4,
@@ -92,9 +92,9 @@
         "data_mover_words": 2360576,
         "provenance": "recorded_rtl_perf_job_counters"
       },
-      "energy_proxy": {
+      "energy_model": {
         "units": "normalized_energy_units",
-        "interpretation": "event_proxy_not_measured_power",
+        "interpretation": "event_model_not_measured_power",
         "events": {
           "int8_mac_accumulate": 9437184,
           "data_mover_read_word": 2359552,

@@ -21,7 +21,8 @@ hardware can execute, with explicit labels for every approximation.
 | QK score tile | CPU-to-NPU RTL measured | `transformer_attention_qk_s8_d8` |
 | attention row softmax | CPU-to-NPU RTL measured V1 primitive path | `transformer_attention_softmax_s8` |
 | PV weighted sum | CPU-to-NPU RTL measured shared mixed matrix path | `transformer_attention_pv_s8_d8` |
-| full attention group | model-only grouping | `transformer_attention_prefill_s8_d8` |
+| executable unmasked score scale | CPU-to-NPU RTL measured vector requant v2 bridge | `transformer_attention_scale_mask_s8_d8` |
+| full attention group | software-sequenced measured stage grouping | `transformer_attention_prefill_s8_d8` |
 | target Q0.15 softmax | Python golden and standalone primitive sequence | `attention_numerical_v1.md`, primitive TB |
 | mixed Q0.15-by-int8 PV | CPU-to-NPU RTL measured for `S=8,D=8` | `matmul_u16s8_q15` |
 
@@ -33,8 +34,8 @@ Current CPU-to-NPU RTL tests must obey these constraints:
 | --- | --- |
 | matrix executable stages use `8x8x8` or K-stream multiples of 8 | current matrix array and fixture generator only support full 8-wide physical tiles |
 | attention QK uses `Q int8 * K^T int8 -> int32 scores` | maps exactly to the current matrix datapath |
-| attention softmax measured path uses 8 signed int8 inputs and Q0.15 outputs | current descriptor launches one V1 primitive softmax row at a time |
-| softmax measured row count is one row | current SoC descriptor launches one vector row per job |
+| attention softmax measured path uses an `8x8` int32 score tile and Q0.15 outputs | current descriptor loops over eight V1 primitive softmax rows |
+| softmax measured row count is eight rows | current fixed-shape descriptor consumes and produces one complete tile |
 | PV measured path uses Q0.15 probabilities and int8 V | current matrix path has a mixed `u16s8_q15` mode |
 | causal/padding masks are not claimed in measured attention | current measured softmax path has no per-lane invalid mask contract |
 | model-only rows have zero measured cycles | zero cycles must not be interpreted as measured hardware performance |
@@ -103,6 +104,7 @@ Transformer V1 executable jobs in the transformer profile:
 | --- | --- | --- |
 | `transformer_prefill_gemm_tiny` | `matmul_k_stream` | int32 tile |
 | `transformer_attention_qk_s8_d8` | `matmul_k_stream` | int32 score tile |
+| `transformer_attention_scale_mask_s8_d8` | `attention_scale_mask_v1` | exact scaled int32 score tile |
 | `transformer_attention_softmax_s8` | `attention_softmax_v1` | Q0.15 row output within tolerance |
 | `transformer_attention_pv_s8_d8` | `matmul_u16s8_q15` | int32 mixed PV tile |
 | `transformer_decode_skinny_gemm_m8_compat` | `matmul_k_stream` | int32 tile |
@@ -122,8 +124,8 @@ Goals:
 - derive QK/PV useful MACs from logical shape;
 - report softmax as measured cycles but zero matrix MACs;
 - report the full attention group as `software_group_measured_stages` when the
-  generated runtime table launches measured QK, softmax, and PV stages; keep
-  scale/mask materialization explicit.
+  generated runtime table launches measured QK, scale/mask, softmax, and PV
+  stages; keep incomplete buffer chaining explicit.
 
 Command:
 
@@ -137,13 +139,13 @@ The current implementation is accepted only if:
 
 - `make test` passes;
 - `make ppa-l0-report WORKLOAD_PROFILE=transformer` passes schema validation;
-- QK, softmax, and PV appear as `transformer_micro` workloads in
-  `build/ppa/proxy/ppa_proxy.json`;
+- QK, scale/mask, softmax, and PV appear as `transformer_micro` workloads in
+  `build/ppa/ppa.json`;
 - measured attention stage fields are non-null where appropriate:
   `qk_cycles` for QK, `attention_softmax_cycles` for softmax, and `pv_cycles`
   for PV;
 - the full attention parent is clearly labeled as a software-sequenced measured
-  stage group, with scale/mask materialization and runtime-overhead policy
+  stage group, with incomplete buffer chaining and runtime-overhead policy
   visible in metadata.
 
 ## Deferred Verification

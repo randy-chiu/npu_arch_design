@@ -12,10 +12,10 @@ make perf-report
 Outputs:
 
 ```text
-build/perf/cpu_soc_perf.log
-build/perf/workload_manifest.json
-build/perf/perf.json
-build/perf/perf_report.html
+build/ppa/data/cpu_soc_perf.log
+build/ppa/data/workload_manifest.json
+build/ppa/data/perf.json
+build/ppa/data/pipeline_report.html
 ```
 
 The current report consumes `PERF_JOB` JSON lines printed by `soc_cpu_tb` from

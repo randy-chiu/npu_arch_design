@@ -1,1 +1,1 @@
-"""Lightweight PPA proxy reporting tools."""
+"""Lightweight PPA model reporting tools."""

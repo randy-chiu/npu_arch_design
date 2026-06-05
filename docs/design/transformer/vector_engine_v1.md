@@ -186,13 +186,71 @@ For signed `wide` and positive `shift`:
 ```text
 offset = 1 << (shift - 1)
 if wide >= 0:
-    rounded = wide + offset
+    shifted = (wide + offset) >>> shift
 else:
-    rounded = wide - offset
-shifted = rounded >>> shift
+    shifted = -(((-wide) + offset) >>> shift)
 ```
 
 For `shift = 0`, no rounding offset is applied.
+
+The first executable consumer is unmasked `S=8,D_k=8` attention score scaling.
+It uses a distinct `VEC_REQUANT_V2` operation so the existing shift-only
+`VEC_REQUANT` behavior and regressions remain unchanged.
+
+### Executable Attention Score Scale
+
+#### Problem being solved
+
+The compiler plan declares:
+
+```text
+QK -> scale_mask -> softmax -> PV
+```
+
+Previously, scale/mask was fixture-materialized. That meant the measured QK
+output was not consumed by another measured NPU stage, scale cost was absent
+from PPA, and the executable graph did not implement `score / sqrt(D_k)`.
+
+The existing shift-only `VEC_REQUANT` also cannot accurately implement
+`1/sqrt(8) = 0.353553...`, because this value is not a power-of-two shift.
+
+#### Vector-engine design
+
+For the first unmasked `D_k=8` path:
+
+```text
+scale_multiplier = round((1 / sqrt(8)) * 2^15) = 11585
+scale_shift      = 15
+rounding         = round_nearest_away_from_zero
+mask_policy      = none
+```
+
+Each score uses:
+
+```text
+wide = score_raw * 11585
+if wide >= 0:
+    score_scaled = (wide + 2^14) >>> 15
+else:
+    score_scaled = -(((-wide) + 2^14) >>> 15)
+```
+
+The core issues one eight-lane `VEC_REQUANT_V2` operation per score row. One
+`8x8` tile therefore requires eight vector operations. Causal, padding, and
+tail mask-select behavior remains deferred.
+
+#### Why this mechanism is effective
+
+- it implements the reviewed non-power-of-two scale;
+- it reuses the shared vector engine instead of adding attention-specific
+  compute RTL;
+- positive and negative values use a defined symmetric rounding rule;
+- the original shift-only requant behavior remains unchanged;
+- measured vector-stage cost can be compared against the theoretical minimum
+  of eight row operations.
+
+Descriptor routing, SRAM ownership, and QK-to-scale buffer chaining belong to
+`attention_runtime_v1.md`, not to the vector-engine module contract.
 
 Review is complete only when config fields, runtime/uop fields, golden model
 names, rounding mode, intermediate widths, and valid/ready latency are accepted
@@ -203,6 +261,11 @@ change.
 
 Current RTL is single-cycle start-to-done in the cycle after the sampled
 `start` edge. This is a bring-up model, not a timing target for production.
+
+The standalone `vector_engine_handshake` compatibility shim adds the accepted
+valid/ready boundary with one command in flight and one held response slot.
+Its `cmd_fire` to `rsp_valid` latency is two cycles and it does not overlap
+commands. The underlying engine and current SoC path remain start/done.
 
 ## active/stall/done semantics
 
@@ -242,7 +305,8 @@ fields in the target config. Silent wrap must not become the numerical policy.
 ## PPA counters
 
 Required v1 reporting includes `vector_active_cycles` and
-`stall_cycles_by_engine`. Current standalone RTL exposes only `active`; counter
+`stall_cycles_by_engine`. The compatibility shim exposes local active, input
+stall, output stall, idle, accepted-op, and accepted-lane-op counters. CSR
 integration is deferred to the wrapper/scheduler path.
 
 Counter exposure order:
@@ -292,7 +356,8 @@ Target requant verification requires:
 - Primitive standalone bring-up RTL only.
 - No valid/ready pipeline.
 - No real stall counters.
-- No full requant policy.
+- Requant v2 is implemented for signed multiply, round-nearest-away-from-zero,
+  shift, and explicit clamp; zero-point and runtime-selectable fields remain.
 - No scheduler-owned issue/retire protocol.
 - No attention mask-select semantics.
 - Current `VEC_MUL` is not a reviewed softmax normalization multiply.

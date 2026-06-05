@@ -14,10 +14,10 @@ class AttentionPlanTests(unittest.TestCase):
         plan = build_attention_plan_from_manifest(MANIFEST, "attention_prefill_s8_d8")
 
         self.assertEqual([stage["stage_id"] for stage in plan["stages"]], ["qk", "scale_mask", "softmax", "pv"])
-        self.assertEqual([job["stage_id"] for job in plan["runtime_jobs"]], ["qk", "softmax", "pv"])
+        self.assertEqual([job["stage_id"] for job in plan["runtime_jobs"]], ["qk", "scale_mask", "softmax", "pv"])
         self.assertEqual(plan["group_state"], "software_group_measured_stages")
         self.assertEqual(plan["group_cycle_policy"], "sum_measured_stages")
-        self.assertEqual(plan["scale_mask_provenance"], "materialized_by_fixture")
+        self.assertEqual(plan["scale_mask_provenance"], "measured_npu_vector_bridge")
 
     def test_attention_plan_preserves_typed_intermediate_buffers(self):
         plan = build_attention_plan_from_manifest(MANIFEST, "attention_prefill_s8_d8")
@@ -33,6 +33,8 @@ class AttentionPlanTests(unittest.TestCase):
         jobs = {job["stage_id"]: job for job in plan["runtime_jobs"]}
 
         self.assertEqual(jobs["qk"]["descriptor_op"], "matmul_k_stream")
+        self.assertEqual(jobs["scale_mask"]["descriptor_op"], "attention_scale_mask_v1")
+        self.assertEqual(jobs["scale_mask"]["input0"], "score_raw")
         self.assertEqual(jobs["softmax"]["descriptor_op"], "attention_softmax_v1")
         self.assertEqual(jobs["pv"]["descriptor_op"], "matmul_u16s8_q15")
         self.assertEqual(jobs["pv"]["input0"], "prob_q15")

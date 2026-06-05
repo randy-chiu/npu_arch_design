@@ -9,6 +9,7 @@ from .attention_plan_schema import validate_attention_plan
 
 STAGE_BY_MANIFEST_LOGICAL_OP = {
     "attention_qk_score": "qk",
+    "attention_score_scale_mask": "scale_mask",
     "attention_row_softmax": "softmax",
     "attention_probability_value": "pv",
 }
@@ -22,6 +23,7 @@ STAGE_OPERATORS = {
 
 DESCRIPTOR_OP_BY_STAGE = {
     "qk": "matmul_k_stream",
+    "scale_mask": "attention_scale_mask_v1",
     "softmax": "attention_softmax_v1",
     "pv": "matmul_u16s8_q15",
 }
@@ -72,7 +74,7 @@ def build_attention_plan_from_manifest(spec: dict[str, Any], attention_group: st
         "numerical_contract": numerical_contract,
         "group_state": "software_group_measured_stages",
         "group_cycle_policy": "sum_measured_stages",
-        "scale_mask_provenance": "materialized_by_fixture",
+        "scale_mask_provenance": "measured_npu_vector_bridge",
         "stages": stages,
         "buffers": buffers,
         "runtime_jobs": runtime_jobs,
@@ -116,7 +118,7 @@ def _find_stage_workloads(workloads: list[dict[str, Any]], attention_group: str)
         if stage in stages:
             raise ValueError(f"duplicate attention stage {stage} for {attention_group}")
         stages[stage] = workload
-    missing = [stage for stage in ("qk", "softmax", "pv") if stage not in stages]
+    missing = [stage for stage in ("qk", "scale_mask", "softmax", "pv") if stage not in stages]
     if missing:
         raise ValueError(f"attention group {attention_group} missing stages {missing}")
     return stages
@@ -153,10 +155,15 @@ def _build_stages(stage_workloads: dict[str, dict[str, Any]], parent_contract: s
             "operator": STAGE_OPERATORS["scale_mask"],
             "inputs": ["score_raw"],
             "outputs": ["score_softmax_in"],
-            "execution": "materialized_or_model_only_bridge",
-            "scale_policy": "pre_scaled_fixture",
+            "descriptor_op": DESCRIPTOR_OP_BY_STAGE["scale_mask"],
+            "workload_name": f"transformer_{stage_workloads['scale_mask']['name']}",
+            "execution": "descriptor_job",
+            "scale_policy": "fixed_multiplier_shift",
+            "scale_multiplier": 11585,
+            "scale_shift": 15,
+            "rounding": "round_nearest_away_from_zero",
             "mask_policy": "none",
-            "numerical_contract": parent_contract,
+            "numerical_contract": stage_workloads["scale_mask"].get("numerical_contract"),
         },
         {
             "stage_id": "softmax",
@@ -188,6 +195,15 @@ def _build_runtime_jobs(stage_workloads: dict[str, dict[str, Any]], attention_gr
             "q_tile",
             "k_t_tile",
             "score_raw",
+            attention_group=attention_group,
+        ),
+        _runtime_job(
+            "scale_mask",
+            _job_id_symbol(stage_workloads["scale_mask"]["name"]),
+            DESCRIPTOR_OP_BY_STAGE["scale_mask"],
+            "score_raw",
+            None,
+            "score_softmax_in",
             attention_group=attention_group,
         ),
         _runtime_job(

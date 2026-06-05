@@ -1,11 +1,11 @@
 {
-  // Level 0 event-energy proxy. Coefficients are normalized and replaceable.
+  // Level 0 event-energy model. Coefficients are normalized and replaceable.
   // They are intended to compare event mix, not claim joules or watts.
-  "name": "energy_proxy_v0",
+  "name": "energy_model_v0",
   "version": 0,
-  "evidence_level": "L0_proxy",
+  "evidence_level": "L0_model",
   "units": "normalized_energy_units",
-  "interpretation": "event_proxy_not_measured_power",
+  "interpretation": "event_model_not_measured_power",
   "event_coefficients": {
     "int8_mac_accumulate": 1.0,
     "data_mover_read_word": 4.0,

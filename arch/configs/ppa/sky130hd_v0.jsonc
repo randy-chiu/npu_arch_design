@@ -1,6 +1,6 @@
 {
   // Future Level 3 public physical ASIC target assumptions for selected
-  // architecture comparisons. Level 0 proxy reporting does not use this
+  // architecture comparisons. Level 0 model reporting does not use this
   // configuration. Results produced with this target are estimates, not
   // signoff claims.
   "name": "sky130hd_v0",

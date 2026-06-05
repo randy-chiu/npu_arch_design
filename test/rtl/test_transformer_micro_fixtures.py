@@ -39,6 +39,7 @@ class TransformerMicroFixtureTests(unittest.TestCase):
             [
                 "transformer_prefill_gemm_tiny",
                 "transformer_attention_qk_s8_d8",
+                "transformer_attention_scale_mask_s8_d8",
                 "transformer_attention_softmax_s8",
                 "transformer_attention_pv_s8_d8",
                 "transformer_decode_skinny_gemm_m8_compat",
@@ -48,38 +49,45 @@ class TransformerMicroFixtureTests(unittest.TestCase):
         self.assertEqual(executable[1]["k_chunks"], 1)
         self.assertEqual(executable[1]["metadata"]["attention_stage"], "qk")
         self.assertEqual(executable[1]["metadata"]["attention_plan_runtime_job"]["descriptor_op"], "matmul_k_stream")
-        self.assertEqual(executable[2]["op"], "attention_softmax_v1")
-        self.assertEqual(executable[2]["metadata"]["attention_stage"], "softmax")
-        self.assertEqual(executable[2]["metadata"]["stage_provenance"], "measured_current_softmax_path")
+        self.assertEqual(executable[2]["op"], "attention_scale_mask_v1")
+        self.assertEqual(executable[2]["metadata"]["attention_stage"], "scale_mask")
+        self.assertEqual(executable[2]["metadata"]["attention"]["scale_multiplier"], 11585)
+        self.assertEqual(executable[2]["input_scores"], executable[1]["expected_c"])
+        self.assertEqual(executable[3]["op"], "attention_softmax_v1")
+        self.assertEqual(executable[3]["x"], executable[2]["expected_scores"])
+        self.assertEqual(len(executable[3]["expected_y"]), 64)
+        self.assertEqual(executable[4]["a_stream"][0], executable[3]["expected_y"])
+        self.assertEqual(executable[3]["metadata"]["attention_stage"], "softmax")
+        self.assertEqual(executable[3]["metadata"]["stage_provenance"], "measured_current_softmax_path")
         self.assertEqual(
-            executable[2]["metadata"]["attention_plan_stage"]["inputs"],
+            executable[3]["metadata"]["attention_plan_stage"]["inputs"],
             ["score_softmax_in"],
         )
         self.assertEqual(
-            executable[2]["metadata"]["softmax"]["implementation"],
+            executable[3]["metadata"]["softmax"]["implementation"],
             "npu_v1_vector_reduction_sfu_sequence",
         )
-        self.assertEqual(executable[3]["k_chunks"], 1)
-        self.assertEqual(executable[3]["op"], "matmul_u16s8_q15")
-        self.assertEqual(executable[3]["metadata"]["attention_stage"], "pv")
+        self.assertEqual(executable[4]["k_chunks"], 1)
+        self.assertEqual(executable[4]["op"], "matmul_u16s8_q15")
+        self.assertEqual(executable[4]["metadata"]["attention_stage"], "pv")
         self.assertEqual(
-            executable[3]["metadata"]["attention_plan_runtime_job"]["descriptor_op"],
+            executable[4]["metadata"]["attention_plan_runtime_job"]["descriptor_op"],
             "matmul_u16s8_q15",
         )
         self.assertEqual(
-            executable[3]["metadata"]["attention"]["probability_policy"],
+            executable[4]["metadata"]["attention"]["probability_policy"],
             "q0.15_u16",
         )
-        self.assertEqual(executable[3]["a_bits"], 16)
-        self.assertEqual(executable[4]["k_chunks"], 1)
+        self.assertEqual(executable[4]["a_bits"], 16)
+        self.assertEqual(executable[5]["k_chunks"], 1)
         self.assertTrue(any(item["name"] == "transformer_kv_cache_traffic_tiny" for item in model_only))
         self.assertTrue(any(item["name"] == "transformer_softmax_row" for item in model_only))
         self.assertTrue(any(item["name"] == "transformer_attention_prefill_s8_d8" for item in model_only))
         parent = next(item for item in model_only if item["name"] == "transformer_attention_prefill_s8_d8")
         self.assertEqual(parent["metadata"]["attention_plan"]["group_state"], "software_group_measured_stages")
-        self.assertEqual(parent["metadata"]["attention_plan"]["runtime_jobs"], ["qk", "softmax", "pv"])
+        self.assertEqual(parent["metadata"]["attention_plan"]["runtime_jobs"], ["qk", "scale_mask", "softmax", "pv"])
         self.assertEqual(executable[0]["metadata"]["shape_class"], "skinny_gemm")
-        self.assertEqual(executable[4]["metadata"]["workload_family"], "transformer_decode")
+        self.assertEqual(executable[5]["metadata"]["workload_family"], "transformer_decode")
 
     def test_integer_golden_matmul_uses_full_k_dimension(self):
         a = [[1, -2, 3], [4, 5, -6]]

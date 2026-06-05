@@ -1,15 +1,15 @@
-# PPA Proxy Report Schema v0
+# PPA Report Schema v0
 
 ## Contract
 
-`npu_ppa_proxy_report_v0` is the machine-readable contract for the current
-`L0_proxy` architecture comparison report. It is checked by
+`npu_ppa_report_v0` is the machine-readable contract for the current
+`L0_model` architecture comparison report. It is checked by
 `sw/tools/ppa/schema_check.py`; the related JSON Schema is
-`ppa/schema/ppa_proxy_report.schema.json`.
+`ppa/schema/ppa_report.schema.json`.
 
 This evidence level is deliberately limited:
 
-- `normalized_area_units` is a structural ranking proxy, not `mm^2`, cell
+- `normalized_area_units` is a structural ranking model, not `mm^2`, cell
   area, or utilization.
 - `normalized_energy_units` is event count multiplied by declared normalized
   coefficients, not joules or measured power.
@@ -22,12 +22,12 @@ This evidence level is deliberately limited:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema` | string | Must be `npu_ppa_proxy_report_v0`. |
-| `evidence_level` | string | Must be `L0_proxy`. |
+| `schema` | string | Must be `npu_ppa_report_v0`. |
+| `evidence_level` | string | Must be `L0_model`. |
 | `design` | object | Design `top` and `variant` identity. |
-| `proxy_config` | object | Area/energy coefficient versions, units, and coefficient sets used for comparability checks. |
+| `model_config` | object | Area/energy coefficient versions, units, and coefficient sets used for comparability checks. |
 | `metric_provenance` | object | Origin and interpretation of performance, area, energy, timing, and power metrics. |
-| `area_proxy` | object | Structural resource model and normalized total. |
+| `area_model` | object | Structural resource model and normalized total. |
 | `workloads` | array | Per-workload measured performance and modeled event energy. |
 | `limitations` | array | Unmodeled quantities and claim boundaries. |
 | `comparison` | object or null | Baseline comparison, or `null` when no baseline is provided. |
@@ -37,7 +37,7 @@ Optional top-level fields are `source_perf_report`, `workload_manifest_id`,
 `run_metadata` with its revision/evidence reference, functional status,
 activity scope, and generation command.
 
-## Area Proxy
+## Area Model
 
 Required fields are `units`, `resources`, `coefficients`, and
 `normalized_area_units`. `units` must be `normalized_area_units`.
@@ -48,7 +48,7 @@ optional fields.
 
 ## Workload Performance And Energy
 
-Every `workloads[]` item requires `name`, `performance`, and `energy_proxy`.
+Every `workloads[]` item requires `name`, `performance`, and `energy_model`.
 
 | Field | Units / meaning |
 | --- | --- |
@@ -56,9 +56,9 @@ Every `workloads[]` item requires `name`, `performance`, and `energy_proxy`.
 | `performance.core_matmul_cycles` | RTL-sampled core matmul cycles. |
 | `performance.data_mover_words` | RTL-sampled on-chip mover words. |
 | `performance.provenance` | Production value is `measured_architectural_perf_csr_snapshot`; legacy replay may retain `measured_rtl_perf_job_counters`. |
-| `energy_proxy.events` | Event counts used by the model, including MAC work and mover traffic. |
-| `energy_proxy.coefficients` | Normalized energy/event coefficients. |
-| `energy_proxy.normalized_energy_units` | Normalized event-energy total; not joules. |
+| `energy_model.events` | Event counts used by the model, including MAC work and mover traffic. |
+| `energy_model.coefficients` | Normalized energy/event coefficients. |
+| `energy_model.normalized_energy_units` | Normalized event-energy total; not joules. |
 
 ## Comparison Compatibility
 

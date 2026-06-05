@@ -37,7 +37,14 @@ class PerfReportTests(unittest.TestCase):
             "measured_architectural_perf_csr_snapshot",
         )
         self.assertEqual(report["workloads"][0]["data_mover"]["read_words"], 144)
-        self.assertEqual([lane["module"] for lane in report["jobs"][0]["timeline"]], ["CPU firmware"])
+        self.assertEqual(
+            [lane["module"] for lane in report["jobs"][0]["timeline"]],
+            ["CPU firmware", "NPU wrapper", "Data mover", "NPU core", "Matrix engine"],
+        )
+        self.assertEqual(
+            report["jobs"][0]["timeline_provenance"]["span_placement"],
+            "derived_from_reviewed_state_machine",
+        )
 
     def test_csr_highlight_does_not_claim_unmeasured_overlap_span(self):
         highlights = build_highlights(
@@ -105,10 +112,11 @@ class PerfReportTests(unittest.TestCase):
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(len(manifest["jobs"]), 73)
+        self.assertEqual(len(manifest["jobs"]), 74)
         self.assertEqual(manifest["manifest_id"], "soc_cpu_smoke_quick_v0")
-        self.assertEqual(manifest["jobs"][-5]["workload"], "transformer_prefill_gemm_tiny")
-        self.assertEqual(manifest["jobs"][-4]["workload"], "transformer_attention_qk_s8_d8")
+        self.assertEqual(manifest["jobs"][-6]["workload"], "transformer_prefill_gemm_tiny")
+        self.assertEqual(manifest["jobs"][-5]["workload"], "transformer_attention_qk_s8_d8")
+        self.assertEqual(manifest["jobs"][-4]["workload"], "transformer_attention_scale_mask_s8_d8")
         self.assertEqual(manifest["jobs"][-3]["workload"], "transformer_attention_softmax_s8")
         self.assertEqual(manifest["jobs"][-2]["workload"], "transformer_attention_pv_s8_d8")
         self.assertEqual(manifest["jobs"][-1]["workload"], "transformer_decode_skinny_gemm_m8_compat")
@@ -119,6 +127,10 @@ class PerfReportTests(unittest.TestCase):
         self.assertEqual(
             manifest["workload_metadata"]["transformer_attention_qk_s8_d8"]["metadata"]["attention_stage"],
             "qk",
+        )
+        self.assertEqual(
+            manifest["workload_metadata"]["transformer_attention_scale_mask_s8_d8"]["metadata"]["attention_stage"],
+            "scale_mask",
         )
         self.assertEqual(
             manifest["workload_metadata"]["transformer_attention_softmax_s8"]["metadata"]["attention_stage"],
@@ -231,6 +243,14 @@ class PerfReportTests(unittest.TestCase):
         self.assertEqual(report["workloads"][0]["transformer_metrics"]["effective_mac_ops"], 1024)
         self.assertEqual(report["workloads"][0]["transformer_metrics"]["matrix_utilization"], 0.8)
         self.assertEqual(report["workloads"][0]["transformer_metrics"]["skinny_gemm_utilization"], 0.8)
+        self.assertEqual(report["workloads"][0]["transformer_metrics"]["theoretical_compute_cycles"], 16)
+        self.assertEqual(report["workloads"][0]["transformer_metrics"]["measured_compute_cycles"], 20)
+        self.assertEqual(report["workloads"][0]["transformer_metrics"]["compute_overhead_cycles"], 4)
+        self.assertEqual(report["workloads"][0]["transformer_metrics"]["compute_efficiency"], 0.8)
+        self.assertEqual(
+            report["workloads"][0]["transformer_metrics"]["measured_compute_provenance"],
+            "measured_matrix_active_cycles",
+        )
         self.assertEqual(report["model_only_workloads"][0]["name"], "transformer_kv_cache_traffic_tiny")
         self.assertEqual(report["model_only_workloads"][0]["metadata"]["external_memory"]["kv_cache_read_bytes"], 1024)
         self.assertIsNone(report["model_only_workloads"][0]["transformer_metrics"]["matrix_utilization"])

@@ -4,7 +4,7 @@ module npu_v0_top #(
     input  logic        clk,
     input  logic        rst_n,
     input  logic        start,
-    input  logic [1:0]  op,          // 0: uop program, 1: attention softmax v1, 2: matrix u16s8 q15.
+    input  logic [1:0]  op,          // 0: uop, 1: attention softmax, 2: matrix u16s8 q15, 3: attention scale/mask.
     output logic        done,
     output logic        perf_active,
     output logic        perf_fetch_active,
@@ -38,7 +38,10 @@ module npu_v0_top #(
         ST_ATTN_RECIP_START,
         ST_ATTN_RECIP_WAIT,
         ST_ATTN_NORM_START,
-        ST_ATTN_NORM_WAIT
+        ST_ATTN_NORM_WAIT,
+        ST_SCALE_PREPARE,
+        ST_SCALE_START,
+        ST_SCALE_WAIT
     } state_t;
 
     localparam logic [7:0] RTL_SOFTMAX_LEN_U8 = RTL_SOFTMAX_LEN;
@@ -107,6 +110,7 @@ module npu_v0_top #(
     logic primitive_sfu_done;
     logic primitive_sfu_active;
     logic [3:0] primitive_lane_idx;
+    logic [3:0] primitive_row_idx;
 
     integer idx;
     integer host_lane_idx;
@@ -181,7 +185,8 @@ module npu_v0_top #(
         .OP_VEC_MUL(2),
         .OP_VEC_SCALE(3),
         .OP_VEC_REQUANT(4),
-        .OP_VEC_CLAMP(5)
+        .OP_VEC_CLAMP(5),
+        .OP_VEC_REQUANT_V2(6)
     ) u_attention_vector_engine (
         .clk(clk),
         .rst_n(rst_n),
@@ -278,6 +283,7 @@ module npu_v0_top #(
             primitive_sfu_op <= '0;
             primitive_sfu_x <= '0;
             primitive_lane_idx <= '0;
+            primitive_row_idx <= '0;
         end else begin
             acc_clear_request <= 1'b0;
             for (host_lane_idx = 0; host_lane_idx < CORE_HOST_LANES; host_lane_idx = host_lane_idx + 1) begin
@@ -300,6 +306,9 @@ module npu_v0_top #(
                     end else if (state == ST_IDLE && host_lane_addr >= RTL_HOST_X_BASE &&
                                  host_lane_addr < RTL_HOST_X_BASE + RTL_HOST_X_WORDS) begin
                         dram_x[host_lane_addr - RTL_HOST_X_BASE] <= host_wdata[(host_lane_idx * 32) +: 8];
+                    end else if (state == ST_IDLE && host_lane_addr >= RTL_HOST_C_BASE &&
+                                 host_lane_addr < RTL_HOST_C_BASE + RTL_HOST_C_WORDS) begin
+                        dram_c[host_lane_addr - RTL_HOST_C_BASE] <= host_wdata[(host_lane_idx * 32) +: 32];
                     end else if (state == ST_IDLE && host_lane_addr >= RTL_HOST_PROGRAM_BASE &&
                                  host_lane_addr < RTL_HOST_PROGRAM_BASE + RTL_HOST_PROGRAM_WORDS) begin
                         instr_mem[host_lane_addr - RTL_HOST_PROGRAM_BASE] <= host_wdata[(host_lane_idx * 32) +: 32];
@@ -351,7 +360,10 @@ module npu_v0_top #(
                     if (start) begin
                         compute_bank_active <= compute_bank_select;
                         pc <= 4'h0;
-                        state <= (op == 2'd1) ? ST_ATTN_PREPARE : ST_FETCH;
+                        primitive_row_idx <= 4'h0;
+                        if (op == 2'd1) state <= ST_ATTN_PREPARE;
+                        else if (op == 2'd3) state <= ST_SCALE_PREPARE;
+                        else state <= ST_FETCH;
                     end
                 end
 
@@ -414,8 +426,10 @@ module npu_v0_top #(
 
                 ST_ATTN_PREPARE: begin
                     for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
-                        primitive_vector_a_flat[(idx * 32) +: 32] <= {{24{dram_x[idx][7]}}, dram_x[idx]};
-                        primitive_reduction_x_flat[(idx * 32) +: 32] <= {{24{dram_x[idx][7]}}, dram_x[idx]};
+                        primitive_vector_a_flat[(idx * 32) +: 32] <=
+                            dram_c[(primitive_row_idx * RTL_SOFTMAX_LEN) + idx];
+                        primitive_reduction_x_flat[(idx * 32) +: 32] <=
+                            dram_c[(primitive_row_idx * RTL_SOFTMAX_LEN) + idx];
                     end
                     primitive_vector_valid_mask <= 8'hff;
                     state <= ST_ATTN_REDMAX_START;
@@ -525,9 +539,49 @@ module npu_v0_top #(
                 ST_ATTN_NORM_WAIT: begin
                     if (primitive_vector_done) begin
                         for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
-                            dram_y[idx] <= primitive_vector_y_flat[(idx * 32) +: 32];
+                            dram_c[(primitive_row_idx * RTL_SOFTMAX_LEN) + idx] <=
+                                primitive_vector_y_flat[(idx * 32) +: 32];
                         end
-                        state <= ST_DONE;
+                        if (primitive_row_idx == RTL_SOFTMAX_LEN - 1) begin
+                            state <= ST_DONE;
+                        end else begin
+                            primitive_row_idx <= primitive_row_idx + 1'b1;
+                            state <= ST_ATTN_PREPARE;
+                        end
+                    end
+                end
+
+                ST_SCALE_PREPARE: begin
+                    for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
+                        primitive_vector_a_flat[(idx * 32) +: 32] <=
+                            dram_c[(primitive_row_idx * RTL_SOFTMAX_LEN) + idx];
+                    end
+                    primitive_vector_valid_mask <= 8'hff;
+                    primitive_vector_op <= 3'd6;
+                    primitive_vector_scalar <= 32'sd11585;
+                    primitive_vector_shift <= 5'd15;
+                    primitive_vector_clamp_low <= 32'sh8000_0000;
+                    primitive_vector_clamp_high <= 32'sh7fff_ffff;
+                    state <= ST_SCALE_START;
+                end
+
+                ST_SCALE_START: begin
+                    primitive_softmax_start <= 1'b1;
+                    state <= ST_SCALE_WAIT;
+                end
+
+                ST_SCALE_WAIT: begin
+                    if (primitive_vector_done) begin
+                        for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
+                            dram_c[(primitive_row_idx * RTL_SOFTMAX_LEN) + idx] <=
+                                primitive_vector_y_flat[(idx * 32) +: 32];
+                        end
+                        if (primitive_row_idx == RTL_SOFTMAX_LEN - 1) begin
+                            state <= ST_DONE;
+                        end else begin
+                            primitive_row_idx <= primitive_row_idx + 1'b1;
+                            state <= ST_SCALE_PREPARE;
+                        end
                     end
                 end
             endcase

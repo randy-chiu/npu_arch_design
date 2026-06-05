@@ -51,6 +51,7 @@
     "VEC_MUL",
     "VEC_SCALE",
     "VEC_REQUANT",
+    "VEC_REQUANT_V2",
     "VEC_CLAMP",
     "REDUCE_MAX",
     "REDUCE_SUM",
@@ -69,7 +70,8 @@
       "VEC_MUL": 2,
       "VEC_SCALE": 3,
       "VEC_REQUANT": 4,
-      "VEC_CLAMP": 5
+      "VEC_CLAMP": 5,
+      "VEC_REQUANT_V2": 6
     },
     "reduction": {
       "REDUCE_MAX": 0,

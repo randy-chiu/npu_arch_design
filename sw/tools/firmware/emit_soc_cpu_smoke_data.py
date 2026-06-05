@@ -56,7 +56,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixtures", type=Path, default=Path("build/rtl_fixture"))
     parser.add_argument("--out", type=Path, default=Path("build/firmware/soc_cpu_smoke_data.h"))
-    parser.add_argument("--manifest-out", type=Path, default=Path("build/perf/workload_manifest.json"))
+    parser.add_argument("--manifest-out", type=Path, default=Path("build/ppa/data/workload_manifest.json"))
     parser.add_argument(
         "--workload-profile",
         choices=("quick", "transformer", "cnn-full", "all"),
@@ -482,9 +482,15 @@ def _append_transformer_micro_data(lines: list[str]) -> dict:
             lines.append(f"#define {macro}_X_WORDS {workload['x_words']}u")
             lines.append(f"#define {macro}_Y_WORDS {workload['y_words']}u")
             lines.append("")
-            _append_flat_array(lines, f"{workload['name']}_x", workload["x"], bits=8)
+            input_bits = 32 if workload["op"] == "attention_softmax_v1" else 8
+            _append_flat_array(lines, f"{workload['name']}_x", workload["x"], bits=input_bits)
             expected_bits = 32 if workload["op"] == "attention_softmax_v1" else 8
             _append_flat_array(lines, f"{workload['name']}_expected_y", workload["expected_y"], bits=expected_bits)
+        elif workload["op"] == "attention_scale_mask_v1":
+            lines.append(f"#define {macro}_SCORE_WORDS {workload['score_words']}u")
+            lines.append("")
+            _append_flat_array(lines, f"{workload['name']}_input_scores", workload["input_scores"], bits=32)
+            _append_flat_array(lines, f"{workload['name']}_expected_scores", workload["expected_scores"], bits=32)
         else:
             raise ValueError(f"unsupported executable transformer op {workload['op']!r}")
     return transformer_micro
@@ -522,8 +528,9 @@ def _append_transformer_runtime_plan_data(lines: list[str], transformer_micro: d
     plan = plans[0]
     jobs = plan["runtime_jobs"]
     lines.append("#define TRANSFORMER_RUNTIME_STAGE_QK 1u")
-    lines.append("#define TRANSFORMER_RUNTIME_STAGE_SOFTMAX 2u")
-    lines.append("#define TRANSFORMER_RUNTIME_STAGE_PV 3u")
+    lines.append("#define TRANSFORMER_RUNTIME_STAGE_SCALE_MASK 2u")
+    lines.append("#define TRANSFORMER_RUNTIME_STAGE_SOFTMAX 3u")
+    lines.append("#define TRANSFORMER_RUNTIME_STAGE_PV 4u")
     lines.append("#define TRANSFORMER_RUNTIME_CHECK_EXACT 1u")
     lines.append("#define TRANSFORMER_RUNTIME_CHECK_ABS_TOL 2u")
     lines.append(f"#define TRANSFORMER_ATTENTION_RUNTIME_JOBS {len(jobs)}u")
@@ -541,11 +548,13 @@ def _append_transformer_runtime_plan_data(lines: list[str], transformer_micro: d
     for job in jobs:
         stage_macro = {
             "qk": "TRANSFORMER_RUNTIME_STAGE_QK",
+            "scale_mask": "TRANSFORMER_RUNTIME_STAGE_SCALE_MASK",
             "softmax": "TRANSFORMER_RUNTIME_STAGE_SOFTMAX",
             "pv": "TRANSFORMER_RUNTIME_STAGE_PV",
         }[job["stage_id"]]
         op_macro = {
             "matmul_k_stream": "SOC_NPU_JOB_OP_MATMUL_K_STREAM",
+            "attention_scale_mask_v1": "SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1",
             "attention_softmax_v1": "SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1",
             "matmul_u16s8_q15": "SOC_NPU_JOB_OP_MATMUL_U16S8_Q15",
         }[job["descriptor_op"]]

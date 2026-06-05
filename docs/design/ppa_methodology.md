@@ -4,12 +4,12 @@
 
 ## 1. Goal / 目标
 
-This project uses PPA evidence to guide NPU architecture decisions:
+This project uses one PPA report family to guide NPU architecture decisions:
 
 ```text
 functional correctness
-  -> measured cycles and traffic
-  -> structural area and event-energy proxy
+  -> measured performance and traffic
+  -> structural area and event-energy models
   -> technology-mapped area/timing estimate
   -> physical/activity-driven power estimate
   -> energy and efficiency comparison
@@ -23,7 +23,7 @@ The methodology is layered so that early architecture analysis does not block
 on a heavy physical-design tool flow before the evaluation boundary and
 representative workloads are stable.
 
-本方法采用分层推进：当前先建立真实性能计数加结构/事件 proxy，不要求一开始就
+本方法采用分层推进：当前先建立真实性能计数加结构/事件模型，不要求一开始就
 安装完整物理实现工具链；只有通过早期筛选的架构 variant 才进入更重的 ASIC
 实现评估。
 
@@ -44,14 +44,71 @@ cannot be evaluated independently from data delivery and launch/control cost.
 当前 CPU SoC smoke 使用的 oversized boot ROM/SRAM 是功能仿真 staging 机制。
 除非单独声明为 `soc_reference`，这些仿真容量不得计入 NPU 主 PPA 结论。
 
-## 3. Evidence Levels / 结果可信度层级
+## 3. Report Information Architecture / 报告信息架构
+
+PPA means performance, power, and area. The generated HTML report is a report
+family with one overview and three detailed pages:
+
+```text
+ppa_overview.html
+  -> perf.html
+  -> power.html
+  -> area.html
+```
+
+The overview answers:
+
+- what workload profile, graphs, layers, operators, and shapes were tested;
+- whether the run is comparable with the selected previous iteration;
+- overall performance, power/energy, and area changes;
+- which evidence level and units apply to every dimension.
+
+The detailed pages answer:
+
+| Page | Required content |
+| --- | --- |
+| `perf.html` | graph/layer/operator structure, shapes, theoretical versus measured cycles, per-job module timeline, bottleneck explanation |
+| `power.html` | workload event/energy breakdown now; activity-based power when available |
+| `area.html` | module/resource area breakdown now; mapped/physical area when available |
+
+All generated PPA artifacts belong under one directory:
+
+```text
+build/ppa/
+  ppa_overview.html
+  perf.html
+  power.html
+  area.html
+  cases/<workload_profile>.html
+  data/
+```
+
+There is no separate generated `build/perf/` report directory. Performance is
+one dimension of PPA, and its logs/JSON are internal data under
+`build/ppa/data/`.
+
+The overview must name the selected `WORKLOAD_PROFILE` as the tested case and
+link to its case page. For example, a run with
+`WORKLOAD_PROFILE=transformer` creates a Transformer PPA entry. Its case page
+contains:
+
+- the computation graph executed by that case;
+- each layer/operator shape and dataflow edges;
+- theoretical and measured performance, power/energy, and area attribution;
+- the aligned per-operator pipeline timeline.
+
+The word `model` must not appear in user-facing report names or page labels.
+When physical power or area is unavailable, the page remains the power or area
+page and explicitly labels the current evidence as a normalized model.
+
+## 4. Evidence Levels / 结果可信度层级
 
 Every result must state its evidence level. Metrics from different levels may
 appear in one report, but must not be confused.
 
 | Level | Method | Current role | Claim boundary |
 | --- | --- | --- | --- |
-| `L0_proxy` | Architectural perf CSR snapshot values in `PERF_JOB` plus structural resources and parameterized event-energy coefficients | immediate architecture comparison | cycles/traffic measured; area/energy normalized proxies only |
+| `L0_model` | Architectural perf CSR snapshot values in `PERF_JOB` plus structural resources and parameterized event-energy coefficients | immediate architecture comparison | cycles/traffic measured; area/energy normalized models only |
 | `L1_mapped` | Yosys/ABC mapping with a public Liberty library; optionally OpenSTA | lightweight ASIC area/timing trend | pre-layout mapped estimate |
 | `L2_power` | mapped netlist/library plus workload activity | workload-sensitive on-chip energy trend | pre-layout activity-driven estimate |
 | `L3_physical` | OpenROAD/OpenLane placement, CTS, routing, parasitic-aware reports | selected-variant validation | public-process physical estimate, not signoff |
@@ -59,18 +116,18 @@ appear in one report, but must not be confused.
 Immediate implementation target:
 
 ```text
-L0_proxy:
+L0_model:
   measured performance and movement counters
-  structural area proxy
-  event-based energy proxy
+  structural area model
+  event-based energy model
 ```
 
 The existing `flows/asic/openroad/` directory is retained as the future
 `L3_physical` integration point. It is not required to begin Level 0
 comparison.
 
-当前第一步输出必须明确注明：cycle 与 movement 来自 RTL 实测；area 只是结构
-proxy；energy 只是基于事件和系数的模型，不是综合后功耗。
+当前第一步输出必须明确注明：cycle 与 movement 来自 RTL 实测；area 是结构
+模型；energy 是基于事件和系数的模型，不是综合后功耗。
 
 ## 4. Technology Target And Interpretation / 工艺目标与解释
 
@@ -95,8 +152,8 @@ arch/configs/ppa/
 ```
 
 For `L1` through `L3`, every report must carry the target, tool revision,
-constraints, RTL/config identity, and implementation stage. For `L0_proxy`,
-the report carries its proxy coefficient configuration and states that no
+constraints, RTL/config identity, and implementation stage. For `L0_model`,
+the report carries its model coefficient configuration and states that no
 technology result is used.
 
 ## 5. Metrics / 指标
@@ -114,7 +171,16 @@ stall/wait cycles when available
 bytes or words moved
 MAC operations
 utilization where meaningful
+theoretical compute cycles versus measured compute cycles
+compute overhead and compute efficiency
+non-compute overhead and end-to-end efficiency
 ```
+
+Theoretical cycle values are analysis models, not measured counters. Reports
+must include the formula/basis and keep them separate from measured cycle
+provenance. A low compute efficiency points to engine/control inefficiency; a
+high compute efficiency with low end-to-end efficiency points to movement,
+descriptor, or runtime overhead.
 
 Transformer extensions:
 
@@ -126,9 +192,9 @@ weights bytes/token
 KV-cache read/write bytes/token
 ```
 
-### Structural Area Proxy, Area And Timing
+### Structural Area Model, Area And Timing
 
-At `L0_proxy`, area reports structure rather than physical units:
+At `L0_model`, area reports structure rather than physical units:
 
 ```text
 MAC lane count
@@ -166,9 +232,9 @@ integrated SRAM macro
 Comparing variants with different memory-accounting modes is invalid unless the
 difference is explicitly highlighted.
 
-### Event Energy Proxy, Power And Energy
+### Event Energy Model, Power And Energy
 
-At `L0_proxy`, energy is computed from measured or inferred events and declared
+At `L0_model`, energy is computed from measured or inferred events and declared
 replaceable coefficients:
 
 ```text
@@ -280,8 +346,8 @@ evidence level and measurement/model provenance
 workloads common to both variants
 latency/cycle delta
 movement/operation invariant or delta
-area proxy or measured-area delta when available
-energy proxy or measured-energy delta when available
+area model or measured-area delta when available
+energy model or measured-energy delta when available
 improvements
 costs/regressions
 metrics unavailable at the current evidence level
@@ -289,37 +355,37 @@ metrics unavailable at the current evidence level
 
 A report is not allowed to present only favorable metrics. A design can be
 preferred only after its benefits and costs are visible together. At
-`L0_proxy`, this means that a performance improvement may be highlighted, but
+`L0_model`, this means that a performance improvement may be highlighted, but
 any added buffer bits, lane resources, modeled energy increase, or unknown
 external-memory cost must remain visible.
 
 报告不得只呈现优势指标。只有收益与代价同时可见时，才能判断新设计是否更好。在
-`L0_proxy` 阶段，即使性能提升，也必须显示新增 buffer bit、lane 资源、模型能耗
+`L0_model` 阶段，即使性能提升，也必须显示新增 buffer bit、lane 资源、模型能耗
 变化以及尚未覆盖的外部 memory 代价。
 
 Level 0 generated output is written under:
 
 ```text
-build/ppa/proxy/ppa_proxy.json
-build/ppa/proxy/ppa_proxy_report.html
+build/ppa/ppa.json
+build/ppa/ppa_overview.html
 ```
 
-The executable `L0_proxy` report contract is documented in
-`ppa/schema/ppa_proxy_schema_v0.md` and validated by
+The executable `L0_model` report contract is documented in
+`ppa/schema/ppa_schema_v0.md` and validated by
 `sw/tools/ppa/schema_check.py`. `normalized_area_units` and
 `normalized_energy_units` are not physical area or joules. A report is
-directly comparable to a baseline only when schema, evidence level, proxy
+directly comparable to a baseline only when schema, evidence level, model
 coefficient model/units, common workload names, and declared
 `workload_manifest_id` are compatible.
 
 `make ppa-l0-report` remains the complete validation gate because it
-regenerates RTL-measured performance. When an existing `build/perf/perf.json`
+regenerates RTL-measured performance. When an existing `build/ppa/data/perf.json`
 is already valid and only schema/report presentation is changing,
 `make ppa-l0-from-perf` performs the derived Level 0 generation and
 validation without repeating the long SoC run.
 
-The older `ppa-proxy-*` targets remain Makefile aliases for compatibility. New
-documentation should prefer `ppa-l0-*` because `proxy` can be mistaken for a
+The older `ppa-model-*` targets remain Makefile aliases for compatibility. New
+documentation should prefer `ppa-l0-*` because `model` can be mistaken for a
 software or network agent rather than a Level 0 estimate.
 
 Named baseline summaries are checked in under:
@@ -330,10 +396,10 @@ ppa/baselines/
 
 ## 9. Development Order / 开发顺序
 
-1. `L0_proxy`: integrate current RTL counters, structural area config, and
+1. `L0_model`: integrate current RTL counters, structural area config, and
    event-energy config into one comparable report.
 2. Use existing matmul/data-mover/ping-pong measurements and Transformer
-   workload manifests to check whether the proxy exposes useful tradeoffs.
+   workload manifests to check whether the model exposes useful tradeoffs.
 3. `L1_mapped`: add lightweight Yosys/ABC mapping and optional OpenSTA timing
    once representative variants need ASIC area/timing ranking.
 4. `L2_power`: add job-scoped activity-based on-chip power extraction.

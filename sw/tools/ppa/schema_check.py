@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_NAME = "npu_ppa_proxy_report_v0"
-EVIDENCE_LEVEL = "L0_proxy"
+SCHEMA_NAME = "npu_ppa_report_v0"
+EVIDENCE_LEVEL = "L0_model"
 
 
-def validate_proxy_report(report: dict[str, Any]) -> None:
+def validate_ppa_report(report: dict[str, Any]) -> None:
     errors: list[str] = []
 
     def require_object(parent: dict[str, Any], name: str, prefix: str = "") -> dict[str, Any]:
@@ -26,7 +26,7 @@ def validate_proxy_report(report: dict[str, Any]) -> None:
         errors.append(f"evidence_level must be {EVIDENCE_LEVEL!r}")
     require_object(report, "design")
     require_object(report, "metric_provenance")
-    config = require_object(report, "proxy_config")
+    config = require_object(report, "model_config")
     for key in (
         "area_coefficient_version",
         "area_units",
@@ -36,19 +36,19 @@ def validate_proxy_report(report: dict[str, Any]) -> None:
         "energy_coefficients",
     ):
         if key not in config:
-            errors.append(f"proxy_config.{key} is required")
-    area = require_object(report, "area_proxy")
+            errors.append(f"model_config.{key} is required")
+    area = require_object(report, "area_model")
     if area.get("units") != "normalized_area_units":
-        errors.append("area_proxy.units must be 'normalized_area_units'")
+        errors.append("area_model.units must be 'normalized_area_units'")
     if "normalized_area_units" not in area:
-        errors.append("area_proxy.normalized_area_units is required")
+        errors.append("area_model.normalized_area_units is required")
     else:
-        _require_nonnegative(errors, "area_proxy.normalized_area_units", area["normalized_area_units"])
+        _require_nonnegative(errors, "area_model.normalized_area_units", area["normalized_area_units"])
     area_contributions = area.get("contributions")
     if isinstance(area_contributions, dict) and "normalized_area_units" in area:
         _check_sum(
             errors,
-            "area_proxy.normalized_area_units",
+            "area_model.normalized_area_units",
             area["normalized_area_units"],
             area_contributions,
         )
@@ -56,9 +56,9 @@ def validate_proxy_report(report: dict[str, Any]) -> None:
     if isinstance(resources, dict):
         for key in ("int8_mac_lanes", "data_mover_lanes", "wrapper_control_units"):
             if key in resources:
-                _require_nonnegative(errors, f"area_proxy.resources.{key}", resources[key])
+                _require_nonnegative(errors, f"area_model.resources.{key}", resources[key])
         for key, value in resources.get("storage_bits", {}).items():
-            _require_nonnegative(errors, f"area_proxy.resources.storage_bits.{key}", value)
+            _require_nonnegative(errors, f"area_model.resources.storage_bits.{key}", value)
     workloads = report.get("workloads")
     if not isinstance(workloads, list):
         errors.append("workloads must be an array")
@@ -77,28 +77,28 @@ def validate_proxy_report(report: dict[str, Any]) -> None:
                 errors.append(f"workloads[{index}].performance.{key} is required")
             elif key != "provenance":
                 _require_nonnegative(errors, f"workloads[{index}].performance.{key}", performance[key])
-        energy = require_object(workload, "energy_proxy", f"workloads[{index}].")
+        energy = require_object(workload, "energy_model", f"workloads[{index}].")
         if energy.get("units") != "normalized_energy_units":
             errors.append(
-                f"workloads[{index}].energy_proxy.units must be 'normalized_energy_units'"
+                f"workloads[{index}].energy_model.units must be 'normalized_energy_units'"
             )
         for key in ("events", "coefficients", "normalized_energy_units"):
             if key not in energy:
-                errors.append(f"workloads[{index}].energy_proxy.{key} is required")
+                errors.append(f"workloads[{index}].energy_model.{key} is required")
         events = energy.get("events", {})
         if isinstance(events, dict):
             for key, value in events.items():
-                _require_nonnegative(errors, f"workloads[{index}].energy_proxy.events.{key}", value)
+                _require_nonnegative(errors, f"workloads[{index}].energy_model.events.{key}", value)
         if "normalized_energy_units" in energy:
             _require_nonnegative(
                 errors,
-                f"workloads[{index}].energy_proxy.normalized_energy_units",
+                f"workloads[{index}].energy_model.normalized_energy_units",
                 energy["normalized_energy_units"],
             )
             if isinstance(energy.get("contributions"), dict):
                 _check_sum(
                     errors,
-                    f"workloads[{index}].energy_proxy.normalized_energy_units",
+                    f"workloads[{index}].energy_model.normalized_energy_units",
                     energy["normalized_energy_units"],
                     energy["contributions"],
                 )
@@ -114,7 +114,7 @@ def validate_proxy_report(report: dict[str, Any]) -> None:
         if isinstance(area_delta, dict):
             _check_delta(errors, "comparison.area_delta", area_delta)
         for index, workload_delta in enumerate(comparison.get("workload_deltas", [])):
-            for metric in ("cycles", "energy_proxy", "data_mover_words", "int8_mac_accumulate"):
+            for metric in ("cycles", "energy_model", "data_mover_words", "int8_mac_accumulate"):
                 if metric in workload_delta:
                     _check_delta(
                         errors,
@@ -123,7 +123,7 @@ def validate_proxy_report(report: dict[str, Any]) -> None:
                     )
 
     if errors:
-        raise ValueError("invalid PPA proxy report:\n- " + "\n- ".join(errors))
+        raise ValueError("invalid PPA report:\n- " + "\n- ".join(errors))
 
 
 def _require_nonnegative(errors: list[str], path: str, value: Any) -> None:
@@ -153,11 +153,11 @@ def _check_delta(errors: list[str], path: str, delta: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate an NPU Level 0 PPA proxy report.")
+    parser = argparse.ArgumentParser(description="Validate an NPU Level 0 PPA report.")
     parser.add_argument("--json", required=True, type=Path)
     args = parser.parse_args()
     report = json.loads(args.json.read_text(encoding="utf-8"))
-    validate_proxy_report(report)
+    validate_ppa_report(report)
     print(f"Validated {args.json} ({SCHEMA_NAME}, {EVIDENCE_LEVEL})")
 
 

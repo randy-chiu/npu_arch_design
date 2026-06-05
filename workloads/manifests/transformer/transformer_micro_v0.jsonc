@@ -83,6 +83,26 @@
       "metrics": ["cycles", "mac_ops", "matrix_utilization", "attention_qk_cycles"]
     },
     {
+      "name": "attention_scale_mask_s8_d8",
+      "scenario": "transformer_prefill",
+      "op": "attention_scale_mask_v1",
+      "logical_op": "attention_score_scale_mask",
+      "attention_group": "attention_prefill_s8_d8",
+      "attention_stage": "scale_mask",
+      "shape": {"m": 8, "n": 8, "head_dim": 8},
+      "activity_scope": "kernel_only",
+      "external_memory": {
+        "activation_read_bytes": 256,
+        "activation_write_bytes": 256,
+        "weight_read_bytes": 0,
+        "kv_cache_read_bytes": 0,
+        "kv_cache_write_bytes": 0
+      },
+      "numerical_contract": "attention_numerical_v1_score_scale_d8_mul11585_shift15_unmasked",
+      "status": "planned_current_scale_mask_extension",
+      "metrics": ["cycles", "words_moved", "vector_cycles", "attention_scale_mask_cycles"]
+    },
+    {
       "name": "softmax_row",
       "scenario": "transformer_prefill",
       "op": "softmax_row",

@@ -126,8 +126,9 @@ Current RTL does not saturate on accumulator overflow.
 ## PPA counters
 
 Required v1 reporting includes `reduction_active_cycles` and
-`stall_cycles_by_engine`. Current standalone RTL exposes only `active`; real
-counter integration is deferred.
+`stall_cycles_by_engine`. The compatibility shim exposes local active, input
+stall, output stall, idle, accepted-op, and accepted-element-op counters. CSR
+integration is deferred.
 
 Counter exposure order:
 
@@ -142,6 +143,11 @@ Implemented as `hw/npu_core/rtl/reduction/reduction_engine.sv`. The design-side
 integration point is `hw/npu_core/rtl/transformer_primitive_engines.sv`, which
 imports generated config and passes reduction parameters/op encodings
 explicitly.
+
+`hw/npu_core/rtl/primitive_handshake_shims.sv` also provides the standalone
+`reduction_engine_handshake` compatibility boundary. It holds commands and
+responses according to `primitive_valid_ready_v1.md`; the current SoC path
+still uses start/done.
 
 ## Known gaps
 

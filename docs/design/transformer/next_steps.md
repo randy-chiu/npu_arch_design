@@ -34,18 +34,19 @@ for the fixed `S=8,D=8` bring-up case.
 
 Current boundary:
 
-- QK, softmax, and PV are launched and measured as separate descriptor jobs,
+- QK, unmasked scale/mask, softmax, and PV are launched and measured as
+  separate descriptor jobs,
   but the firmware launch order now comes from a compiler-generated runtime-job
   table rather than direct hand-written stage calls.
-- The scale/mask boundary is explicit in the design, but the current executable
-  smoke path still materializes or pre-stages the softmax input.
+- QK output SRAM now feeds an executable unmasked scale/mask descriptor, but
+  the current softmax input is still independently pre-staged.
 - The parent `attention_prefill_s8_d8` workload is now
-  `software_group_measured_stages` for QK/softmax/PV stage execution, not a
+  `software_group_measured_stages` for QK/scale-mask/softmax/PV stage execution, not a
   command-list or single-descriptor measured full-attention operation.
 
-Therefore the next software task is to remove the remaining fixture-owned
-execution semantics: scale/mask materialization, stage-specific firmware
-descriptor filling, and fixed `S=8,D=8` assumptions.
+Therefore the next software task is to connect scaled-score and probability
+buffers, then remove stage-specific firmware descriptor filling and fixed
+`S=8,D=8` assumptions.
 
 ## Current PPA Status And Gaps
 
@@ -60,14 +61,14 @@ Measured stage PPA exists for:
 
 | Stage | Current PPA evidence | Main gap |
 | --- | --- | --- |
-| QK | measured cycles, data mover words, useful MACs, matrix utilization, L0 energy proxy | no produced-buffer handoff into executable scale/mask yet |
+| QK | measured cycles, data mover words, useful MACs, matrix utilization, L0 energy proxy; output feeds scale input | larger `D_k`/tile support remains |
+| Scale/mask | measured cycles and movement for unmasked `8x8 int32` vector requant v2; output feeds tile softmax | no causal/padding/tail mask |
 | Softmax | measured cycles through vector/reduction/SFU sequence, L0 energy proxy | vector/reduction/SFU events are not yet split into reliable per-submodule active-cycle/energy counters |
 | PV | measured cycles through shared mixed matrix mode, useful MACs, matrix utilization, L0 energy proxy | mixed `u16 x s8` area/energy still uses generic MAC proxy coefficients |
-| Full attention parent | software-sequenced measured QK/softmax/PV stages through generated runtime table | scale/mask is materialized, no command-list/full-descriptor snapshot, runtime overhead not measured |
+| Full attention parent | buffer-chained measured QK/scale-mask/eight-row-softmax/PV stages through generated runtime table | no command-list/full-descriptor snapshot, runtime overhead not measured |
 
 Missing before claiming complete attention PPA:
 
-- executable scale/mask stage or explicit measured CPU/materialization cost;
 - group total cycles and energy provenance for `attention_prefill_s8_d8` that
   includes or explicitly excludes runtime overhead;
 - submodule counters or derived events for matrix, vector, reduction, SFU, data
@@ -94,7 +95,7 @@ Missing before claiming complete attention PPA:
 | SFU | `docs/design/transformer/sfu_v1.md` | standalone `sfu/sfu_lut.sv` implemented | EXP/RECIP/RSQRT and sequence tests pass | refine LUT/tolerance before model accuracy claims |
 | memory / scratchpad / data mover | common docs in `docs/design/` | v0 wrapper data mover exists | perf/PPA pass | add v1 internal scratchpad contract before widening |
 | KV cache subsystem | `arch/specs/transformer/v1/transformer_npu_v1.md` | spec/model-only counters only | perf/PPA model-only traffic visible | no RTL until decode traffic evidence justifies it |
-| Transformer attention workloads | `docs/design/transformer/attention_workload_ppa.md` | QK, attention softmax, and mixed PV stage jobs execute from a generated runtime-job table; scale/mask is materialized | `make cpu-soc-transformer` and `make ppa-l0-report WORKLOAD_PROFILE=transformer` pass | make scale/mask executable and remove fixed-shape/stage-specific runtime assumptions |
+| Transformer attention workloads | `docs/design/transformer/attention_workload_ppa.md` | QK, unmasked scale/mask, attention softmax, and mixed PV stage jobs execute from a generated runtime-job table | `make cpu-soc-transformer` and `make ppa-l0-report WORKLOAD_PROFILE=transformer` pass | connect scaled-score/probability buffers and remove fixed-shape/stage-specific runtime assumptions |
 
 ## Ordered Work
 
@@ -107,7 +108,7 @@ explicit model-only/proxy provenance note.
 | Priority | Work package | Output | Acceptance gate |
 | --- | --- | --- | --- |
 | P0 | Sync current NPU core docs with RTL | `docs/design/npu_core.md` and `docs/design/npu_core_module_status.md` reflect `op=1` attention softmax, `op=2` mixed PV, primitive engines, and current storage widths | reviewer can trace each core module to RTL, counters, tests, and blockers |
-| P1 | Review primitive valid/ready | vector/reduction/SFU docs reference the final accepted handshake, latency, and counter increment rules | directed handshake tests can be written without guessing semantics |
+| P1 | Review primitive valid/ready | accepted contract and standalone compatibility shims cover vector/reduction/SFU handshakes and local event counters | directed handshake/counter tests pass without guessing semantics |
 | P2 | Generate grouped attention runtime Model A | compiler/runtime emits QK -> scale/mask -> softmax -> PV stage jobs and parent group metadata | full attention parent is no longer fixture-only model metadata; report states runtime-overhead policy |
 | P3 | Implement executable scale/mask bridge and requant v2 | scale/mask is either measured or explicitly model-only; normalization multiply has reviewed width/round/shift/clamp behavior | softmax/PV numerical contract string matches golden, firmware expected data, and report metadata |
 | P4 | Upgrade SFU target path | deterministic 257-entry EXP LUT and reviewed RECIP behavior replace bring-up labels where claimed | measured attention softmax can be labeled target numerical evidence rather than bring-up evidence |
@@ -122,20 +123,20 @@ Next coding checklist:
 
 | Step | Files to touch | Tests to add/run |
 | --- | --- | --- |
-| P1.1 primitive handshake shims | `hw/npu_core/rtl/vector/vector_engine.sv`, `hw/npu_core/rtl/reduction/reduction_engine.sv`, `hw/npu_core/rtl/sfu/sfu_lut.sv` or wrapper shims | directed primitive tests for command hold, response hold, reset, input stall, output stall |
-| P1.2 local primitive event counters | primitive engines or scheduler wrapper | primitive counter tests; no CSR exposure yet |
+| P1.1 primitive handshake shims | implemented in `hw/npu_core/rtl/primitive_handshake_shims.sv`; current SoC path remains on start/done | `make primitive-engines-sim` covers command acceptance/input stall, response hold/output stall, and reset |
+| P1.2 local primitive event counters | implemented in `hw/npu_core/rtl/primitive_handshake_shims.sv`; no CSR exposure | `make primitive-engines-sim` checks cycle, accepted-op, lane/element, and SFU op counters |
 | P2.1 attention planner skeleton | `sw/tools/npu_compiler/attention.py`, `sw/tools/npu_compiler/attention_plan_schema.py` | compiler unit tests for QK -> scale_mask -> softmax -> PV stage order and buffer lifetimes |
 | P2.2 fixture generator consumes plan | `sw/tools/transformer/generate_transformer_micro_fixtures.py` and firmware data emitter | existing QK/softmax/PV outputs remain stable unless a numerical contract changes |
-| P2.3 table-driven runtime metadata | firmware generated data and runtime helpers | `make cpu-soc-transformer`; parent group is `software_group_measured_stages` for measured QK/softmax/PV while scale/mask remains materialized |
+| P2.3 table-driven runtime metadata | firmware generated data and runtime helpers | `make cpu-soc-transformer`; parent group is `software_group_measured_stages` for measured QK/scale-mask/softmax/PV |
 
 Current P2 status:
 
 - P2.1 implemented: manifest-driven attention plan for current `S=8,D=8`.
 - P2.2 implemented: fixture generation attaches plan/stage/runtime metadata.
 - P2.3 implemented for the current group: firmware data emits a runtime-job
-  table and CPU firmware iterates it to launch QK, softmax, and PV.
-- Remaining P2 gap: descriptor filling is still stage-specific in firmware, and
-  scale/mask is not yet an executable runtime job.
+  table and CPU firmware iterates it to launch QK, scale/mask, softmax, and PV.
+- Remaining runtime gap: descriptor filling is still stage-specific in firmware
+  and only QK output to scale input is producer-to-consumer chained.
 
 ### Complete Attention Subnetwork Gap
 
@@ -162,22 +163,23 @@ Current state versus complete subnetwork:
 | --- | --- | --- |
 | Input graph/operator source | Transformer workload manifest drives the fixed `attention_prefill_s8_d8` plan | add operator metadata and eventually model/graph import beyond manifest-only tests |
 | Compiler lowering | manifest-driven plan emits QK, scale/mask, softmax, PV stages for `S=8,D=8` | generalize shape/tile lowering and reject/handle larger rows explicitly |
-| Runtime launch | CPU firmware iterates generated runtime jobs for QK, softmax, PV | make descriptor filling buffer-driven instead of stage-specific C switch |
+| Runtime launch | CPU firmware iterates generated runtime jobs for QK, scale/mask, softmax, PV | make descriptor filling buffer-driven instead of stage-specific C switch |
 | QK stage | measured through `matmul_k_stream` | support larger `D_k`/tiles and expose matrix mode counters |
-| Scale/mask stage | materialized/pre-staged fixture bridge | implement executable vector/requant/mask descriptor or command-list primitive |
-| Softmax stage | measured one 8-element row through current vector/reduction/SFU sequence | run all rows from produced score buffers; upgrade SFU/requant/mask numerical contract |
-| PV stage | measured through mixed `u16 x s8` matrix mode | consume produced probability buffer instead of fixture-staged probability data |
-| Intermediate buffers | plan declares buffers, but fixture data still stages stage inputs independently | allocate SRAM buffers and wire producer output to consumer input in runtime |
-| Parent group PPA | `software_group_measured_stages` for QK/softmax/PV | add scale/mask cost and runtime-overhead policy; eventually one command-list snapshot |
+| Scale/mask stage | executable measured unmasked `8x8 int32` descriptor; QK output feeds scale and scale output feeds softmax | add causal/padding/tail mask semantics |
+| Softmax stage | measured eight-row tile through current vector/reduction/SFU sequence | upgrade SFU/requant/mask numerical contract and generalize tiling |
+| PV stage | measured through mixed `u16 x s8` matrix mode using produced probability tile | generalize tiling and review mixed-path PPA coefficients |
+| Intermediate buffers | fixed `S=8,D=8` SRAM buffers are producer-to-consumer chained | make descriptor filling generic and allocate buffers for generalized shapes |
+| Parent group PPA | `software_group_measured_stages` for QK/scale-mask/softmax/PV | add runtime-overhead policy; eventually one command-list snapshot |
 | Numerical contract | QK exact, softmax bring-up, PV Q0.15 mixed path | unify scale/mask/SFU/requant/PV under one target attention contract |
 
 Priority after current P2:
 
-1. P3.1: make scale/mask executable for unmasked `S=8,D=8`.
-2. P3.2: connect runtime buffers so QK output feeds scale/mask, scale/mask feeds
-   softmax, and softmax feeds PV for the tested subnetwork.
-3. P3.3: run all 8 softmax rows or add a row-loop descriptor for the `8x8`
-   score/probability tile.
+1. P3.1 complete: scale/mask is executable for unmasked `S=8,D=8`, and QK
+   output SRAM feeds the scale descriptor.
+2. P3.2 complete for fixed `S=8,D=8`: scale/mask feeds an `8x8`
+   tile-softmax descriptor, and its produced probability tile feeds PV.
+3. P3.3 complete for fixed `S=8,D=8`: the attention-softmax descriptor loops
+   over all eight rows; larger shapes remain a compiler tiling problem.
 4. P4.1: replace bring-up SFU EXP with the target deterministic 257-entry LUT
    and keep RECIP/golden aligned.
 5. P5.1: add per-engine event counters only after valid/ready semantics and
@@ -193,10 +195,10 @@ Status:
 - Implemented in documentation: attention workload/PPA and compiler/runtime
   documents define parent/stage grouping, model-only versus measured evidence,
   and software-owned lowering.
-- Implemented in current SoC path: QK, softmax, and PV stages are separately
-  executable and visible in PPA.
-- Still deferred: compiler-generated grouped attention runtime, executable
-  scale/mask bridge, command-list ABI, and measured full-attention parent row.
+- Implemented in current SoC path: QK, unmasked scale/mask, softmax, and PV
+  stages are separately executable and visible in PPA.
+- Still deferred: complete intermediate-buffer chaining, mask semantics,
+  command-list ABI, and measured full-attention parent row.
 
 Acceptance criteria:
 

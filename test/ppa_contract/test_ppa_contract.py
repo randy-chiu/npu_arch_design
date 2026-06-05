@@ -3,18 +3,19 @@ import re
 import shutil
 import subprocess
 import unittest
+from tempfile import TemporaryDirectory
 from pathlib import Path
 
-from ppa.proxy_report import build_proxy_report, read_jsonc
-from ppa.schema_check import validate_proxy_report
+from ppa.model_report import build_ppa_report, read_jsonc
+from ppa.schema_check import validate_ppa_report
 
 
 PPA_TARGET_PATH = Path("arch/configs/ppa/sky130hd_v0.jsonc")
 PPA_SCHEMA_PATH = Path("ppa/schema/ppa_result.schema.json")
-PPA_PROXY_SCHEMA_PATH = Path("ppa/schema/ppa_proxy_report.schema.json")
-AREA_PROXY_PATH = Path("arch/configs/ppa/area_proxy_v0.jsonc")
-ENERGY_PROXY_PATH = Path("arch/configs/ppa/energy_proxy_v0.jsonc")
-SERIAL_BASELINE_PATH = Path("ppa/baselines/l0/npu_v0_a2_serial_k_stream_proxy.json")
+PPA_PROXY_SCHEMA_PATH = Path("ppa/schema/ppa_report.schema.json")
+AREA_PROXY_PATH = Path("arch/configs/ppa/area_model_v0.jsonc")
+ENERGY_PROXY_PATH = Path("arch/configs/ppa/energy_model_v0.jsonc")
+SERIAL_BASELINE_PATH = Path("ppa/baselines/l0/npu_v0_a2_serial_k_stream_l0.json")
 TRANSFORMER_MANIFEST_PATH = Path("workloads/manifests/transformer/transformer_micro_v0.jsonc")
 SUBSYSTEM_RTL_PATH = Path("hw/npu_subsystem/rtl/npu_subsystem_top.sv")
 
@@ -37,15 +38,15 @@ class PPAContractTests(unittest.TestCase):
 
     def test_result_schema_requires_core_measurement_identity(self):
         schema = json.loads(PPA_SCHEMA_PATH.read_text(encoding="utf-8"))
-        proxy_schema = json.loads(PPA_PROXY_SCHEMA_PATH.read_text(encoding="utf-8"))
+        model_schema = json.loads(PPA_PROXY_SCHEMA_PATH.read_text(encoding="utf-8"))
 
         self.assertEqual(schema["title"], "NPU PPA Result")
         self.assertIn("design", schema["required"])
         self.assertIn("performance", schema["required"])
         self.assertIn("npu_subsystem", schema["properties"]["design"]["properties"]["top"]["enum"])
-        self.assertEqual(proxy_schema["properties"]["evidence_level"]["const"], "L0_proxy")
+        self.assertEqual(model_schema["properties"]["evidence_level"]["const"], "L0_model")
 
-    def test_proxy_report_labels_modeled_metrics_and_uses_measured_events(self):
+    def test_model_report_labels_modeled_metrics_and_uses_measured_events(self):
         perf = {
             "source_log": "synthetic.log",
             "source": {"performance": "measured_architectural_perf_csr_snapshot"},
@@ -77,23 +78,23 @@ class PPAContractTests(unittest.TestCase):
             ],
         }
 
-        report = build_proxy_report(perf, read_jsonc(AREA_PROXY_PATH), read_jsonc(ENERGY_PROXY_PATH))
+        report = build_ppa_report(perf, read_jsonc(AREA_PROXY_PATH), read_jsonc(ENERGY_PROXY_PATH))
         workload = report["workloads"][0]
 
-        self.assertEqual(report["evidence_level"], "L0_proxy")
-        self.assertEqual(report["area_proxy"]["storage_bits_total"], 7968)
-        self.assertEqual(report["area_proxy"]["normalized_area_units"], 6998.4)
+        self.assertEqual(report["evidence_level"], "L0_model")
+        self.assertEqual(report["area_model"]["storage_bits_total"], 7968)
+        self.assertEqual(report["area_model"]["normalized_area_units"], 6998.4)
         self.assertEqual(workload["performance"]["provenance"], "measured_architectural_perf_csr_snapshot")
-        self.assertEqual(workload["energy_proxy"]["events"]["int8_mac_accumulate"], 1152 * 512)
-        self.assertEqual(workload["energy_proxy"]["events"]["data_mover_read_word"], 147472)
+        self.assertEqual(workload["energy_model"]["events"]["int8_mac_accumulate"], 1152 * 512)
+        self.assertEqual(workload["energy_model"]["events"]["data_mover_read_word"], 147472)
         self.assertEqual(
             report["highlights"][0]["modeled_energy_saved_from_shorter_active_duration_only"],
             19567 * 0.25,
         )
 
-    def test_proxy_report_compares_ping_pong_candidate_against_serial_baseline(self):
+    def test_model_report_compares_ping_pong_candidate_against_serial_baseline(self):
         baseline_report = json.loads(SERIAL_BASELINE_PATH.read_text(encoding="utf-8"))
-        validate_proxy_report(baseline_report)
+        validate_ppa_report(baseline_report)
         candidate_perf = {
             "workload_manifest_id": "soc_cpu_smoke_v0",
             "workloads": [
@@ -114,7 +115,7 @@ class PPAContractTests(unittest.TestCase):
             "highlights": [],
         }
 
-        report = build_proxy_report(
+        report = build_ppa_report(
             candidate_perf,
             read_jsonc(AREA_PROXY_PATH),
             read_jsonc(ENERGY_PROXY_PATH),
@@ -131,23 +132,23 @@ class PPAContractTests(unittest.TestCase):
         self.assertEqual(delta["cycles"]["delta"], -313072)
         self.assertEqual(delta["data_mover_words"]["classification"], "invariant")
         self.assertEqual(delta["int8_mac_accumulate"]["classification"], "invariant")
-        self.assertEqual(delta["energy_proxy"]["classification"], "improvement")
+        self.assertEqual(delta["energy_model"]["classification"], "improvement")
         self.assertTrue(comparison["improvements"])
-        self.assertTrue(any("area proxy increases" in item for item in comparison["costs"]))
+        self.assertTrue(any("area model increases" in item for item in comparison["costs"]))
 
-    def test_proxy_schema_validator_requires_critical_fields(self):
-        report = build_proxy_report(
+    def test_model_schema_validator_requires_critical_fields(self):
+        report = build_ppa_report(
             {"workloads": [], "highlights": []},
             read_jsonc(AREA_PROXY_PATH),
             read_jsonc(ENERGY_PROXY_PATH),
         )
-        validate_proxy_report(report)
-        del report["area_proxy"]["normalized_area_units"]
+        validate_ppa_report(report)
+        del report["area_model"]["normalized_area_units"]
         with self.assertRaisesRegex(ValueError, "normalized_area_units is required"):
-            validate_proxy_report(report)
+            validate_ppa_report(report)
 
-    def test_proxy_schema_validator_rejects_inconsistent_or_negative_metrics(self):
-        report = build_proxy_report(
+    def test_model_schema_validator_rejects_inconsistent_or_negative_metrics(self):
+        report = build_ppa_report(
             {
                 "workloads": [
                     {
@@ -162,20 +163,20 @@ class PPAContractTests(unittest.TestCase):
             read_jsonc(AREA_PROXY_PATH),
             read_jsonc(ENERGY_PROXY_PATH),
         )
-        report["area_proxy"]["normalized_area_units"] += 1
+        report["area_model"]["normalized_area_units"] += 1
         report["workloads"][0]["performance"]["cycles"] = -1
         with self.assertRaisesRegex(ValueError, "contribution sum"):
-            validate_proxy_report(report)
+            validate_ppa_report(report)
         with self.assertRaisesRegex(ValueError, "non-negative number"):
-            validate_proxy_report(report)
+            validate_ppa_report(report)
 
-    def test_proxy_comparison_marks_mismatched_manifest_incomparable(self):
-        baseline = build_proxy_report(
+    def test_model_comparison_marks_mismatched_manifest_incomparable(self):
+        baseline = build_ppa_report(
             {"workload_manifest_id": "baseline_manifest", "workloads": [], "highlights": []},
             read_jsonc(AREA_PROXY_PATH),
             read_jsonc(ENERGY_PROXY_PATH),
         )
-        candidate = build_proxy_report(
+        candidate = build_ppa_report(
             {"workload_manifest_id": "candidate_manifest", "workloads": [], "highlights": []},
             read_jsonc(AREA_PROXY_PATH),
             read_jsonc(ENERGY_PROXY_PATH),
@@ -206,7 +207,7 @@ class PPAContractTests(unittest.TestCase):
             self.assertIn("activity_scope", workload)
             self.assertIn("external_memory", workload)
 
-    def test_proxy_report_keeps_transformer_external_memory_modeled_separately(self):
+    def test_model_report_keeps_transformer_external_memory_modeled_separately(self):
         perf = {
             "source": {"performance": "measured_architectural_perf_csr_snapshot"},
             "workloads": [
@@ -260,23 +261,23 @@ class PPAContractTests(unittest.TestCase):
             "highlights": [],
         }
 
-        report = build_proxy_report(perf, read_jsonc(AREA_PROXY_PATH), read_jsonc(ENERGY_PROXY_PATH))
-        validate_proxy_report(report)
+        report = build_ppa_report(perf, read_jsonc(AREA_PROXY_PATH), read_jsonc(ENERGY_PROXY_PATH))
+        validate_ppa_report(report)
         prefill = report["workloads"][0]
         kv = report["workloads"][1]
 
-        self.assertEqual(prefill["energy_proxy"]["events"]["external_memory_byte"], 512)
-        self.assertEqual(prefill["energy_proxy"]["events"]["int8_mac_accumulate"], 1024)
+        self.assertEqual(prefill["energy_model"]["events"]["external_memory_byte"], 512)
+        self.assertEqual(prefill["energy_model"]["events"]["int8_mac_accumulate"], 1024)
         self.assertEqual(prefill["performance"]["matrix_utilization"], 0.8)
         self.assertEqual(prefill["performance"]["skinny_gemm_utilization"], 0.8)
         self.assertEqual(
-            prefill["energy_proxy"]["contribution_groups"]["modeled_external_memory"],
+            prefill["energy_model"]["contribution_groups"]["modeled_external_memory"],
             512 * 20.0,
         )
         self.assertEqual(kv["performance"]["provenance"], "modeled_manifest_only")
-        self.assertEqual(kv["energy_proxy"]["events"]["external_memory_byte"], 1536)
+        self.assertEqual(kv["energy_model"]["events"]["external_memory_byte"], 1536)
 
-    def test_proxy_report_exposes_attention_stage_metadata(self):
+    def test_model_report_exposes_attention_stage_metadata(self):
         perf = {
             "source": {"performance": "measured_architectural_perf_csr_snapshot"},
             "workloads": [
@@ -341,6 +342,14 @@ class PPAContractTests(unittest.TestCase):
             "kv_write_bytes": 0,
             "bytes_per_token": None,
             "qk_cycles": 96,
+            "theoretical_compute_cycles": 8,
+            "measured_compute_cycles": 10,
+            "compute_overhead_cycles": 2,
+            "compute_efficiency": 0.8,
+            "non_compute_overhead_cycles": 86,
+            "end_to_end_efficiency": 0.083333,
+            "theoretical_cycle_basis": "ceil(effective_mac_ops=512/peak_macs_per_cycle=64)",
+            "measured_compute_provenance": "measured_matrix_active_cycles",
             "attention_softmax_cycles": None,
             "pv_cycles": None,
         }
@@ -358,16 +367,30 @@ class PPAContractTests(unittest.TestCase):
             "pv_cycles": None,
         }
 
-        report = build_proxy_report(perf, read_jsonc(AREA_PROXY_PATH), read_jsonc(ENERGY_PROXY_PATH))
-        validate_proxy_report(report)
+        report = build_ppa_report(perf, read_jsonc(AREA_PROXY_PATH), read_jsonc(ENERGY_PROXY_PATH))
+        validate_ppa_report(report)
         qk = report["workloads"][0]
         softmax = report["workloads"][1]
 
         self.assertEqual(qk["performance"]["attention_stage"], "qk")
         self.assertEqual(qk["performance"]["qk_cycles"], 96)
-        self.assertEqual(qk["energy_proxy"]["events"]["int8_mac_accumulate"], 512)
+        self.assertEqual(qk["performance"]["theoretical_compute_cycles"], 8)
+        self.assertEqual(qk["performance"]["compute_overhead_cycles"], 2)
+        self.assertEqual(qk["performance"]["compute_efficiency"], 0.8)
+        self.assertEqual(qk["energy_model"]["events"]["int8_mac_accumulate"], 512)
         self.assertEqual(softmax["performance"]["attention_stage"], "softmax")
         self.assertEqual(softmax["performance"]["provenance"], "modeled_manifest_only")
+
+        with TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            from ppa.model_report import write_html
+
+            write_html(report, out / "ppa_overview.html")
+            self.assertTrue((out / "perf.html").exists())
+            self.assertTrue((out / "power.html").exists())
+            self.assertTrue((out / "area.html").exists())
+            self.assertTrue((out / "cases" / "unspecified.html").exists())
+            self.assertIn("Theoretical Versus Measured", (out / "perf.html").read_text())
 
     @unittest.skipUnless(shutil.which("iverilog"), "iverilog not installed")
     def test_npu_subsystem_boundary_elaborates(self):

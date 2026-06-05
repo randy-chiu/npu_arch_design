@@ -1,6 +1,6 @@
 # PPA Baselines
 
-New baselines are frozen copies of a validated `ppa_proxy.json`, stored by
+New baselines are frozen copies of a validated `ppa.json`, stored by
 evidence level and named architecture variant:
 
 ```text
@@ -13,7 +13,7 @@ and area/energy coefficient version and values. A candidate must use the same
 schema, evidence level, coefficient model, units, and workload manifest before
 numerical deltas can be interpreted directly.
 
-`l0/npu_v0_a2_serial_k_stream_proxy.json` is the active frozen Level 0
+`l0/npu_v0_a2_serial_k_stream_l0.json` is the active frozen Level 0
 baseline for the serial-to-ping-pong comparison. Its original recorded
 RTL-counter input remains in `l0/npu_v0_a2_serial_k_stream.json` only as source
 evidence; new comparison commands consume the validated frozen report.

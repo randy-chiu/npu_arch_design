@@ -24,6 +24,7 @@ document unless they become a separate RTL module.
 | `vector_engine_v1.md` | Vector primitive engine contract for ADD/SUB/MUL/SCALE/REQUANT/CLAMP |
 | `reduction_engine_v1.md` | Reduction primitive engine contract for MAX/SUM/SUMSQ |
 | `sfu_v1.md` | Fixed-point EXP/RECIP/RSQRT SFU contract |
+| `primitive_valid_ready_v1.md` | Meaning of primitive operations; why start/done is insufficient; scheduler command/response handshake |
 | `next_steps.md` | Ordered implementation plan for the next development rounds |
 
 V1 keeps MNIST/CNN as regression and does not fork a separate Transformer core.
