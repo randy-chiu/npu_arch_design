@@ -4,9 +4,11 @@ This directory owns the primary PPA top for the NPU implementation.
 
 ```text
 npu_subsystem_top
-  = npu wrapper/scheduler
-  + data mover
-  + NPU core
+  = Host wrapper
+  + NPU core system
+      + command processor
+      + data mover
+      + compute cluster
   + exposed external memory boundary
 ```
 

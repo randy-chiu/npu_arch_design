@@ -17,7 +17,7 @@
 
   "tops": {
     "primary": "npu_subsystem_top",
-    "breakdown": "npu_v0_top",
+    "breakdown": "npu_v0_compute_cluster",
     "reference_only": "soc_cpu_top"
   },
 

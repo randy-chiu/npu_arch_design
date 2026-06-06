@@ -6,7 +6,7 @@ import unittest
 from tempfile import TemporaryDirectory
 from pathlib import Path
 
-from ppa.model_report import build_ppa_report, read_jsonc
+from ppa.model_report import _render_static_timeline, build_ppa_report, read_jsonc
 from ppa.schema_check import validate_ppa_report
 
 
@@ -18,6 +18,11 @@ ENERGY_PROXY_PATH = Path("arch/configs/ppa/energy_model_v0.jsonc")
 SERIAL_BASELINE_PATH = Path("ppa/baselines/l0/npu_v0_a2_serial_k_stream_l0.json")
 TRANSFORMER_MANIFEST_PATH = Path("workloads/manifests/transformer/transformer_micro_v0.jsonc")
 SUBSYSTEM_RTL_PATH = Path("hw/npu_subsystem/rtl/npu_subsystem_top.sv")
+WRAPPER_RTL_PATH = Path("hw/npu_wrapper/rtl/npu_v0_wrapper.sv")
+CORE_SYSTEM_RTL_PATH = Path("hw/npu_core/rtl/npu_v0_core_system.sv")
+DATA_MOVER_RTL_PATH = Path("hw/npu_core/rtl/memory/npu_v0_data_mover.sv")
+UOP_SCHEDULER_RTL_PATH = Path("hw/npu_core/rtl/scheduler/npu_v0_uop_scheduler.sv")
+COMPUTE_CLUSTER_RTL_PATH = Path("hw/npu_core/rtl/npu_v0_compute_cluster.sv")
 
 
 def _read_jsonc(path: Path) -> dict:
@@ -26,6 +31,49 @@ def _read_jsonc(path: Path) -> dict:
 
 
 class PPAContractTests(unittest.TestCase):
+    def test_static_pipeline_timeline_does_not_count_wait_as_active(self):
+        timeline = _render_static_timeline(
+            {
+                "job_id": 20,
+                "name": "matmul_k_stream",
+                "total_cycles": 84,
+                "timeline": [
+                    {
+                        "module": "CPU firmware",
+                        "spans": [
+                            {"label": "MMIO start", "start": 0, "end": 1, "cycles": 1, "kind": "work"},
+                            {
+                                "label": "Poll/wait for done",
+                                "start": 1,
+                                "end": 84,
+                                "cycles": 83,
+                                "kind": "wait",
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+
+        self.assertIn("1 active / 83 wait", timeline)
+        self.assertIn('class="bar wait"', timeline)
+        self.assertIn("host interface", _render_static_timeline(
+            {
+                "job_id": 20,
+                "name": "matmul_k_stream",
+                "total_cycles": 84,
+                "timeline": [{"module": "NPU wrapper", "spans": []}],
+            }
+        ))
+        self.assertIn('class="lane-label child"', _render_static_timeline(
+            {
+                "job_id": 20,
+                "name": "matmul_k_stream",
+                "total_cycles": 84,
+                "timeline": [{"module": "Matrix engine", "spans": []}],
+            }
+        ))
+
     def test_initial_target_names_primary_subsystem_boundary(self):
         target = _read_jsonc(PPA_TARGET_PATH)
 
@@ -35,6 +83,26 @@ class PPAContractTests(unittest.TestCase):
         self.assertTrue(
             target["memory_accounting"]["simulation_soc_sram_is_excluded_from_primary_npu_ppa"]
         )
+
+    def test_rtl_hierarchy_separates_host_wrapper_from_complete_npu_core(self):
+        subsystem = SUBSYSTEM_RTL_PATH.read_text(encoding="utf-8")
+        wrapper = WRAPPER_RTL_PATH.read_text(encoding="utf-8")
+        core_system = CORE_SYSTEM_RTL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("npu_v0_wrapper", subsystem)
+        self.assertIn("npu_v0_core_system", wrapper)
+        self.assertNotIn("npu_v0_data_mover", wrapper)
+        self.assertIn("cmd_valid", wrapper)
+        self.assertIn("core_done", wrapper)
+        self.assertIn("NPU_OPSCHED_DESC_ADDR", wrapper)
+        self.assertIn("npu_v0_data_mover", core_system)
+        self.assertIn("npu_v0_compute_cluster", core_system)
+        self.assertIn("npu_v0_uop_scheduler", COMPUTE_CLUSTER_RTL_PATH.read_text(encoding="utf-8"))
+        self.assertTrue(UOP_SCHEDULER_RTL_PATH.exists())
+        self.assertIn("cmd_desc_addr", core_system)
+        self.assertNotIn("NPU_OPSCHED_DESC_ADDR", core_system)
+        self.assertNotIn("npu_wrapper_req", core_system)
+        self.assertTrue(DATA_MOVER_RTL_PATH.exists())
 
     def test_result_schema_requires_core_measurement_identity(self):
         schema = json.loads(PPA_SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -56,7 +124,7 @@ class PPAContractTests(unittest.TestCase):
                     "kind": "model_layer",
                     "jobs": 1,
                     "total_cycles": 39217,
-                    "core_matmul_cycles": 11520,
+                    "core_matmul_cycles": 9216,
                     "data_mover": {
                         "words": 147536,
                         "read_words": 147472,
@@ -72,7 +140,7 @@ class PPAContractTests(unittest.TestCase):
                     "before_cycles": 58784,
                     "after_cycles": 39217,
                     "cycles_saved": 19567,
-                    "core_matmul_cycles": 11520,
+                    "core_matmul_cycles": 9216,
                     "data_mover_words": 147536,
                 }
             ],
@@ -103,7 +171,7 @@ class PPAContractTests(unittest.TestCase):
                     "kind": "model_layer",
                     "jobs": 16,
                     "total_cycles": 627472,
-                    "core_matmul_cycles": 184320,
+                    "core_matmul_cycles": 147456,
                     "data_mover": {
                         "words": 2360576,
                         "read_words": 2359552,
@@ -216,7 +284,7 @@ class PPAContractTests(unittest.TestCase):
                     "kind": "transformer_micro",
                     "jobs": 1,
                     "total_cycles": 128,
-                    "core_matmul_cycles": 20,
+                    "core_matmul_cycles": 16,
                     "data_mover": {"words": 512, "read_words": 448, "write_words": 64},
                     "transformer_metrics": {
                         "effective_mac_ops": 1024,
@@ -286,7 +354,7 @@ class PPAContractTests(unittest.TestCase):
                     "kind": "transformer_micro",
                     "jobs": 1,
                     "total_cycles": 96,
-                    "core_matmul_cycles": 10,
+                    "core_matmul_cycles": 8,
                     "data_mover": {"words": 256, "read_words": 192, "write_words": 64},
                     "metadata": {
                         "workload_family": "transformer_prefill",

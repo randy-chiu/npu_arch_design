@@ -57,7 +57,7 @@ Public trend summary:
 
 ## 2. Current Matmul Reality
 
-The current `npu_v0_top` matmul path is not a tensor/cube engine yet.
+The current `npu_v0_compute_cluster` matmul path is not a tensor/cube engine yet.
 
 `arch/configs/npu_v0.jsonc` describes a logical Phase 0 tile:
 

@@ -12,11 +12,12 @@ module npu_v0_tb;
     logic [127:0] host_wdata;
     logic [127:0] host_rdata;
 
-    npu_v0_top dut (
+    npu_v0_compute_cluster dut (
         .clk(clk),
         .rst_n(rst_n),
         .start(start),
         .op(op),
+        .output_store_enable(1'b1),
         .done(done),
         .host_we(host_we),
         .host_addr(host_addr),

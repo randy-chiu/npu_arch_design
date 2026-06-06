@@ -188,7 +188,7 @@ module soc_cpu_top (
         .sram_ready(dma_sram_ready)
     );
 
-    npu_v0_opsched #(
+    npu_v0_wrapper #(
         .CORE_HOST_LANES(SOC_NPU_CORE_HOST_LANES)
     ) u_npu_wrapper (
         .clk(clk),

@@ -105,6 +105,50 @@
     "perf_data_mover_write_words": {
       "offset": 124,
       "description": "last completed count of data mover core-host-to-SRAM words"
+    },
+    "perf_cmd_active_cycles": {
+      "offset": 128,
+      "description": "last completed command-processor active control/decode cycles"
+    },
+    "perf_cmd_wait_cycles": {
+      "offset": 132,
+      "description": "last completed command-processor wait cycles"
+    },
+    "perf_dm_compute_overlap_cycles": {
+      "offset": 136,
+      "description": "last completed cycles with data mover and compute cluster both active"
+    },
+    "perf_uop_sched_active_cycles": {
+      "offset": 140,
+      "description": "last completed common uop scheduler active cycles"
+    },
+    "perf_uop_sched_wait_cycles": {
+      "offset": 144,
+      "description": "last completed common uop scheduler engine-wait cycles"
+    },
+    "perf_core_wait_data_cycles": {
+      "offset": 148,
+      "description": "last completed K-stream cycles waiting for prefetched data"
+    },
+    "perf_core_local_active_cycles": {
+      "offset": 152,
+      "description": "last completed compute-cluster local operation active cycles"
+    },
+    "perf_dm_program_cycles": {
+      "offset": 156,
+      "description": "last completed data mover program-load cycles"
+    },
+    "perf_dm_initial_input_cycles": {
+      "offset": 160,
+      "description": "last completed data mover initial-input-load cycles"
+    },
+    "perf_dm_prefetch_cycles": {
+      "offset": 164,
+      "description": "last completed data mover next-chunk prefetch cycles"
+    },
+    "perf_dm_output_cycles": {
+      "offset": 168,
+      "description": "last completed data mover output-store cycles"
     }
   },
 

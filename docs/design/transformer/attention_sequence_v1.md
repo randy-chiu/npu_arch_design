@@ -397,7 +397,7 @@ Current status:
 - reduction standalone RTL supports max/sum over packed int32 inputs;
 - SFU standalone RTL supports coarse EXP and integer reciprocal;
 - vector standalone RTL supports subtract, clamp, and simple requant;
-- old `npu_v0_top` softmax is Phase 0-specific and should not be treated as
+- old `npu_v0_compute_cluster` softmax is Phase 0-specific and should not be treated as
   the Transformer attention softmax implementation.
 
 Needed for attention:
@@ -487,7 +487,7 @@ Needed for attention:
 | reduction primitive ops | `reduction/reduction_engine.sv` | standalone only; row softmax length/mask/latency needs contract |
 | SFU primitive ops | `sfu/sfu_lut.sv` | coarse bring-up only; EXP/RECIP detail must be upgraded |
 | primitive integration wrapper | `transformer_primitive_engines.sv` | standalone test integration only |
-| wrapper/runtime descriptors | `npu_v0_opsched.sv` | matmul/k-stream focused; no command-list attention sequence |
+| core command processor/runtime descriptors | `npu_v0_core_system.sv` | matmul/k-stream focused; no command-list attention sequence |
 | perf/PPA | perf CSR snapshots and L0 report | matmul/data mover visible; attention group counters missing |
 
 ## Planned Execution Stages

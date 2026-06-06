@@ -95,7 +95,8 @@ npu-core-sim: rtl-fixtures
 		hw/npu_core/rtl/sfu/sfu_lut.sv \
 		hw/npu_core/rtl/matrix/accumulator_file.sv \
 		hw/npu_core/rtl/matrix/matmul_array.sv \
-		hw/npu_core/rtl/npu_v0_top.sv \
+		hw/npu_core/rtl/scheduler/npu_v0_uop_scheduler.sv \
+		hw/npu_core/rtl/npu_v0_compute_cluster.sv \
 		hw/npu_core/tb/npu_v0_tb.sv
 	vvp build/npu_v0_tb
 
@@ -107,9 +108,11 @@ npu-subsystem-elab: rtl-fixtures soc-spec npu-wrapper-spec
 		hw/npu_core/rtl/vector/vector_engine.sv \
 		hw/npu_core/rtl/reduction/reduction_engine.sv \
 		hw/npu_core/rtl/sfu/sfu_lut.sv \
-		hw/npu_core/rtl/npu_v0_top.sv \
-		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
-		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
+		hw/npu_core/rtl/scheduler/npu_v0_uop_scheduler.sv \
+		hw/npu_core/rtl/npu_v0_compute_cluster.sv \
+		hw/npu_core/rtl/memory/npu_v0_data_mover.sv \
+		hw/npu_core/rtl/npu_v0_core_system.sv \
+		hw/npu_wrapper/rtl/npu_v0_wrapper.sv \
 		hw/npu_subsystem/rtl/npu_subsystem_top.sv
 
 rtl-sim: npu-core-sim
@@ -122,9 +125,11 @@ soc-sim: rtl-fixtures soc-spec npu-wrapper-spec
 		hw/npu_core/rtl/vector/vector_engine.sv \
 		hw/npu_core/rtl/reduction/reduction_engine.sv \
 		hw/npu_core/rtl/sfu/sfu_lut.sv \
-		hw/npu_core/rtl/npu_v0_top.sv \
-		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
-		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
+		hw/npu_core/rtl/scheduler/npu_v0_uop_scheduler.sv \
+		hw/npu_core/rtl/npu_v0_compute_cluster.sv \
+		hw/npu_core/rtl/memory/npu_v0_data_mover.sv \
+		hw/npu_core/rtl/npu_v0_core_system.sv \
+		hw/npu_wrapper/rtl/npu_v0_wrapper.sv \
 		hw/soc/rtl/bus/simple_bus.sv \
 		hw/soc/rtl/dma/soc_dma.sv \
 		hw/soc/rtl/mem/boot_rom.sv \
@@ -144,9 +149,11 @@ cpu-soc-sim: firmware-smoke
 		hw/npu_core/rtl/vector/vector_engine.sv \
 		hw/npu_core/rtl/reduction/reduction_engine.sv \
 		hw/npu_core/rtl/sfu/sfu_lut.sv \
-		hw/npu_core/rtl/npu_v0_top.sv \
-		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
-		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
+		hw/npu_core/rtl/scheduler/npu_v0_uop_scheduler.sv \
+		hw/npu_core/rtl/npu_v0_compute_cluster.sv \
+		hw/npu_core/rtl/memory/npu_v0_data_mover.sv \
+		hw/npu_core/rtl/npu_v0_core_system.sv \
+		hw/npu_wrapper/rtl/npu_v0_wrapper.sv \
 		hw/soc/rtl/bus/simple_bus.sv \
 		hw/soc/rtl/dma/soc_dma.sv \
 		hw/soc/rtl/mem/boot_rom.sv \
@@ -178,9 +185,11 @@ perf-report: firmware-smoke
 		hw/npu_core/rtl/vector/vector_engine.sv \
 		hw/npu_core/rtl/reduction/reduction_engine.sv \
 		hw/npu_core/rtl/sfu/sfu_lut.sv \
-		hw/npu_core/rtl/npu_v0_top.sv \
-		hw/npu_wrapper/rtl/npu_v0_data_mover.sv \
-		hw/npu_wrapper/rtl/npu_v0_opsched.sv \
+		hw/npu_core/rtl/scheduler/npu_v0_uop_scheduler.sv \
+		hw/npu_core/rtl/npu_v0_compute_cluster.sv \
+		hw/npu_core/rtl/memory/npu_v0_data_mover.sv \
+		hw/npu_core/rtl/npu_v0_core_system.sv \
+		hw/npu_wrapper/rtl/npu_v0_wrapper.sv \
 		hw/soc/rtl/bus/simple_bus.sv \
 		hw/soc/rtl/dma/soc_dma.sv \
 		hw/soc/rtl/mem/boot_rom.sv \
@@ -189,7 +198,7 @@ perf-report: firmware-smoke
 		hw/soc/rtl/soc_cpu_top.sv \
 		hw/soc/tb/soc_cpu_tb.sv
 	vvp build/soc/soc_cpu_tb > build/ppa/data/cpu_soc_perf.log
-	python sw/tools/perf/report.py --log build/ppa/data/cpu_soc_perf.log --workload-manifest build/ppa/data/workload_manifest.json --arch-config $(ARCH) --soc-config $(SOC) --json-out build/ppa/data/perf.json --html-out build/ppa/data/pipeline_report.html
+	python sw/tools/perf/report.py --log build/ppa/data/cpu_soc_perf.log --workload-manifest build/ppa/data/workload_manifest.json --arch-config $(ARCH) --soc-config $(SOC) --json-out build/ppa/data/perf.json
 
 perf-l0-quick:
 	$(MAKE) perf-report WORKLOAD_PROFILE=quick

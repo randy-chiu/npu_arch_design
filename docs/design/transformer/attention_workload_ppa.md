@@ -208,9 +208,9 @@ make ppa-l0-report WORKLOAD_PROFILE=transformer
 Report artifacts:
 
 - `build/ppa/data/perf.json`
-- `build/ppa/data/pipeline_report.html`
 - `build/ppa/ppa.json`
 - `build/ppa/ppa_overview.html`
+- `build/ppa/cases/transformer.html`
 - `build/ppa/perf.html`
 - `build/ppa/power.html`
 - `build/ppa/area.html`
@@ -234,7 +234,7 @@ Level 0 energy model for measured attention stages:
 `transformer_attention_softmax_s8` is measured through a hardwired
 CPU-to-NPU `attention_softmax_v1` descriptor path that uses
 `reduction_engine.sv`, `vector_engine.sv`, and `sfu_lut.sv` inside
-`npu_v0_top.sv`. It is still the bring-up numerical contract, because EXP and
+`npu_v0_compute_cluster.sv`. It is still the bring-up numerical contract, because EXP and
 normalization use the current coarse SFU/scale behavior, but it is no longer
 the old Phase 0 Q0.8 softmax path.
 

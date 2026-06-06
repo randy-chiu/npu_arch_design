@@ -39,8 +39,28 @@ class PerfReportTests(unittest.TestCase):
         self.assertEqual(report["workloads"][0]["data_mover"]["read_words"], 144)
         self.assertEqual(
             [lane["module"] for lane in report["jobs"][0]["timeline"]],
-            ["CPU firmware", "NPU wrapper", "Data mover", "NPU core", "Matrix engine"],
+            [
+                "CPU firmware",
+                "NPU wrapper",
+                "NPU core",
+                "Command processor",
+                "Uop scheduler",
+                "Data mover",
+                "Compute cluster",
+                "Matrix engine",
+                "Accumulator file",
+            ],
         )
+        lanes = {lane["module"]: lane for lane in report["jobs"][0]["timeline"]}
+        self.assertIsNone(lanes["NPU core"]["parent"])
+        self.assertEqual(lanes["NPU core"]["depth"], 0)
+        self.assertEqual(lanes["Command processor"]["parent"], "NPU core")
+        self.assertEqual(lanes["Uop scheduler"]["parent"], "NPU core")
+        self.assertEqual(lanes["Data mover"]["parent"], "NPU core")
+        self.assertEqual(lanes["Compute cluster"]["parent"], "NPU core")
+        self.assertEqual(lanes["Matrix engine"]["parent"], "Compute cluster")
+        self.assertEqual(lanes["Matrix engine"]["depth"], 2)
+        self.assertEqual(lanes["Accumulator file"]["parent"], "Compute cluster")
         self.assertEqual(
             report["jobs"][0]["timeline_provenance"]["span_placement"],
             "derived_from_reviewed_state_machine",
@@ -68,6 +88,113 @@ class PerfReportTests(unittest.TestCase):
         )
 
         self.assertIsNone(highlights[0]["overlap_cycles"])
+
+    def test_k_stream_timeline_splits_initial_load_from_prefetch_overlap(self):
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "csr.log"
+            log_path.write_text(
+                'PERF_JOB {"source":"architectural_perf_csr_snapshot","job_id":19,"id":19,'
+                '"name":"matmul_k_stream","total_cycles":117,'
+                '"core":{"total":19,"matmul":16,"wait_data_cycles":17,"local_active_cycles":3},'
+                '"command_processor":{"active_cycles":16,"wait_cycles":102},'
+                '"uop_scheduler":{"active_cycles":12,"wait_cycles":18},'
+                '"data_mover":{"active_cycles":84,"setup_cycles":0,"transfer_cycles":84,'
+                '"stall_cycles":0,"words":336,"read_words":272,"write_words":64,'
+                '"compute_overlap_cycles":9,"program_cycles":4,'
+                '"initial_input_cycles":32,"prefetch_cycles":32,"output_cycles":16},'
+                '"sram":{"read_words":283,"write_words":64}}\n',
+                encoding="utf-8",
+            )
+
+            report = parse_perf_log(log_path)
+
+        lanes = {lane["module"]: lane for lane in report["jobs"][0]["timeline"]}
+        wrapper_fetch = next(
+            span
+            for span in lanes["Command processor"]["spans"]
+            if span["label"] == "Wait for input/program movement"
+        )
+        initial_load = next(
+            span for span in lanes["Data mover"]["spans"] if span["label"] == "Initial chunk A/B load"
+        )
+        overlap = next(
+            span
+            for span in lanes["Data mover"]["spans"]
+            if span["label"] == "Measured K prefetch overlap"
+        )
+
+        self.assertEqual(initial_load["cycles"], 32)
+        self.assertGreater(wrapper_fetch["cycles"], initial_load["cycles"])
+        self.assertEqual(overlap["cycles"], 9)
+        self.assertEqual(overlap["start"], lanes["Compute cluster"]["spans"][0]["start"])
+        self.assertEqual(
+            next(span for span in lanes["Compute cluster"]["spans"] if span["kind"] == "wait")["cycles"],
+            17,
+        )
+        self.assertEqual(
+            [span["cycles"] for span in lanes["Matrix engine"]["spans"]],
+            [8, 8],
+        )
+        matrix_spans = lanes["Matrix engine"]["spans"]
+        accumulator_spans = lanes["Accumulator file"]["spans"]
+        self.assertEqual([span["cycles"] for span in accumulator_spans], [1, 1, 1])
+        for matrix_span in matrix_spans:
+            self.assertTrue(
+                all(
+                    accumulator_span["end"] <= matrix_span["start"]
+                    or accumulator_span["start"] >= matrix_span["end"]
+                    for accumulator_span in accumulator_spans
+                )
+            )
+
+    def test_k_stream_cycle_trace_places_external_and_local_loads_in_order(self):
+        defaults = {
+            "cmd_state": 6, "cmd_active": 0, "cmd_wait": 1, "stream_chunk": 0,
+            "dm_program": 0, "dm_input_a": 0,
+            "dm_input_b": 0, "dm_prefetch_a": 0, "dm_prefetch_b": 0, "dm_output": 0,
+            "dm_target_bank": 0, "core_active": 0, "core_wait_data": 0, "uop_active": 0,
+            "uop_wait": 0, "uop_load": 0, "uop_tensor": 0, "uop_store": 0,
+            "output_store_enable": 1, "matrix_issue": 0, "matrix_active": 0,
+            "acc_clear": 0, "acc_commit": 0, "acc_readout": 0,
+        }
+        events = []
+        for cycle, changes in [
+            (1, {"dm_program": 1}),
+            (2, {"dm_input_a": 1}),
+            (3, {"dm_input_b": 1}),
+            (4, {"dm_prefetch_a": 1, "dm_target_bank": 1, "core_active": 1,
+                 "uop_active": 1, "uop_load": 1}),
+            (5, {"dm_prefetch_a": 1, "dm_target_bank": 1, "uop_active": 1,
+                 "matrix_issue": 1}),
+            (6, {"dm_prefetch_b": 1, "dm_target_bank": 1, "core_active": 1,
+                 "uop_wait": 1, "matrix_active": 1}),
+        ]:
+            events.append({"job_id": 1, "cycle": cycle, **defaults, **changes})
+
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "trace.log"
+            lines = ["PERF_TRACE " + json.dumps(event) for event in events]
+            lines.append(
+                'PERF_JOB {"source":"architectural_perf_csr_snapshot","job_id":1,"id":1,'
+                '"name":"matmul_k_stream","total_cycles":7,"core":{"total":2,"matmul":1},'
+                '"data_mover":{"active_cycles":6,"read_words":24,"write_words":0},"sram":{}}'
+            )
+            log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            report = parse_perf_log(log_path)
+
+        lanes = {lane["module"]: lane for lane in report["jobs"][0]["timeline"]}
+        self.assertEqual(
+            [span["label"] for span in lanes["Data mover"]["spans"]],
+            [
+                "Uop program: external SRAM -> instr_mem",
+                "Chunk 0 A: external SRAM -> preload bank 0",
+                "Chunk 0 B: external SRAM -> preload bank 0",
+                "Chunk 1 A prefetch: external SRAM -> preload bank 1",
+                "Chunk 1 B prefetch: external SRAM -> preload bank 1",
+            ],
+        )
+        self.assertEqual(lanes["Matrix engine"]["spans"][0]["start"], 6)
+        self.assertEqual(report["jobs"][0]["timeline_provenance"]["span_placement"], "measured_cycle_event_trace")
 
     def test_firmware_fixture_tool_emits_manifest_from_job_counts(self):
         tool_path = Path("sw/tools/firmware/emit_soc_cpu_smoke_data.py")
@@ -321,8 +448,8 @@ class PerfReportTests(unittest.TestCase):
             self.assertEqual(report["workloads"][0]["data_mover"]["active_cycles"], 0)
             self.assertEqual(report["jobs"][0]["timeline"][0]["module"], "CPU firmware")
             self.assertEqual(report["jobs"][0]["timeline"][1]["module"], "NPU wrapper")
-            self.assertEqual(report["jobs"][0]["timeline"][2]["module"], "Data mover")
-            self.assertEqual(report["jobs"][0]["timeline"][3]["module"], "NPU core")
+            self.assertEqual(report["jobs"][0]["timeline"][2]["module"], "NPU core")
+            self.assertEqual(report["jobs"][0]["timeline"][3]["module"], "Command processor")
             self.assertEqual(json.loads(json_path.read_text(encoding="utf-8"))["schema"], "npu_perf_report_v0")
             self.assertIn("timeline", json_path.read_text(encoding="utf-8"))
             self.assertIn("movement", json_path.read_text(encoding="utf-8"))
@@ -332,6 +459,10 @@ class PerfReportTests(unittest.TestCase):
             self.assertIn("Movement model", html_path.read_text(encoding="utf-8"))
             self.assertIn("renderPhaseTimeline(section", html_path.read_text(encoding="utf-8"))
             self.assertIn('document.createElement("details")', html_path.read_text(encoding="utf-8"))
+            self.assertIn('span.kind === "work"', html_path.read_text(encoding="utf-8"))
+            self.assertIn('span.kind === "wait"', html_path.read_text(encoding="utf-8"))
+            self.assertIn("laneData.depth", html_path.read_text(encoding="utf-8"))
+            self.assertIn("laneData.role", html_path.read_text(encoding="utf-8"))
             self.assertIn("highlights", json_path.read_text(encoding="utf-8"))
             self.assertIn("wrapper reads job descriptor words from SRAM", html_path.read_text(encoding="utf-8"))
 
@@ -506,13 +637,10 @@ class PerfReportTests(unittest.TestCase):
             self.assertEqual(highlight["core_matmul_cycles"], 16 * 11520)
             full_job = report["jobs"][20]
             data_mover_lane = next(lane for lane in full_job["timeline"] if lane["module"] == "Data mover")
-            core_lane = next(lane for lane in full_job["timeline"] if lane["module"] == "NPU core")
-            prefetch_span = next(
-                span for span in data_mover_lane["spans"] if span["label"] == "K prefetch overlap"
+            self.assertFalse(
+                any("overlap" in span["label"].lower() for span in data_mover_lane["spans"])
             )
-            core_fetch_span = core_lane["spans"][0]
-            self.assertEqual(prefetch_span["start"], core_fetch_span["start"])
-            self.assertGreater(prefetch_span["cycles"], full_job["core"]["matmul"])
+            self.assertIsNone(highlight["overlap_cycles"])
             self.assertEqual(fc2["name"], "real_mnist_cnn_fc2")
             self.assertEqual(fc2["job_ids"], list(range(37, 69)))
 

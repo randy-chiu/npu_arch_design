@@ -27,6 +27,17 @@ typedef struct {
     uint32_t data_mover_write_words;
     uint32_t sram_read_words;
     uint32_t sram_write_words;
+    uint32_t command_active_cycles;
+    uint32_t command_wait_cycles;
+    uint32_t data_mover_compute_overlap_cycles;
+    uint32_t uop_scheduler_active_cycles;
+    uint32_t uop_scheduler_wait_cycles;
+    uint32_t core_wait_data_cycles;
+    uint32_t core_local_active_cycles;
+    uint32_t data_mover_program_cycles;
+    uint32_t data_mover_initial_input_cycles;
+    uint32_t data_mover_prefetch_cycles;
+    uint32_t data_mover_output_cycles;
 } npu_perf_snapshot_t;
 
 void npu_read_perf_snapshot(npu_perf_snapshot_t *snapshot);

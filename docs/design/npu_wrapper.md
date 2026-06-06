@@ -1,27 +1,48 @@
-# NPU Wrapper And Data Mover Design
+# NPU Host Wrapper Design
 
 [TOC]
 
-This document describes `npu_v0_opsched` and the first A2 data mover structure.
+This document describes the thin CPU-visible `npu_v0_wrapper`.
 
 ## 1. Role
 
-The wrapper is the boundary between the CPU-visible SoC and the internal NPU
-core. Its current responsibilities are:
+The wrapper is the host boundary between the CPU-visible SoC and the internal
+NPU core system. Its responsibilities are:
 
 - expose memory-mapped control/status registers;
-- receive a descriptor address from CPU firmware;
-- read descriptor/program/tensors from SRAM;
-- preload NPU core internal memories through the core host interface;
-- launch the core;
-- wait for core completion;
-- read core output windows and write output back to SRAM;
-- publish `done/busy/idle` status;
-- expose a first job-scoped performance snapshot CSR bank.
+- forward CPU commands and descriptor addresses into the NPU core system;
+- publish `done/busy/idle`, IRQ, error, and performance information produced
+  by the NPU core system;
+- isolate the CPU-facing bus contract from future internal NPU changes.
 
-The wrapper is not yet a full scheduler, command queue, DMA, or interrupt
-controller. It is the place where those features should be introduced
-incrementally.
+The wrapper does not move tensor data, execute descriptor state machines, or
+schedule compute engines. Those responsibilities belong to the NPU core
+system. The wrapper owns the CPU-visible register file and translates an
+accepted `CTRL.start` write into an explicit core command.
+
+```text
+CPU / SoC bus
+  -> npu_v0_wrapper
+      -> cmd_valid + cmd_desc_addr
+      <- cmd_ready + busy + done + perf_snapshot
+      -> npu_v0_core_system
+```
+
+Formal wrapper/core command interface:
+
+| Signal | Direction | Meaning |
+| --- | --- | --- |
+| `cmd_valid` | wrapper to core | one-cycle descriptor command submission |
+| `cmd_desc_addr` | wrapper to core | descriptor SRAM address captured by wrapper |
+| `cmd_ready` | core to wrapper | core can accept a new descriptor command |
+| `core_busy` | core to wrapper | submitted command remains in progress |
+| `core_done` | core to wrapper | one-cycle completed-job event |
+| `core_irq` | core to wrapper | completed/error event eligible for interrupt |
+| `perf_snapshot_*` | core to wrapper | completed-job measurement snapshot |
+
+`STATUS.done`, `STATUS.busy`, IRQ state, and visible perf CSRs are wrapper
+state derived from this interface. They are not implemented by forwarding the
+CPU bus into the core.
 
 ## 2. Register Interface
 
@@ -72,7 +93,7 @@ phase-detail counters remain outside this first stable CSR contract.
 `PERF_STATUS` 报告 overflow；`mac_ops`、uop 数量和更细的 phase counter 暂不进入
 本批合同。
 
-## 3. Descriptor Contract
+## 3. Forwarded Descriptor Contract
 
 The descriptor ABI is owned by `arch/configs/soc_v0.jsonc` because it is shared
 between CPU firmware and RTL.
@@ -93,44 +114,28 @@ Current layout:
 | 9 | `k_chunks` | K-stream chunk count; zero for non-stream operators |
 | 10 | `job_id` | generated workload identity emitted in `PERF_JOB` |
 
-The wrapper assumes word-aligned 32-bit addresses and currently truncates
+The NPU core command processor assumes word-aligned 32-bit addresses and currently truncates
 transfer lengths through 8-bit counters in the movement path. This is acceptable
 for Phase 0/A2 bring-up and must be widened before larger tiles.
 
-## 4. Wrapper State Machine
+## 4. Wrapper Activity Semantics
 
-Main state machine in `npu_v0_opsched.sv`:
+The wrapper is active only while accepting or returning a CPU-visible bus
+transaction. The NPU may remain busy after launch while the wrapper is idle.
 
 ```text
-DESC_IDLE
-  -> DESC_READ
-  -> DESC_FETCH_PROGRAM
-  -> DESC_FETCH_INPUT0
-  -> DESC_FETCH_INPUT1      // matmul only
-  -> DESC_START_CORE
-  -> DESC_WAIT_CORE
-  -> DESC_WRITE_OUTPUT
-  -> DESC_DONE
-  -> DESC_IDLE
+wrapper active != NPU busy
+wrapper active != command processor active
+wrapper active != data mover active
 ```
 
-State responsibilities:
+Legacy A/B/C/X/Y/program windows remain a compatibility path. They use a
+separate internal debug-window request interface and are not part of the
+descriptor command protocol or production scheduler timing.
 
-| State | Responsibility |
-| --- | --- |
-| `DESC_IDLE` | wait for CPU start or service legacy direct-window access |
-| `DESC_READ` | read descriptor words from SRAM |
-| `DESC_FETCH_PROGRAM` | load encoded uops into core `instr_mem` window |
-| `DESC_FETCH_INPUT0` | load A or X into core input window |
-| `DESC_FETCH_INPUT1` | load B for matmul |
-| `DESC_START_CORE` | issue one-cycle `start_pulse` |
-| `DESC_WAIT_CORE` | wait for `npu_done` |
-| `DESC_WRITE_OUTPUT` | read C/Y from core output window and store to SRAM |
-| `DESC_DONE` | clear busy and latch done |
+## 5. Internal Core Host Window Mapping
 
-## 5. Core Host Window Mapping
-
-The wrapper converts descriptor movement into NPU core host addresses:
+The NPU core command processor converts descriptor movement into compute-cluster host addresses:
 
 | Core host window | Address range | Meaning |
 | --- | ---: | --- |
@@ -142,89 +147,14 @@ The wrapper converts descriptor movement into NPU core host addresses:
 | program | `0x400` - `0x40f` | encoded uop `instr_mem` |
 
 The internal map and accumulator/bank control bits are owned by
-`arch/configs/npu_v0.jsonc` under `rtl.host_map` and `rtl.control_bits`; both
-the core and wrapper consume the generated RTL include rather than restating
-these address values.
+`arch/configs/npu_v0.jsonc` under `rtl.host_map` and `rtl.control_bits`. They
+are consumed by the core implementation; the wrapper does not decode or
+schedule these internal addresses.
 
 This host window is an internal preload/readback path. It is not the long-term
 NPU memory architecture.
 
-## 6. Data Mover A2.1
-
-`npu_v0_data_mover.sv` is the first A2 structural split. It owns linear
-transfers between SRAM and a core host window.
-
-Interface summary:
-
-| Signal | Meaning |
-| --- | --- |
-| `start` | begin a transfer segment |
-| `direction_store` | `0`: SRAM -> core host, `1`: core host -> SRAM |
-| `sram_base_addr` | absolute SRAM source/destination |
-| `host_base_addr` | core host window base |
-| `words` | number of 32-bit words |
-| `busy` | transfer is in progress |
-| `complete` | current segment is complete |
-| `index` | current word index |
-
-Current behavior:
-
-- up to `WORDS_PER_CYCLE` words per cycle, currently configured as 4 in the
-  wrapper;
-- no setup latency;
-- lane grouping is contiguous from the base word address;
-- no stalls from `sram_ready`;
-- no cumulative counters inside the module yet; per-cycle perf signals are
-  exposed for testbench aggregation.
-
-当前行为：
-
-- 每拍最多搬运 `WORDS_PER_CYCLE` 个 word，当前 wrapper 配置为 4；
-- 没有 setup latency；
-- lane 分组从 base word 地址开始连续映射；
-- 还没有 `sram_ready` stall 处理；
-- data mover 内部还没有累积计数器；当前暴露 per-cycle perf signals，由
-  testbench 聚合。
-
-Perf visibility:
-
-```text
-perf_active
-perf_setup
-perf_transfer
-perf_stall
-perf_words
-```
-
-`soc_cpu_tb` samples these signals and emits a `data_mover` object in each
-`PERF_JOB`. This is the explicit data mover counter source; the older
-`movement` object remains for SRAM/core-host compatibility counters.
-
-Perf 可观测性：
-
-```text
-perf_active
-perf_setup
-perf_transfer
-perf_stall
-perf_words
-```
-
-`soc_cpu_tb` 会采样这些信号，并在每个 `PERF_JOB` 中输出 `data_mover` 对象。这是
-显式 data mover counter 来源；旧的 `movement` 对象保留为 SRAM/core-host 兼容
-计数。
-
-The wrapper drives the data mover during:
-
-- `DESC_FETCH_PROGRAM`;
-- `DESC_FETCH_INPUT0`;
-- `DESC_FETCH_INPUT1`;
-- `DESC_WRITE_OUTPUT`.
-
-Descriptor read still lives directly in the wrapper because it also populates
-wrapper job registers.
-
-## 7. Timing Semantics
+## 6. Timing Semantics
 
 Current transfer timing is:
 
@@ -236,7 +166,7 @@ With `WORDS_PER_CYCLE=4` and `SETUP_CYCLES=0`, and with the descriptor ABI
 including the generated `job_id` word, the verified launch-to-done baseline is:
 
 ```text
-matmul total cycles: 82
+matmul total cycles: 81
 softmax total cycles: 31
 ```
 
@@ -249,15 +179,15 @@ cycles ~= setup_cycles + ceil(words / words_per_cycle)
 对于 `WORDS_PER_CYCLE=4`、`SETUP_CYCLES=0`，当前验证过的 NPU job 基线为：
 
 ```text
-matmul total cycles: 82
+matmul total cycles: 81
 softmax total cycles: 31
 ```
 
-## 8. Full FC1 Data-Movement Improvement Plan / 完整 FC1 数据搬运改进计划
+## 7. Full FC1 Data-Movement Improvement Plan / 完整 FC1 数据搬运改进计划
 
 The full FC1 single-N-tile SoC checkpoint shows that the current bottleneck is
 not the `8x8x8` MAC array. The bottleneck is movement from SRAM through the
-wrapper into the core preload windows.
+core data mover into the compute-cluster preload windows.
 
 完整 FC1 single-N-tile 的 SoC checkpoint 表明，当前瓶颈不是 `8x8x8` MAC array，
 而是从 SRAM 经 wrapper 到 core preload window 的数据搬运。
@@ -408,7 +338,7 @@ into a CPU interrupt flow yet.
 
 ## 10. K-Streaming Ping-Pong Control
 
-For `SOC_NPU_JOB_OP_MATMUL_K_STREAM`, the wrapper now overlaps prefetch of the
+For `SOC_NPU_JOB_OP_MATMUL_K_STREAM`, the NPU core command processor overlaps prefetch of the
 next K chunk with core execution of the current K chunk.
 
 The NPU core control host register at `0x500` is used as:
@@ -420,10 +350,10 @@ The NPU core control host register at `0x500` is used as:
 | 2 | `host_write_bank` for A/B host-window writes |
 | 3 | `compute_bank_select`, latched by the core at launch |
 
-The first chunk is loaded into bank 0. After launching chunk `i`, the wrapper
+The first chunk is loaded into bank 0. After launching chunk `i`, the command processor
 configures both `host_write_bank` and the next `compute_bank_select` to the
 opposite bank, then uses the data mover to fetch chunk `i+1` while the core is
-active. The wrapper advances to the next chunk only after both conditions hold:
+active. The command processor advances to the next chunk only after both conditions hold:
 
 ```text
 core_done_seen && next_prefetch_done

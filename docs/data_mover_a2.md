@@ -139,7 +139,7 @@ not, we should focus on banking, overlap, or operator scheduling instead.
 
 First RTL step:
 
-- added `hw/npu_wrapper/rtl/npu_v0_data_mover.sv`;
+- added `hw/npu_core/rtl/memory/npu_v0_data_mover.sv`;
 - connected wrapper program load, input load, and output store phases through
   the data mover;
 - preserved current one-word-per-cycle behavior and CPU-visible descriptor
@@ -167,8 +167,8 @@ Current live baseline after `WORDS_PER_CYCLE=4` is tracked in
 
 Current important files:
 
-- `hw/npu_wrapper/rtl/npu_v0_data_mover.sv`: new structural data mover;
-- `hw/npu_wrapper/rtl/npu_v0_opsched.sv`: wrapper now routes program/input/output
+- `hw/npu_core/rtl/memory/npu_v0_data_mover.sv`: new structural data mover;
+- `hw/npu_core/rtl/npu_v0_core_system.sv`: wrapper now routes program/input/output
   linear transfers through the data mover;
 - `sw/tools/perf/report.py`: report consumes CSR-sourced summary counters; old
   phase-rich log records can still render historical timeline panels;

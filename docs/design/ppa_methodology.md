@@ -34,7 +34,7 @@ PPA results must name one of these tops:
 | Top | Includes | Use |
 | --- | --- | --- |
 | `npu_core` | matrix/vector/reduction datapath, core control, local core state | microarchitecture breakdown |
-| `npu_subsystem` | wrapper/scheduler, descriptor/data mover boundary, core | primary NPU architecture decision boundary |
+| `npu_subsystem` | Host wrapper plus NPU core command processor/data mover/compute cluster | primary NPU architecture decision boundary |
 | `soc_reference` | CPU, bus, simulation memories/peripherals, NPU subsystem | system integration reference only |
 
 `npu_subsystem` is the primary comparison boundary because core performance
@@ -96,6 +96,19 @@ contains:
 - each layer/operator shape and dataflow edges;
 - theoretical and measured performance, power/energy, and area attribution;
 - the aligned per-operator pipeline timeline.
+
+Test-case pages are user-facing architecture views:
+
+- computation graphs use model-viewer-style operator cards with readable
+  stage names, tensor inputs/outputs, shapes, and directed edges;
+- readable labels such as `Decode Projection GEMM` are primary; internal
+  workload IDs remain secondary correlation details;
+- pipeline lanes use stable module-specific colors consistently across pages;
+- pipeline lanes show the CPU-visible wrapper separately from the NPU core;
+  command processor, data mover, and compute cluster are nested under NPU
+  core, and execution engines are nested under the compute cluster;
+- measured versus state-machine-derived timing is identified by provenance,
+  not by collapsing every lane to one color.
 
 The word `model` must not appear in user-facing report names or page labels.
 When physical power or area is unavailable, the page remains the power or area

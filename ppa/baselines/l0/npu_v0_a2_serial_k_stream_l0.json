@@ -88,7 +88,7 @@
       "jobs": 16,
       "performance": {
         "cycles": 940544,
-        "core_matmul_cycles": 184320,
+        "core_matmul_cycles": 147456,
         "data_mover_words": 2360576,
         "provenance": "recorded_rtl_perf_job_counters"
       },

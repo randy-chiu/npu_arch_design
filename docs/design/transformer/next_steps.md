@@ -53,18 +53,18 @@ buffers, then remove stage-specific firmware descriptor filling and fixed
 Current PPA evidence is Level 0 only:
 
 - performance cycles and movement counters come from RTL/SoC simulation;
-- normalized area is a structural proxy, not synthesized area;
-- normalized energy is event/coefficient proxy, not measured power;
+- normalized area is a structural L0 model, not synthesized area;
+- normalized energy is an event/coefficient L0 modeled estimate, not measured power;
 - external-memory energy is modeled from workload metadata.
 
 Measured stage PPA exists for:
 
 | Stage | Current PPA evidence | Main gap |
 | --- | --- | --- |
-| QK | measured cycles, data mover words, useful MACs, matrix utilization, L0 energy proxy; output feeds scale input | larger `D_k`/tile support remains |
+| QK | measured cycles, data mover words, useful MACs, matrix utilization, L0 modeled energy; output feeds scale input | larger `D_k`/tile support remains |
 | Scale/mask | measured cycles and movement for unmasked `8x8 int32` vector requant v2; output feeds tile softmax | no causal/padding/tail mask |
-| Softmax | measured cycles through vector/reduction/SFU sequence, L0 energy proxy | vector/reduction/SFU events are not yet split into reliable per-submodule active-cycle/energy counters |
-| PV | measured cycles through shared mixed matrix mode, useful MACs, matrix utilization, L0 energy proxy | mixed `u16 x s8` area/energy still uses generic MAC proxy coefficients |
+| Softmax | measured cycles through vector/reduction/SFU sequence, L0 modeled energy | vector/reduction/SFU events are not yet split into reliable per-submodule active-cycle/energy counters |
+| PV | measured cycles through shared mixed matrix mode, useful MACs, matrix utilization, L0 modeled energy | mixed `u16 x s8` area/energy still uses generic MAC model coefficients |
 | Full attention parent | buffer-chained measured QK/scale-mask/eight-row-softmax/PV stages through generated runtime table | no command-list/full-descriptor snapshot, runtime overhead not measured |
 
 Missing before claiming complete attention PPA:
@@ -75,7 +75,7 @@ Missing before claiming complete attention PPA:
   mover, and scheduler/control;
 - event-energy coefficients split by `int8xint8` MAC, `u16xint8` MAC,
   vector lane op, reduction element op, SFU EXP, and SFU RECIP;
-- structural area proxy split by matrix, mixed-precision multiplier delta,
+- structural area model split by matrix, mixed-precision multiplier delta,
   vector lanes, reduction tree, SFU LUT/table, accumulator/local buffers, and
   wrapper/data mover;
 - later L1 mapped area/timing and L2 activity-driven power if architecture
@@ -89,11 +89,11 @@ Missing before claiming complete attention PPA:
 | descriptor engine | `arch/specs/transformer/v1/descriptor_v1.md` | v0 descriptors execute current jobs; v1 descriptor is spec-only | v0 firmware profiles pass | add v1 fields when a new executable job needs them |
 | uop scheduler | `arch/specs/transformer/v1/uop_isa_v1.md` | v0 in-order sequencer exists; v1 primitive scheduler is not integrated | v0 core sim passes | connect standalone primitive engines after module tests stabilize |
 | matrix engine | `docs/design/npu_core.md` | `matrix/matmul_array.sv` implemented | `make npu-core-sim` passes | add GEMV/valid-lane support after primitive vector path |
-| accumulator file | `docs/design/transformer/transformer_npu_v1.md` | `matrix/accumulator_file.sv` integrated into `npu_v0_top` | core, quick SoC, full CNN pass | expose counters through perf only after CSR plan update |
+| accumulator file | `docs/design/transformer/transformer_npu_v1.md` | `matrix/accumulator_file.sv` integrated into `npu_v0_compute_cluster` | core, quick SoC, full CNN pass | expose counters through perf only after CSR plan update |
 | vector engine | `docs/design/transformer/vector_engine_v1.md` | standalone `vector/vector_engine.sv` implemented | primitive op and softmax/RMSNorm sequence tests pass | connect to scheduler/uop path |
 | reduction engine | `docs/design/transformer/reduction_engine_v1.md` | standalone `reduction/reduction_engine.sv` implemented | primitive op and softmax/RMSNorm sequence tests pass | broaden row-length coverage before scheduler integration |
 | SFU | `docs/design/transformer/sfu_v1.md` | standalone `sfu/sfu_lut.sv` implemented | EXP/RECIP/RSQRT and sequence tests pass | refine LUT/tolerance before model accuracy claims |
-| memory / scratchpad / data mover | common docs in `docs/design/` | v0 wrapper data mover exists | perf/PPA pass | add v1 internal scratchpad contract before widening |
+| memory / scratchpad / data mover | common docs in `docs/design/` | v0 core data mover exists | perf/PPA pass | add v1 internal scratchpad contract before widening |
 | KV cache subsystem | `arch/specs/transformer/v1/transformer_npu_v1.md` | spec/model-only counters only | perf/PPA model-only traffic visible | no RTL until decode traffic evidence justifies it |
 | Transformer attention workloads | `docs/design/transformer/attention_workload_ppa.md` | QK, unmasked scale/mask, attention softmax, and mixed PV stage jobs execute from a generated runtime-job table | `make cpu-soc-transformer` and `make ppa-l0-report WORKLOAD_PROFILE=transformer` pass | connect scaled-score/probability buffers and remove fixed-shape/stage-specific runtime assumptions |
 
@@ -103,16 +103,16 @@ Missing before claiming complete attention PPA:
 
 The next implementation round should follow this order. Each item must leave a
 reviewable document update, an implementation diff if applicable, and a test or
-explicit model-only/proxy provenance note.
+explicit model-only provenance note.
 
 | Priority | Work package | Output | Acceptance gate |
 | --- | --- | --- | --- |
 | P0 | Sync current NPU core docs with RTL | `docs/design/npu_core.md` and `docs/design/npu_core_module_status.md` reflect `op=1` attention softmax, `op=2` mixed PV, primitive engines, and current storage widths | reviewer can trace each core module to RTL, counters, tests, and blockers |
 | P1 | Review primitive valid/ready | accepted contract and standalone compatibility shims cover vector/reduction/SFU handshakes and local event counters | directed handshake/counter tests pass without guessing semantics |
 | P2 | Generate grouped attention runtime Model A | compiler/runtime emits QK -> scale/mask -> softmax -> PV stage jobs and parent group metadata | full attention parent is no longer fixture-only model metadata; report states runtime-overhead policy |
-| P3 | Implement executable scale/mask bridge and requant v2 | scale/mask is either measured or explicitly model-only; normalization multiply has reviewed width/round/shift/clamp behavior | softmax/PV numerical contract string matches golden, firmware expected data, and report metadata |
+| P3 | Implement executable scale/mask path and requant v2 | scale/mask is either measured or explicitly model-only; normalization multiply has reviewed width/round/shift/clamp behavior | softmax/PV numerical contract string matches golden, firmware expected data, and report metadata |
 | P4 | Upgrade SFU target path | deterministic 257-entry EXP LUT and reviewed RECIP behavior replace bring-up labels where claimed | measured attention softmax can be labeled target numerical evidence rather than bring-up evidence |
-| P5 | Expand measured PPA counters | matrix/vector/reduction/SFU/scheduler event sources feed CSR/report fields or remain clearly proxy/model-only | PPA schema separates measured, modeled, and proxy fields |
+| P5 | Expand measured PPA counters | matrix/vector/reduction/SFU/scheduler event sources feed CSR/report fields or remain clearly model-only | PPA schema separates measured and modeled fields |
 | P6 | Add memory/scratchpad visibility | scratchpad/bank conflict and movement overlap assumptions become measured or explicitly modeled | no overlap or memory-path speedup claim depends on unstated core memory behavior |
 
 Do not skip directly to new CSRs or PPA rows before P1. Counter semantics must
@@ -229,7 +229,7 @@ Acceptance criteria:
   - `transformer_attention_prefill_s8_d8`;
   - decode KV traffic attention view.
 - Any field that is not launched through firmware/runtime remains explicitly
-  labeled with model-only/proxy provenance.
+  labeled with model-only provenance.
 - Numerical contract IDs identify whether a workload uses simplified bring-up
   policies or target attention policies.
 
@@ -320,7 +320,7 @@ Acceptance criteria:
 
 Acceptance criteria:
 
-- `npu_v0_top` uses `hw/npu_core/rtl/matrix/accumulator_file.sv` for matmul and
+- `npu_v0_compute_cluster` uses `hw/npu_core/rtl/matrix/accumulator_file.sv` for matmul and
   K-stream partial-sum residency instead of the legacy internal `acc_buf`.
 - Existing `MATMUL` and `MATMUL_K_STREAM` firmware paths keep passing.
 - Accumulator counters are wired into a local test or documented as internal
@@ -329,7 +329,7 @@ Acceptance criteria:
 Status:
 
 - Implemented in the current work item. `acc_buf` is removed from
-  `npu_v0_top`; accumulator storage is now provided by
+  `npu_v0_compute_cluster`; accumulator storage is now provided by
   `matrix/accumulator_file.sv`.
 
 Verification:
@@ -337,7 +337,7 @@ Verification:
 ```text
 make npu-core-sim
 make cpu-soc-cnn-full
-make ppa-proxy-report
+make ppa-l0-report WORKLOAD_PROFILE=transformer
 ```
 
 ### 2. Primitive Vector / Reduction / SFU Blocks
@@ -397,7 +397,7 @@ Status:
   - `rmsnorm_primitive_sequence()`.
 - RTL sequence coverage lives in `hw/npu_core/tb/primitive_engines_tb.sv`.
 - The attention softmax smoke uses the hardwired current V1 sequence in
-  `npu_v0_top.sv`; it is measured but still labeled as the bring-up numerical
+  `npu_v0_compute_cluster.sv`; it is measured but still labeled as the bring-up numerical
   contract until SFU/RECIP are upgraded to the target fixed spec.
 
 ### 4. PV Policy And GEMV / Skinny GEMM Execution Path
@@ -451,8 +451,8 @@ PPA acceptance additions:
 
 - report measured stage cycles and group total separately;
 - expose or derive matrix/vector/reduction/SFU/data-mover events;
-- split energy proxy coefficients for `int8xint8` MAC and `u16xint8` mixed MAC;
-- split structural area proxy by matrix, vector, reduction, SFU, buffers, and
+- split modeled energy coefficients for `int8xint8` MAC and `u16xint8` mixed MAC;
+- split structural area model by matrix, vector, reduction, SFU, buffers, and
   wrapper/data mover before using submodule area conclusions.
 
 ### 6. KV Cache Counter Path

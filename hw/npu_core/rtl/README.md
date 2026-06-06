@@ -45,7 +45,9 @@ directory to Icarus Verilog with `-I build/rtl_fixture`.
 Top module:
 
 ```text
-npu_v0_top
+npu_v0_core_system
+  -> npu_v0_data_mover
+  -> npu_v0_compute_cluster
 ```
 
 Capabilities:
@@ -58,7 +60,7 @@ Capabilities:
 
 ## Current Microarchitecture
 
-The current `npu_v0_top.sv` is a deliberately small single-module design. It is
+The current `npu_v0_compute_cluster.sv` is a deliberately small compute-cluster design. It is
 closer to a sequential microcoded engine than to a realistic high-throughput
 NPU pipeline.
 
@@ -68,7 +70,7 @@ Major blocks inside the module:
 | --- | --- |
 | Host interface | Simple write/read ports: `host_we`, `host_addr`, `host_wdata`, `host_rdata` |
 | Tensor memories | Small register arrays for `dram_a`, `dram_b`, `dram_c`, `dram_x`, and `dram_y` |
-| On-chip buffers | Register arrays for `spad_a`, `spad_b`, and `vec_buf`; accumulator storage is in `matrix/accumulator_file.sv` |
+| On-chip buffers | Ping-pong Matrix operand banks and `vec_buf`; accumulator storage is in `matrix/accumulator_file.sv` |
 | Instruction memory | 16-entry register array, one 32-bit encoded micro-op per entry |
 | Sequencer | FSM with `ST_IDLE`, `ST_FETCH`, `ST_MATMUL`, and `ST_DONE` |
 | Matmul datapath | `matrix/matmul_array.sv` updates the 8x8 output tile in parallel, one K slice per active cycle |
@@ -176,8 +178,8 @@ Buffer IDs:
 
 | ID | Buffer |
 | --- | --- |
-| `0x0` | `spad_a` |
-| `0x1` | `spad_b` |
+| `0x0` | selected A operand bank binding (legacy `spad_a` encoding) |
+| `0x1` | selected B operand bank binding (legacy `spad_b` encoding) |
 | `0x2` | `acc` |
 | `0x3` | `vec` |
 

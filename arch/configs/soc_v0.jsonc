@@ -96,7 +96,7 @@
 
   "abi": {
     "npu_job_desc": {
-      "description": "CPU firmware produces this descriptor in SRAM. The NPU wrapper consumes it through DESC_ADDR, fetches program/input buffers, runs the NPU core, and writes output buffers back to SRAM.",
+      "description": "CPU firmware produces this descriptor in SRAM. The Host wrapper forwards DESC_ADDR/start to the NPU core command processor, which schedules data movement, compute, and output writeback.",
       "fields": [
         {"name": "op_type", "word": 0},
         {"name": "program_addr", "word": 1},

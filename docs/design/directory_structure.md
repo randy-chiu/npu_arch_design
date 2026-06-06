@@ -7,10 +7,10 @@ stabilization:
 
 | Path | Status | Ownership |
 | --- | --- | --- |
-| `hw/npu_core/rtl/` | `current_impl` | `npu_v0_top.sv`, current local memories, uop execution, and staged Transformer NPU v1 module directories |
+| `hw/npu_core/rtl/` | `current_impl` | `npu_v0_core_system.sv`, command processor, data mover, compute cluster, and staged Transformer NPU v1 module directories |
 | `hw/npu_core/rtl/matrix/` | `current_impl` | current matmul array plus standalone accumulator-file module |
 | `hw/npu_core/rtl/{vector,reduction,sfu,memory,scheduler,kv_cache}/` | `planned_v1` | staged module ownership directories with README contracts |
-| `hw/npu_wrapper/` | `current_impl` | CPU-visible wrapper, descriptor scheduler and data mover |
+| `hw/npu_wrapper/` | `current_impl` | thin CPU-visible Host wrapper |
 | `hw/soc/` | `current_impl` | CPU-controlled SoC verification path |
 | `sw/tools/`, `sw/soc_cpu/` | `current_impl` | generation tools, firmware/runtime and reports |
 | `workloads/`, `ppa/`, `arch/` | active contract paths | workload identity, PPA schema/baselines and source-of-truth configurations |
@@ -66,10 +66,10 @@ implementation remain in `hw/`.
 
 ## Unified NPU Direction
 
-`hw/npu_core/rtl/npu_v0_top.sv` is the current unified tensor NPU
-implementation. MNIST/CNN remains its regression workload, while future
-Transformer workloads drive evolution of the same hardware. It is not a plan
-to fork CNN and Transformer cores.
+`hw/npu_core/rtl/npu_v0_core_system.sv` is the current unified NPU core
+boundary. It contains the command processor, data mover, and
+`npu_v0_compute_cluster`. MNIST/CNN remains its regression workload, while
+future Transformer workloads drive evolution of the same hardware.
 
 As functionality becomes real architectural blocks, the current top is
 expected to separate into:
@@ -81,7 +81,8 @@ vector_engine
 reduction_engine
 sfu_engine
 memory/data_mover
-wrapper/control
+command processor
+host wrapper
 ```
 
 Migration requires keeping existing `make test`, `make firmware-smoke`,

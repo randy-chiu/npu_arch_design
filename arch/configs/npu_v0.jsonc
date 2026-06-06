@@ -165,9 +165,9 @@
     // Current RTL implementation target. This is deliberately smaller than the
     // future generated RTL system: one module, simple host write/read bus,
     // 8x8 matmul, and 8-element softmax approximation.
-    "top_module": "npu_v0_top",
+    "top_module": "npu_v0_compute_cluster",
     "matmul_tile": [8, 8, 8],
-    "matmul_array_control_cycles": 4,
+    "matmul_array_control_cycles": 0,
     "softmax_vector_len": 8,
     "host_data_width_bits": 32,
     "host_addr_width_bits": 12,

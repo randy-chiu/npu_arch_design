@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 PERF_PREFIX = "PERF_JOB "
+PERF_TRACE_PREFIX = "PERF_TRACE "
 DEFAULT_MODEL = {
     "matmul_tile": [8, 8, 8],
     "peak_macs_per_cycle": 64,
@@ -16,6 +17,22 @@ DEFAULT_MODEL = {
     "matmul_array_control_cycles": 4,
     "data_mover_words_per_cycle": 4,
     "data_mover_setup_cycles_per_segment": 1,
+}
+
+TIMELINE_HIERARCHY = {
+    "CPU firmware": {"parent": None, "depth": 0, "role": "software"},
+    "NPU wrapper": {"parent": None, "depth": 0, "role": "host interface"},
+    "NPU core": {"parent": None, "depth": 0, "role": "architecture group"},
+    "Command processor": {"parent": "NPU core", "depth": 1, "role": "schedule/control"},
+    "Uop scheduler": {"parent": "NPU core", "depth": 1, "role": "uop fetch/decode/dispatch"},
+    "Data mover": {"parent": "NPU core", "depth": 1, "role": "data transfer"},
+    "Compute cluster": {"parent": "NPU core", "depth": 1, "role": "compute"},
+    "Accumulator file": {"parent": "Compute cluster", "depth": 2, "role": "partial-sum storage"},
+    "Local storage path": {"parent": "Compute cluster", "depth": 2, "role": "operand/result movement"},
+    "Matrix engine": {"parent": "Compute cluster", "depth": 2, "role": "execution unit"},
+    "Vector engine": {"parent": "Compute cluster", "depth": 2, "role": "execution unit"},
+    "Reduction engine": {"parent": "Compute cluster", "depth": 2, "role": "execution unit"},
+    "SFU": {"parent": "Compute cluster", "depth": 2, "role": "execution unit"},
 }
 
 
@@ -120,21 +137,25 @@ def add_timeline(job: dict) -> dict:
         ],
     }
     if job.get("source") == "architectural_perf_csr_snapshot":
-        job["timeline"] = _architectural_timeline(job, cpu_lane)
+        job["timeline"] = _with_timeline_hierarchy(_architectural_timeline(job, cpu_lane))
         job["timeline_provenance"] = {
             "summary_counters": "measured_architectural_perf_csr_snapshot",
-            "span_placement": "derived_from_reviewed_state_machine",
+            "span_placement": (
+                "measured_cycle_event_trace"
+                if job.get("cycle_trace")
+                else "derived_from_reviewed_state_machine"
+            ),
         }
         return job
 
     wrapper_order = [
         ("desc_read", "Descriptor read", "work"),
-        ("fetch_program", "Program fetch", "work"),
-        ("fetch_input0", "Input0 fetch", "work"),
-        ("fetch_input1", "Input1 fetch", "work"),
+        ("fetch_program", "Program movement wait", "wait"),
+        ("fetch_input0", "Input0 movement wait", "wait"),
+        ("fetch_input1", "Input1 movement wait", "wait"),
         ("start_core", "Core launch", "work"),
         ("wait_core", "Wait for core", "wait"),
-        ("write_output", "Output writeback", "work"),
+        ("write_output", "Output movement wait", "wait"),
         ("done", "Done latch", "work"),
     ]
     core_order = [
@@ -181,10 +202,10 @@ def add_timeline(job: dict) -> dict:
     data_mover_spans = []
     wrapper_span_by_label = {}
     movement_labels = {
-        "Program fetch": "Program load",
-        "Input0 fetch": "Input0 load",
-        "Input1 fetch": "Input1 load",
-        "Output writeback": "Output store",
+        "Program movement wait": "Program load",
+        "Input0 movement wait": "Input0 load",
+        "Input1 movement wait": "Input1 load",
+        "Output movement wait": "Output store",
     }
     for span in wrapper_spans:
         wrapper_span_by_label[span["label"]] = span
@@ -199,69 +220,289 @@ def add_timeline(job: dict) -> dict:
                     "kind": "work",
                 }
             )
-    if job.get("name") == "matmul_k_stream":
-        wait_span = wrapper_span_by_label.get("Wait for core")
-        if wait_span is not None:
-            initial_read_cycles = sum(
-                int(job.get("wrapper", {}).get(key, 0))
-                for key in ("fetch_program", "fetch_input0", "fetch_input1")
-            )
-            prefetch_cycles = max(
-                0,
-                int(job.get("data_mover", {}).get("read_cycles", 0)) - initial_read_cycles,
-            )
-            overlap_cycles = min(prefetch_cycles, int(wait_span["cycles"]))
-            if overlap_cycles > 0:
-                data_mover_spans.append(
-                    {
-                        "label": "K prefetch overlap",
-                        "start": wait_span["start"],
-                        "end": wait_span["start"] + overlap_cycles,
-                        "cycles": overlap_cycles,
-                        "kind": "work",
-                    }
-                )
-
-    job["timeline"] = [
+    job["timeline"] = _with_timeline_hierarchy([
         cpu_lane,
-        {"module": "NPU wrapper", "spans": wrapper_spans},
+        {"module": "NPU wrapper", "spans": [_span("Forward CPU launch", 0, 1, "work")]},
+        {"module": "NPU core", "spans": []},
+        {"module": "Command processor", "spans": wrapper_spans},
         {"module": "Data mover", "spans": data_mover_spans},
-        {"module": "NPU core", "spans": core_spans},
-    ]
+        {"module": "Compute cluster", "spans": core_spans},
+    ])
     return job
 
 
+def _with_timeline_hierarchy(lanes: list[dict]) -> list[dict]:
+    for lane in lanes:
+        lane.update(TIMELINE_HIERARCHY.get(lane["module"], {"parent": None, "depth": 0, "role": "module"}))
+    return lanes
+
+
+def _event_spans(trace: list[dict], label_for_event, kind: str = "work") -> list[dict]:
+    spans = []
+    active_label = None
+    active_start = 0
+    previous_cycle = -2
+    for event in trace:
+        cycle = int(event["cycle"])
+        label = label_for_event(event)
+        if label != active_label or cycle != previous_cycle + 1:
+            if active_label is not None:
+                spans.append(_span(active_label, active_start, previous_cycle + 1, kind))
+            active_label = label
+            active_start = cycle
+        previous_cycle = cycle
+    if active_label is not None:
+        spans.append(_span(active_label, active_start, previous_cycle + 1, kind))
+    return spans
+
+
+def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
+    trace = job["cycle_trace"]
+
+    def command_label(event):
+        state = int(event["cmd_state"])
+        chunk = int(event["stream_chunk"])
+        labels = {
+            1: "Read/decode job descriptor",
+            2: "Wait for uop-program movement",
+            3: "Wait for external A movement",
+            4: "Wait for external B movement",
+            5: f"Launch chunk {chunk}; latch selected compute bank",
+            6: "Wait for compute/prefetch completion",
+            7: "Wait for output movement",
+            8: "Retire job / publish done",
+            9: "Enable and clear accumulator",
+            10: "Disable accumulator",
+            11: "Select alternate prefetch/next-compute bank",
+        }
+        return labels.get(state)
+
+    def mover_label(event):
+        bank = int(event["dm_target_bank"])
+        if event["dm_program"]:
+            return "Uop program: external SRAM -> instr_mem"
+        if event["dm_input_a"]:
+            return f"Chunk 0 A: external SRAM -> preload bank {bank}"
+        if event["dm_input_b"]:
+            return f"Chunk 0 B: external SRAM -> preload bank {bank}"
+        if event["dm_prefetch_a"]:
+            return f"Chunk 1 A prefetch: external SRAM -> preload bank {bank}"
+        if event["dm_prefetch_b"]:
+            return f"Chunk 1 B prefetch: external SRAM -> preload bank {bank}"
+        if event["dm_output"]:
+            return "Output window -> external SRAM"
+        return None
+
+    def scheduler_label(event):
+        if event["uop_load"]:
+            tensor = "A" if int(event["uop_tensor"]) == 0 else "B"
+            return f"Fetch/decode/issue LOAD {tensor}: bind selected operand bank"
+        if event["matrix_issue"]:
+            return "Fetch/decode/issue MATMUL"
+        if event["uop_store"]:
+            return (
+                "Fetch/decode/issue final accumulator -> C-window STORE"
+                if event["output_store_enable"]
+                else "Decode/skip non-final accumulator STORE"
+            )
+        if event["uop_wait"]:
+            return "Wait for Matrix completion"
+        if event["uop_active"]:
+            return "HALT/completion control"
+        return None
+
+    command_spans = []
+    for span in _event_spans(trace, command_label):
+        span["kind"] = "wait" if span["label"].startswith("Wait") else "work"
+        command_spans.append(span)
+    scheduler_spans = []
+    for span in _event_spans(trace, scheduler_label):
+        span["kind"] = "wait" if span["label"].startswith("Wait") else "work"
+        scheduler_spans.append(span)
+    compute_spans = _event_spans(
+        trace,
+        lambda event: (
+            "Compute-cluster active"
+            if event["core_active"]
+            else ("Wait for next-chunk A/B prefetch" if event["core_wait_data"] else None)
+        ),
+    )
+    for span in compute_spans:
+        span["kind"] = "wait" if span["label"].startswith("Wait") else "work"
+
+    return [
+        cpu_lane,
+        {"module": "NPU wrapper", "spans": [_span("Forward CPU launch", 0, 1, "work")]},
+        {"module": "NPU core", "spans": []},
+        {"module": "Command processor", "spans": command_spans},
+        {
+            "module": "Uop scheduler",
+            "spans": scheduler_spans,
+            "measured_active_cycles": int(job.get("uop_scheduler", {}).get("active_cycles", 0)),
+            "measured_wait_cycles": int(job.get("uop_scheduler", {}).get("wait_cycles", 0)),
+        },
+        {"module": "Data mover", "spans": _event_spans(trace, mover_label)},
+        {"module": "Compute cluster", "spans": compute_spans},
+        {
+            "module": "Matrix engine",
+            "spans": _event_spans(
+                trace, lambda event: "Matrix datapath active" if event["matrix_active"] else None
+            ),
+        },
+        {
+            "module": "Accumulator file",
+            "spans": _event_spans(
+                trace,
+                lambda event: (
+                    "Clear resident partial sum"
+                    if event["acc_clear"]
+                    else (
+                        "Commit/add Matrix result into resident partial sum"
+                        if event["acc_commit"]
+                        else (
+                            "Read/copy resident sum into C output window"
+                            if event["acc_readout"]
+                            else None
+                        )
+                    )
+                ),
+            ),
+        },
+    ]
+
+
 def _architectural_timeline(job: dict, cpu_lane: dict) -> list[dict]:
+    if job.get("cycle_trace"):
+        return _cycle_trace_timeline(job, cpu_lane)
+
     total = int(job["total_cycles"])
     core_cycles = int(job.get("core", {}).get("total", 0))
     matmul_cycles = int(job.get("core", {}).get("matmul", 0))
     mover = job.get("data_mover", {})
+    command = job.get("command_processor", {})
+    uop_scheduler = job.get("uop_scheduler", {})
+    measured_overlap_cycles = int(mover.get("compute_overlap_cycles", 0))
+    wait_data_cycles = int(job.get("core", {}).get("wait_data_cycles", 0))
+    local_active_cycles = int(job.get("core", {}).get("local_active_cycles", 0))
+    program_cycles = int(mover.get("program_cycles", 0))
+    initial_input_cycles = int(mover.get("initial_input_cycles", 0))
+    prefetch_cycles = int(mover.get("prefetch_cycles", 0))
     read_cycles = ceil_div(int(mover.get("read_words", 0)), 4)
     write_cycles = ceil_div(int(mover.get("write_words", 0)), 4)
+    output_cycles = int(mover.get("output_cycles", write_cycles))
+    initial_read_cycles = program_cycles + initial_input_cycles
     descriptor_cycles = min(11, max(1, total - core_cycles - read_cycles - write_cycles - 2))
+    prefetch_transition_cycles = max(
+        0, prefetch_cycles - measured_overlap_cycles - wait_data_cycles
+    )
     core_start = min(
-        max(descriptor_cycles + read_cycles, 1),
+        max(descriptor_cycles + initial_read_cycles + prefetch_transition_cycles, 1),
         max(1, total - core_cycles - write_cycles - 1),
     )
-    core_end = min(total, core_start + core_cycles)
+    core_end = min(total, core_start + core_cycles + wait_data_cycles)
     write_start = max(core_end, total - write_cycles - 1)
 
     wrapper_spans = [
         _span("Descriptor read", 0, descriptor_cycles, "work"),
-        _span("Input/program fetch", descriptor_cycles, core_start, "work"),
-        _span("Core wait", core_start, core_end, "wait"),
-        _span("Output writeback", write_start, min(total - 1, write_start + write_cycles), "work"),
+        _span("Wait for input/program movement", descriptor_cycles, core_start, "wait"),
+        _span("Wait for execution", core_start, core_end, "wait"),
+        _span("Wait for output movement", write_start, min(total - 1, write_start + write_cycles), "wait"),
         _span("Done latch", max(0, total - 1), total, "work"),
     ]
-    data_mover_spans = [
-        _span("Read/load", descriptor_cycles, min(total, descriptor_cycles + read_cycles), "work"),
-        _span("Write/store", write_start, min(total, write_start + write_cycles), "work"),
-    ]
+    program_start = descriptor_cycles
+    initial_input_start = program_start + program_cycles
+    prefetch_transition_start = initial_input_start + initial_input_cycles
+    data_mover_spans = []
+    if program_cycles:
+        data_mover_spans.append(
+            _span("Program load", program_start, program_start + program_cycles, "work")
+        )
+    if initial_input_cycles:
+        data_mover_spans.append(
+            _span("Initial chunk A/B load", initial_input_start, initial_input_start + initial_input_cycles, "work")
+        )
+    if prefetch_transition_cycles:
+        data_mover_spans.append(
+            _span("Next-chunk prefetch during control transition", prefetch_transition_start, prefetch_transition_start + prefetch_transition_cycles, "work")
+        )
+    if measured_overlap_cycles > 0:
+        overlap_label = "Measured K prefetch overlap" if job.get("name") == "matmul_k_stream" else "Measured movement/compute overlap"
+        data_mover_spans.append(
+            _span(overlap_label, core_start, min(core_end, core_start + measured_overlap_cycles), "work")
+        )
+    if wait_data_cycles > 0:
+        data_mover_spans.append(
+            _span(
+                "Prefetch blocking next chunk",
+                core_start + measured_overlap_cycles,
+                core_start + measured_overlap_cycles + wait_data_cycles,
+                "work",
+            )
+        )
+    data_mover_spans.append(
+        _span("Write/store", write_start, min(total, write_start + output_cycles), "work")
+    )
 
     module_lanes = []
+    compute_spans = [_span("Measured compute active", core_start, core_start + core_cycles, "work")]
+    matrix_spans = []
+    accumulator_spans = []
+    local_spans = []
+    scheduler_spans = []
+    scheduler_active_cycles = int(uop_scheduler.get("active_cycles", 0))
+    scheduler_wait_cycles = int(uop_scheduler.get("wait_cycles", 0))
+    if job.get("name") == "matmul_k_stream" and wait_data_cycles > 0:
+        chunk_matrix_cycles = matmul_cycles // 2
+        first_chunk_compute_cycles = chunk_matrix_cycles + 1
+        second_chunk_compute_cycles = core_cycles - first_chunk_compute_cycles
+        first_end = core_start + first_chunk_compute_cycles
+        second_start = first_end + wait_data_cycles
+        compute_spans = [
+            _span("Chunk 0 compute active", core_start, first_end, "work"),
+            _span("Wait for prefetched A/B", first_end, second_start, "wait"),
+            _span("Chunk 1 compute active", second_start, second_start + second_chunk_compute_cycles, "work"),
+        ]
+        matrix_spans = [
+            _span("Chunk 0 matrix datapath active", core_start, core_start + chunk_matrix_cycles, "work"),
+            _span("Chunk 1 matrix datapath active", second_start, second_start + chunk_matrix_cycles, "work"),
+        ]
+        accumulator_spans = [
+            _span("Chunk 0 commit/add into resident partial sum", first_end - 1, first_end, "work"),
+            _span("Chunk 1 commit/add into resident partial sum", second_start + chunk_matrix_cycles, second_start + chunk_matrix_cycles + 1, "work"),
+            _span("Chunk 1 read/copy resident sum into C output window", second_start + second_chunk_compute_cycles - 1, second_start + second_chunk_compute_cycles, "work"),
+        ]
+        active_per_chunk = scheduler_active_cycles // 2
+        wait_per_chunk = scheduler_wait_cycles // 2
+        issue_cycles = active_per_chunk // 2
+        complete_cycles = active_per_chunk - issue_cycles
+        scheduler_spans = [
+            _span("Chunk 0 fetch/decode/issue", core_start, core_start + issue_cycles, "work"),
+            _span("Chunk 0 wait for Matrix", core_start + issue_cycles, core_start + issue_cycles + wait_per_chunk, "wait"),
+            _span("Chunk 0 completion control", core_start + issue_cycles + wait_per_chunk, core_start + issue_cycles + wait_per_chunk + complete_cycles, "work"),
+            _span("Chunk 1 fetch/decode/issue", second_start, second_start + issue_cycles, "work"),
+            _span("Chunk 1 wait for Matrix", second_start + issue_cycles, second_start + issue_cycles + wait_per_chunk, "wait"),
+            _span("Chunk 1 completion control", second_start + issue_cycles + wait_per_chunk, second_start + issue_cycles + wait_per_chunk + complete_cycles, "work"),
+        ]
+    if (scheduler_active_cycles or scheduler_wait_cycles) and not scheduler_spans:
+        issue_cycles = scheduler_active_cycles // 2
+        complete_cycles = scheduler_active_cycles - issue_cycles
+        scheduler_spans = [
+            _span("Fetch/decode/issue", core_start, core_start + issue_cycles, "work"),
+            _span("Wait for execution engine", core_start + issue_cycles, core_start + issue_cycles + scheduler_wait_cycles, "wait"),
+            _span("Completion control", core_start + issue_cycles + scheduler_wait_cycles, core_start + issue_cycles + scheduler_wait_cycles + complete_cycles, "work"),
+        ]
     if matmul_cycles:
+        if not matrix_spans:
+            matrix_spans = [_span("Measured matrix datapath active", core_start, core_start + matmul_cycles, "work")]
+            accumulator_spans = [
+                _span("Measured commit/add into resident partial sum", core_start + matmul_cycles, core_start + matmul_cycles + 1, "work"),
+                _span("Measured read/copy resident sum into C output window", core_start + core_cycles - 1, core_start + core_cycles, "work"),
+            ]
         module_lanes.append(
-            {"module": "Matrix engine", "spans": [_span("Measured matrix active", core_start, core_start + matmul_cycles, "work")]}
+            {"module": "Matrix engine", "spans": matrix_spans}
+        )
+        module_lanes.append(
+            {"module": "Accumulator file", "spans": accumulator_spans}
         )
     elif job.get("name") == "attention_scale_mask_v1":
         module_lanes.append(
@@ -282,9 +523,22 @@ def _architectural_timeline(job: dict, cpu_lane: dict) -> list[dict]:
 
     return [
         cpu_lane,
-        {"module": "NPU wrapper", "spans": [span for span in wrapper_spans if span["cycles"] > 0]},
+        {"module": "NPU wrapper", "spans": [_span("Forward CPU launch", 0, 1, "work")]},
+        {"module": "NPU core", "spans": []},
+        {
+            "module": "Command processor",
+            "spans": [span for span in wrapper_spans if span["cycles"] > 0],
+            "measured_active_cycles": int(command.get("active_cycles", 0)),
+            "measured_wait_cycles": int(command.get("wait_cycles", 0)),
+        },
+        {
+            "module": "Uop scheduler",
+            "spans": scheduler_spans,
+            "measured_active_cycles": scheduler_active_cycles,
+            "measured_wait_cycles": scheduler_wait_cycles,
+        },
         {"module": "Data mover", "spans": [span for span in data_mover_spans if span["cycles"] > 0]},
-        {"module": "NPU core", "spans": [_span("Measured core active", core_start, core_end, "work")]},
+        {"module": "Compute cluster", "spans": compute_spans},
         *module_lanes,
     ]
 
@@ -295,16 +549,24 @@ def _span(label: str, start: int, end: int, kind: str) -> dict:
 
 
 def parse_perf_log(path: Path, manifest_path: Path | None = None, model: dict = DEFAULT_MODEL) -> dict:
-    jobs = []
+    raw_jobs = []
+    traces: dict[int, list[dict]] = {}
     with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line.startswith(PERF_PREFIX):
-                jobs.append(
-                        add_timeline(add_movement_estimates(add_estimates(
-                            json.loads(line[len(PERF_PREFIX) :]), model
-                        ), model))
-                )
+                raw_jobs.append(json.loads(line[len(PERF_PREFIX) :]))
+            elif line.startswith(PERF_TRACE_PREFIX):
+                event = json.loads(line[len(PERF_TRACE_PREFIX) :])
+                traces.setdefault(int(event["job_id"]), []).append(event)
+    jobs = []
+    for job in raw_jobs:
+        job_trace = traces.get(_job_id(job))
+        if job_trace:
+            job["cycle_trace"] = job_trace
+        job = add_timeline(add_movement_estimates(add_estimates(job, model), model))
+        job.pop("cycle_trace", None)
+        jobs.append(job)
     if not jobs:
         raise ValueError(f"no {PERF_PREFIX.strip()} records found in {path}")
     workload_manifest = None
@@ -532,7 +794,7 @@ def build_highlights(workloads: list[dict], jobs: list[dict]) -> list[dict]:
                 for lane in job.get("timeline", []):
                     if lane.get("module") == "Data mover":
                         for span in lane.get("spans", []):
-                            if span.get("label") == "K prefetch overlap":
+                            if span.get("label") == "Measured K prefetch overlap":
                                 if overlap_cycles is None:
                                     overlap_cycles = 0
                                 overlap_cycles += int(span.get("cycles", 0))
@@ -1094,6 +1356,17 @@ def write_html(report: dict, path: Path) -> None:
     .timeline .lane-label {{
       white-space: nowrap;
     }}
+    .timeline .lane-label.child {{
+      border-left: 2px solid #c7d2e2;
+      color: #3c4b61;
+    }}
+    .lane-role {{
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 500;
+      margin-top: 1px;
+    }}
     .phase-timeline .lane-label {{ font-weight: 500; color: #324056; }}
     .lane-value {{
       text-align: right;
@@ -1238,8 +1511,13 @@ def write_html(report: dict, path: Path) -> None:
     const timelineColors = {{
       "CPU firmware": "#7b61d1",
       "NPU wrapper": "#2068d8",
+      "NPU core": "#526174",
+      "Command processor": "#4380b8",
+      "Uop scheduler": "#6f5aa8",
       "Data mover": "#c46b1f",
-      "NPU core": "#1a9a7a",
+      "Compute cluster": "#1a9a7a",
+      "Accumulator file": "#8a6f3d",
+      "Local storage path": "#5b8f78",
       "Matrix engine": "#1666b1",
       "Vector engine": "#8b5a2b",
       "Reduction engine": "#b04759",
@@ -1318,8 +1596,10 @@ def write_html(report: dict, path: Path) -> None:
 
       job.timeline.forEach((laneData) => {{
         const label = document.createElement("div");
-        label.className = "lane-label";
-        label.textContent = laneData.module;
+        const depth = laneData.depth || 0;
+        label.className = `lane-label ${{depth ? "child" : "root"}}`;
+        label.style.paddingLeft = `${{depth * 16 + 4}}px`;
+        label.innerHTML = `<span>${{depth ? "↳ " : ""}}${{laneData.module}}</span><small class="lane-role">${{laneData.role || "module"}}</small>`;
         const lane = document.createElement("div");
         lane.className = "lane";
         laneData.spans.forEach((span) => {{
@@ -1335,8 +1615,11 @@ def write_html(report: dict, path: Path) -> None:
         }});
         const laneValue = document.createElement("div");
         laneValue.className = "lane-value";
-        const activeCycles = laneData.spans.reduce((sum, span) => sum + span.cycles, 0);
-        laneValue.textContent = `${{activeCycles}} cycles`;
+        const activeCycles = laneData.measured_active_cycles ?? laneData.spans.filter((span) => span.kind === "work").reduce((sum, span) => sum + span.cycles, 0);
+        const waitCycles = laneData.measured_wait_cycles ?? laneData.spans.filter((span) => span.kind === "wait").reduce((sum, span) => sum + span.cycles, 0);
+        laneValue.textContent = laneData.role === "architecture group"
+          ? "group"
+          : (waitCycles ? `${{activeCycles}} active / ${{waitCycles}} wait` : `${{activeCycles}} active`);
         timeline.appendChild(label);
         timeline.appendChild(lane);
         timeline.appendChild(laneValue);
@@ -1349,6 +1632,7 @@ def write_html(report: dict, path: Path) -> None:
       legend.innerHTML = `
         <span><i style="background:#2068d8"></i>active work</span>
         <span><i style="background:repeating-linear-gradient(45deg,#dce2ec,#dce2ec 6px,#cbd4e2 6px,#cbd4e2 12px); border:1px solid #bcc7d8"></i>wait/blocked</span>
+        <span>NPU core is a group; command processor, data mover, and compute cluster are its children. Group and child totals are not additive.</span>
       `;
       parent.appendChild(legend);
     }}
@@ -1407,14 +1691,14 @@ def write_html(report: dict, path: Path) -> None:
     }}
 
     function phaseDetail(moduleName, label) {{
-      if (moduleName !== "NPU wrapper") return "";
+      if (moduleName !== "Command processor") return "";
       const details = {{
         "Descriptor read": "wrapper reads job descriptor words from SRAM",
         "Program fetch": "wrapper reads program words from SRAM and writes core instr_mem through host window",
         "Input0 fetch": "wrapper reads input0 tensor from SRAM and writes core A/X window",
         "Input1 fetch": "wrapper reads input1 tensor from SRAM and writes core B window",
-        "Core launch": "wrapper pulses NPU core start",
-        "Core wait": "wrapper waits while NPU core executes its already-loaded uops/data",
+        "Core launch": "command processor starts the compute cluster",
+        "Core wait": "command processor waits while the compute cluster executes",
         "Output writeback": "wrapper reads core C/Y output window and writes result words to SRAM",
         "Done latch": "wrapper updates done/status"
       }};
@@ -1604,7 +1888,7 @@ def main() -> None:
     parser.add_argument("--arch-config", type=Path)
     parser.add_argument("--soc-config", type=Path)
     parser.add_argument("--json-out", required=True, type=Path)
-    parser.add_argument("--html-out", required=True, type=Path)
+    parser.add_argument("--html-out", type=Path)
     args = parser.parse_args()
 
     if args.arch_config is None or args.soc_config is None:
@@ -1613,9 +1897,10 @@ def main() -> None:
         model = load_measurement_model(args.arch_config, args.soc_config)
     report = parse_perf_log(args.log, args.workload_manifest, model)
     write_json(report, args.json_out)
-    write_html(report, args.html_out)
     print(f"Wrote {args.json_out}")
-    print(f"Wrote {args.html_out}")
+    if args.html_out is not None:
+        write_html(report, args.html_out)
+        print(f"Wrote {args.html_out}")
 
 
 if __name__ == "__main__":

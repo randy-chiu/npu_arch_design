@@ -10,5 +10,5 @@ phase0.py
 ```
 
 It encodes compiler-emitted JSON uops into the temporary 32-bit instruction
-format consumed by `hw/npu_core/rtl/npu_v0_top.sv` and by the firmware/RTL
+format consumed by `hw/npu_core/rtl/npu_v0_compute_cluster.sv` and by the firmware/RTL
 fixture generation flow.

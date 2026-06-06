@@ -75,7 +75,7 @@ def generate_default_fixtures(
 
 
 def softmax_q0_8(values: list[int]) -> list[int]:
-    """Match the tiny integer softmax approximation in ``npu_v0_top.sv``."""
+    """Match the tiny integer softmax approximation in ``npu_v0_compute_cluster.sv``."""
 
     max_v = max(values)
     exp_values = [_exp_lut_q8(v - max_v) for v in values]

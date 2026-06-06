@@ -5,12 +5,12 @@
 ## 1. Purpose / 目的
 
 `npu_subsystem_top` is the primary synthesis and PPA comparison top. It places
-the current CPU-visible wrapper, descriptor/data mover control, and NPU core
+the current CPU-visible Host wrapper and complete NPU core system
 behind stable external control and memory interfaces, without pulling in the
 simulation CPU, boot ROM, oversized staging SRAM, or test-status peripheral.
 
 `npu_subsystem_top` 是主要的综合与 PPA 对比 top。它保留 NPU 执行一次 job 所需的
-wrapper、descriptor/data mover 与 core 代价，但不把当前功能仿真用的 CPU、
+Host wrapper、command processor、data mover 与 compute cluster 代价，但不把当前功能仿真用的 CPU、
 超大 boot ROM/SRAM 与 test status 外设误计入 NPU 主面积和功耗。
 
 ## 2. First Implementation Boundary / 第一版实现边界
@@ -19,10 +19,12 @@ The first implementation is deliberately a structural boundary only:
 
 ```text
 npu_subsystem_top
-  -> npu_v0_opsched
-      -> npu_v0_data_mover
-      -> npu_v0_top
-          -> matmul_array
+  -> npu_v0_wrapper
+      -> npu_v0_core_system
+          -> command processor / scheduler
+          -> npu_v0_data_mover
+          -> npu_v0_compute_cluster
+              -> matmul_array
 ```
 
 It does not change the descriptor ABI, movement behavior, ping-pong behavior,
@@ -53,7 +55,7 @@ harness，但不得默认把当前多 MiB 的仿真 SRAM 综合进主要 NPU 结
 | Result | Interpretation |
 | --- | --- |
 | `npu_core` PPA | compute/core-state attribution |
-| `npu_subsystem` PPA | primary decision result including wrapper/data mover/core |
+| `npu_subsystem` PPA | primary decision result including Host wrapper and complete NPU core |
 | SRAM/external model | separately named memory cost or energy estimate |
 | `soc_reference` PPA | optional integration reference only |
 

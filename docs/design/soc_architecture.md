@@ -13,7 +13,8 @@ The current SoC exists to make the NPU path executable end to end:
 PicoRV32 firmware
   -> memory-mapped NPU wrapper registers
   -> descriptor and tensors in SRAM
-  -> NPU wrapper/data mover
+  -> NPU Host wrapper
+      -> NPU core command processor/data mover
   -> NPU core
   -> SRAM output
   -> firmware result check
@@ -34,7 +35,8 @@ Current CPU-controlled top:
 | `boot_rom` | `hw/soc/rtl/mem/boot_rom.sv` | Read-only firmware image for simulation |
 | `simple_sram` | `hw/soc/rtl/mem/simple_sram.sv` | CPU data memory plus independent NPU port |
 | `soc_dma` | `hw/soc/rtl/dma/soc_dma.sv` | CPU-configured ROM-to-SRAM staging DMA |
-| `npu_v0_opsched` | `hw/npu_wrapper/rtl/npu_v0_opsched.sv` | CPU-visible NPU wrapper |
+| `npu_v0_wrapper` | `hw/npu_wrapper/rtl/npu_v0_wrapper.sv` | CPU-visible NPU Host wrapper |
+| `npu_v0_core_system` | `hw/npu_core/rtl/npu_v0_core_system.sv` | descriptor scheduling, movement, compute, and perf accounting |
 | `test_status` | `hw/soc/rtl/debug/test_status.sv` | Simulation pass/fail register |
 
 ## 3. Memory Map
@@ -169,7 +171,7 @@ while the DMA stages generated arrays into SRAM.
 | Port | User | Current purpose |
 | --- | --- | --- |
 | CPU port | `simple_bus` | stack, globals, descriptor construction, tensor/program staging; physically `SOC_SRAM_CPU_LANES` lanes but PicoRV32 currently uses one lane per request |
-| NPU port | `npu_v0_opsched` | descriptor/program/input reads and output writes; `SOC_NPU_SRAM_LANES` lanes |
+| NPU port | `npu_v0_core_system` through `npu_v0_wrapper` | descriptor/program/input reads and output writes; `SOC_NPU_SRAM_LANES` lanes |
 
 Both ports are still single-cycle ready in the current model. There is no bank
 conflict model yet. A2 work should gradually replace this with a bandwidth and

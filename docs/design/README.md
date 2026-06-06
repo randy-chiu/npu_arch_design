@@ -14,8 +14,8 @@ contracts, but must not redefine them.
 | --- | --- |
 | `soc_architecture.md` | SoC top, memory map, bus, ROM/SRAM, NPU attachment |
 | `soc_dma.md` | SoC ROM-to-SRAM DMA/preload engine |
-| `npu_wrapper.md` | NPU wrapper, descriptor FSM, host windows, A2 data mover |
-| `npu_subsystem.md` | primary PPA top around wrapper/data mover/core with external memory boundary |
+| `npu_wrapper.md` | CPU-visible NPU Host wrapper and forwarded register/descriptor ABI |
+| `npu_subsystem.md` | primary PPA top around Host wrapper and complete NPU core with external memory boundary |
 | `npu_core.md` | NPU core memories, uop execution, matmul array, softmax path |
 | `npu_core_module_status.md` | NPU core module status matrix: design source, RTL status, counters, tests, and blockers |
 | `software_hardware_flow.md` | compiler, assembler, firmware, descriptor ABI, CPU/NPU flow |

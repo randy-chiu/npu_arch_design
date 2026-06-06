@@ -1,22 +1,56 @@
-module npu_v0_opsched #(
+module npu_v0_core_system #(
     parameter int CORE_HOST_LANES = 4
 ) (
     input  logic        clk,
     input  logic        rst_n,
 
-    input  logic        bus_req,
-    input  logic        bus_we,
-    input  logic [11:0] bus_addr,
-    input  logic [31:0] bus_wdata,
-    output logic [31:0] bus_rdata,
-    output logic        bus_ready,
+    input  logic        cmd_valid,
+    input  logic [31:0] cmd_desc_addr,
+    output logic        cmd_ready,
+    output logic        core_busy,
+    output logic        core_done,
+
+    input  logic        legacy_req,
+    input  logic        legacy_we,
+    input  logic [11:0] legacy_addr,
+    input  logic [31:0] legacy_wdata,
+    output logic [31:0] legacy_rdata,
+    output logic        legacy_ready,
 
     output logic        sram_req,
     output logic [CORE_HOST_LANES-1:0] sram_we,
     output logic [31:0] sram_addr,
     output logic [(CORE_HOST_LANES*32)-1:0] sram_wdata,
     input  logic [(CORE_HOST_LANES*32)-1:0] sram_rdata,
-    input  logic        sram_ready
+    input  logic        sram_ready,
+
+    output logic        perf_snapshot_valid,
+    output logic        perf_snapshot_overflow,
+    output logic [31:0] perf_snap_total_cycles,
+    output logic [31:0] perf_snap_core_active_cycles,
+    output logic [31:0] perf_snap_core_matmul_cycles,
+    output logic [31:0] perf_snap_data_mover_active_cycles,
+    output logic [31:0] perf_snap_data_mover_setup_cycles,
+    output logic [31:0] perf_snap_data_mover_transfer_cycles,
+    output logic [31:0] perf_snap_data_mover_stall_cycles,
+    output logic [31:0] perf_snap_data_mover_words,
+    output logic [31:0] perf_snap_data_mover_read_words,
+    output logic [31:0] perf_snap_data_mover_write_words,
+    output logic [31:0] perf_snap_sram_read_words,
+    output logic [31:0] perf_snap_sram_write_words,
+    output logic [31:0] perf_snap_job_id,
+    output logic [31:0] perf_snap_op_type,
+    output logic [31:0] perf_snap_cmd_active_cycles,
+    output logic [31:0] perf_snap_cmd_wait_cycles,
+    output logic [31:0] perf_snap_dm_compute_overlap_cycles,
+    output logic [31:0] perf_snap_uop_sched_active_cycles,
+    output logic [31:0] perf_snap_uop_sched_wait_cycles,
+    output logic [31:0] perf_snap_core_wait_data_cycles,
+    output logic [31:0] perf_snap_core_local_active_cycles,
+    output logic [31:0] perf_snap_dm_program_cycles,
+    output logic [31:0] perf_snap_dm_initial_input_cycles,
+    output logic [31:0] perf_snap_dm_prefetch_cycles,
+    output logic [31:0] perf_snap_dm_output_cycles
 );
     `include "npu_v0_regs.svh"
     `include "soc_v0_addr.svh"
@@ -40,9 +74,6 @@ module npu_v0_opsched #(
     logic        start_pulse;
     logic        npu_done;
     logic        busy;
-    logic        done_latched;
-    logic        irq_enable;
-    logic        irq_status;
     logic [31:0] desc_addr;
 
     desc_state_t desc_state;
@@ -99,6 +130,10 @@ module npu_v0_opsched #(
     logic        core_perf_fetch_active;
     logic        core_perf_matmul_active;
     logic        core_perf_done_active;
+    logic        core_perf_uop_sched_active;
+    logic        core_perf_uop_sched_wait;
+    logic        core_perf_matrix_active;
+    logic        core_perf_local_active;
     logic        job_is_k_stream;
     logic        k_stream_has_next;
     logic        k_stream_next_bank;
@@ -107,8 +142,6 @@ module npu_v0_opsched #(
     localparam int DATA_MOVER_SETUP_CYCLES = SOC_NPU_DATA_MOVER_SETUP_CYCLES;
 
     logic        perf_running;
-    logic        perf_snapshot_valid;
-    logic        perf_snapshot_overflow;
     logic        perf_work_overflow;
     logic [31:0] perf_work_total_cycles;
     logic [31:0] perf_work_core_active_cycles;
@@ -122,22 +155,23 @@ module npu_v0_opsched #(
     logic [31:0] perf_work_data_mover_write_words;
     logic [31:0] perf_work_sram_read_words;
     logic [31:0] perf_work_sram_write_words;
-    logic [31:0] perf_snap_total_cycles;
-    logic [31:0] perf_snap_core_active_cycles;
-    logic [31:0] perf_snap_core_matmul_cycles;
-    logic [31:0] perf_snap_data_mover_active_cycles;
-    logic [31:0] perf_snap_data_mover_setup_cycles;
-    logic [31:0] perf_snap_data_mover_transfer_cycles;
-    logic [31:0] perf_snap_data_mover_stall_cycles;
-    logic [31:0] perf_snap_data_mover_words;
-    logic [31:0] perf_snap_data_mover_read_words;
-    logic [31:0] perf_snap_data_mover_write_words;
-    logic [31:0] perf_snap_sram_read_words;
-    logic [31:0] perf_snap_sram_write_words;
-    logic [31:0] perf_snap_job_id;
-    logic [31:0] perf_snap_op_type;
+    logic [31:0] perf_work_cmd_active_cycles;
+    logic [31:0] perf_work_cmd_wait_cycles;
+    logic [31:0] perf_work_dm_compute_overlap_cycles;
+    logic [31:0] perf_work_uop_sched_active_cycles;
+    logic [31:0] perf_work_uop_sched_wait_cycles;
+    logic [31:0] perf_work_core_wait_data_cycles;
+    logic [31:0] perf_work_core_local_active_cycles;
+    logic [31:0] perf_work_dm_program_cycles;
+    logic [31:0] perf_work_dm_initial_input_cycles;
+    logic [31:0] perf_work_dm_prefetch_cycles;
+    logic [31:0] perf_work_dm_output_cycles;
     logic        perf_start_event;
     logic        perf_complete_event;
+    logic        perf_cmd_active_event;
+    logic        perf_cmd_wait_event;
+    logic        perf_dm_compute_overlap_event;
+    logic        perf_core_wait_data_event;
     logic [31:0] perf_sram_read_increment;
     logic [31:0] perf_sram_write_increment;
 
@@ -145,20 +179,32 @@ module npu_v0_opsched #(
     assign k_stream_has_next =
         job_is_k_stream && (stream_chunk_idx + 16'h0001 < job_k_chunks[15:0]);
     assign k_stream_next_bank = ~stream_chunk_idx[0];
-    assign perf_start_event =
-        bus_req && bus_we && bus_addr == NPU_OPSCHED_CTRL &&
-        bus_wdata[NPU_OPSCHED_CTRL_START_BIT];
+    assign perf_start_event = cmd_valid && cmd_ready;
     assign perf_complete_event =
         perf_running &&
         (desc_state == DESC_DONE || (desc_state == DESC_IDLE && npu_done));
+    assign perf_cmd_active_event =
+        desc_state == DESC_READ ||
+        desc_state == DESC_START_CORE ||
+        desc_state == DESC_DONE ||
+        desc_state == DESC_CONFIG_ACC ||
+        desc_state == DESC_DISABLE_ACC ||
+        desc_state == DESC_CONFIG_NEXT_BANK;
+    assign perf_cmd_wait_event = busy && !perf_cmd_active_event;
+    assign perf_dm_compute_overlap_event = mover_perf_active && core_perf_active;
+    assign perf_core_wait_data_event =
+        job_is_k_stream && k_stream_has_next && desc_state == DESC_WAIT_CORE &&
+        mover_perf_active && (core_done_seen || npu_done);
 
-    assign bus_ready = bus_req;
+    assign cmd_ready = (desc_state == DESC_IDLE) && !busy;
+    assign core_busy = busy;
+    assign legacy_ready = legacy_req;
     assign npu_host_addr = (desc_state == DESC_IDLE) ? legacy_host_addr : desc_host_addr;
     assign npu_host_we = (desc_state == DESC_IDLE) ?
         {{(CORE_HOST_LANES-1){1'b0}}, legacy_host_we} :
         (mover_host_we | {{(CORE_HOST_LANES-1){1'b0}}, desc_host_we});
     assign npu_host_wdata = (desc_state == DESC_IDLE) ?
-        {{((CORE_HOST_LANES-1)*32){1'b0}}, bus_wdata} :
+        {{((CORE_HOST_LANES-1)*32){1'b0}}, legacy_wdata} :
         (mover_host_wdata | {{((CORE_HOST_LANES-1)*32){1'b0}}, desc_host_wdata});
     assign npu_host_rdata_lane0 = npu_host_rdata[31:0];
 
@@ -211,20 +257,25 @@ module npu_v0_opsched #(
         end
     end
 
-    npu_v0_top #(
+    npu_v0_compute_cluster #(
         .CORE_HOST_LANES(CORE_HOST_LANES)
-    ) u_npu (
+    ) u_compute_cluster (
         .clk(clk),
         .rst_n(rst_n),
         .start(start_pulse),
         .op((job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1) ? 2'd1 :
             ((job_op_type == SOC_NPU_JOB_OP_MATMUL_U16S8_Q15) ? 2'd2 :
             ((job_op_type == SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1) ? 2'd3 : 2'd0))),
+        .output_store_enable(!job_is_k_stream || !k_stream_has_next),
         .done(npu_done),
         .perf_active(core_perf_active),
         .perf_fetch_active(core_perf_fetch_active),
         .perf_matmul_active(core_perf_matmul_active),
         .perf_done_active(core_perf_done_active),
+        .perf_uop_sched_active(core_perf_uop_sched_active),
+        .perf_uop_sched_wait(core_perf_uop_sched_wait),
+        .perf_matrix_active(core_perf_matrix_active),
+        .perf_local_active(core_perf_local_active),
         .host_we(npu_host_we),
         .host_addr(npu_host_addr),
         .host_wdata(npu_host_wdata),
@@ -264,29 +315,29 @@ module npu_v0_opsched #(
 
     always @* begin
         legacy_host_addr = RTL_HOST_A_BASE;
-        if (bus_addr >= NPU_OPSCHED_A_BASE && bus_addr < NPU_OPSCHED_A_BASE + NPU_OPSCHED_A_BASE_SIZE_BYTES) begin
-            legacy_host_addr = RTL_HOST_A_BASE + ((bus_addr - NPU_OPSCHED_A_BASE) >> 2);
-        end else if (bus_addr >= NPU_OPSCHED_B_BASE && bus_addr < NPU_OPSCHED_B_BASE + NPU_OPSCHED_B_BASE_SIZE_BYTES) begin
-            legacy_host_addr = RTL_HOST_B_BASE + ((bus_addr - NPU_OPSCHED_B_BASE) >> 2);
-        end else if (bus_addr >= NPU_OPSCHED_C_BASE && bus_addr < NPU_OPSCHED_C_BASE + NPU_OPSCHED_C_BASE_SIZE_BYTES) begin
-            legacy_host_addr = RTL_HOST_C_BASE + ((bus_addr - NPU_OPSCHED_C_BASE) >> 2);
-        end else if (bus_addr >= NPU_OPSCHED_X_BASE && bus_addr < NPU_OPSCHED_X_BASE + NPU_OPSCHED_X_BASE_SIZE_BYTES) begin
-            legacy_host_addr = RTL_HOST_X_BASE + ((bus_addr - NPU_OPSCHED_X_BASE) >> 2);
-        end else if (bus_addr >= NPU_OPSCHED_Y_BASE && bus_addr < NPU_OPSCHED_Y_BASE + NPU_OPSCHED_Y_BASE_SIZE_BYTES) begin
-            legacy_host_addr = RTL_HOST_Y_BASE + ((bus_addr - NPU_OPSCHED_Y_BASE) >> 2);
-        end else if (bus_addr >= NPU_OPSCHED_PROGRAM_BASE && bus_addr < NPU_OPSCHED_PROGRAM_BASE + NPU_OPSCHED_PROGRAM_BASE_SIZE_BYTES) begin
-            legacy_host_addr = RTL_HOST_PROGRAM_BASE + ((bus_addr - NPU_OPSCHED_PROGRAM_BASE) >> 2);
+        if (legacy_addr >= NPU_OPSCHED_A_BASE && legacy_addr < NPU_OPSCHED_A_BASE + NPU_OPSCHED_A_BASE_SIZE_BYTES) begin
+            legacy_host_addr = RTL_HOST_A_BASE + ((legacy_addr - NPU_OPSCHED_A_BASE) >> 2);
+        end else if (legacy_addr >= NPU_OPSCHED_B_BASE && legacy_addr < NPU_OPSCHED_B_BASE + NPU_OPSCHED_B_BASE_SIZE_BYTES) begin
+            legacy_host_addr = RTL_HOST_B_BASE + ((legacy_addr - NPU_OPSCHED_B_BASE) >> 2);
+        end else if (legacy_addr >= NPU_OPSCHED_C_BASE && legacy_addr < NPU_OPSCHED_C_BASE + NPU_OPSCHED_C_BASE_SIZE_BYTES) begin
+            legacy_host_addr = RTL_HOST_C_BASE + ((legacy_addr - NPU_OPSCHED_C_BASE) >> 2);
+        end else if (legacy_addr >= NPU_OPSCHED_X_BASE && legacy_addr < NPU_OPSCHED_X_BASE + NPU_OPSCHED_X_BASE_SIZE_BYTES) begin
+            legacy_host_addr = RTL_HOST_X_BASE + ((legacy_addr - NPU_OPSCHED_X_BASE) >> 2);
+        end else if (legacy_addr >= NPU_OPSCHED_Y_BASE && legacy_addr < NPU_OPSCHED_Y_BASE + NPU_OPSCHED_Y_BASE_SIZE_BYTES) begin
+            legacy_host_addr = RTL_HOST_Y_BASE + ((legacy_addr - NPU_OPSCHED_Y_BASE) >> 2);
+        end else if (legacy_addr >= NPU_OPSCHED_PROGRAM_BASE && legacy_addr < NPU_OPSCHED_PROGRAM_BASE + NPU_OPSCHED_PROGRAM_BASE_SIZE_BYTES) begin
+            legacy_host_addr = RTL_HOST_PROGRAM_BASE + ((legacy_addr - NPU_OPSCHED_PROGRAM_BASE) >> 2);
         end
     end
 
     always_comb begin
         legacy_host_we = 1'b0;
-        if (bus_req && bus_we) begin
+        if (legacy_req && legacy_we) begin
             legacy_host_we =
-                (bus_addr >= NPU_OPSCHED_A_BASE && bus_addr < NPU_OPSCHED_A_BASE + NPU_OPSCHED_A_BASE_SIZE_BYTES) ||
-                (bus_addr >= NPU_OPSCHED_B_BASE && bus_addr < NPU_OPSCHED_B_BASE + NPU_OPSCHED_B_BASE_SIZE_BYTES) ||
-                (bus_addr >= NPU_OPSCHED_X_BASE && bus_addr < NPU_OPSCHED_X_BASE + NPU_OPSCHED_X_BASE_SIZE_BYTES) ||
-                (bus_addr >= NPU_OPSCHED_PROGRAM_BASE && bus_addr < NPU_OPSCHED_PROGRAM_BASE + NPU_OPSCHED_PROGRAM_BASE_SIZE_BYTES);
+                (legacy_addr >= NPU_OPSCHED_A_BASE && legacy_addr < NPU_OPSCHED_A_BASE + NPU_OPSCHED_A_BASE_SIZE_BYTES) ||
+                (legacy_addr >= NPU_OPSCHED_B_BASE && legacy_addr < NPU_OPSCHED_B_BASE + NPU_OPSCHED_B_BASE_SIZE_BYTES) ||
+                (legacy_addr >= NPU_OPSCHED_X_BASE && legacy_addr < NPU_OPSCHED_X_BASE + NPU_OPSCHED_X_BASE_SIZE_BYTES) ||
+                (legacy_addr >= NPU_OPSCHED_PROGRAM_BASE && legacy_addr < NPU_OPSCHED_PROGRAM_BASE + NPU_OPSCHED_PROGRAM_BASE_SIZE_BYTES);
         end
     end
 
@@ -430,88 +481,7 @@ module npu_v0_opsched #(
         endcase
     end
 
-    always_comb begin
-        bus_rdata = 32'h0000_0000;
-        case (bus_addr)
-            NPU_OPSCHED_CTRL: begin
-                bus_rdata = 32'h0000_0000;
-            end
-            NPU_OPSCHED_STATUS: begin
-                bus_rdata[NPU_OPSCHED_STATUS_DONE_BIT] = done_latched;
-                bus_rdata[NPU_OPSCHED_STATUS_BUSY_BIT] = busy;
-                bus_rdata[NPU_OPSCHED_STATUS_IDLE_BIT] = !busy;
-            end
-            NPU_OPSCHED_VERSION: begin
-                bus_rdata = 32'h0001_0000;
-            end
-            NPU_OPSCHED_IRQ_ENABLE: begin
-                bus_rdata[NPU_OPSCHED_IRQ_ENABLE_ENABLE_BIT] = irq_enable;
-            end
-            NPU_OPSCHED_IRQ_STATUS: begin
-                bus_rdata[NPU_OPSCHED_IRQ_STATUS_PENDING_BIT] = irq_status;
-            end
-            NPU_OPSCHED_DESC_ADDR: begin
-                bus_rdata = desc_addr;
-            end
-            NPU_OPSCHED_PERF_CTRL: begin
-                bus_rdata = 32'h0000_0000;
-            end
-            NPU_OPSCHED_PERF_STATUS: begin
-                bus_rdata[NPU_OPSCHED_PERF_STATUS_VALID_BIT] = perf_snapshot_valid;
-                bus_rdata[NPU_OPSCHED_PERF_STATUS_RUNNING_BIT] = perf_running;
-                bus_rdata[NPU_OPSCHED_PERF_STATUS_OVERFLOW_BIT] = perf_snapshot_overflow;
-            end
-            NPU_OPSCHED_PERF_TOTAL_CYCLES: begin
-                bus_rdata = perf_snap_total_cycles;
-            end
-            NPU_OPSCHED_PERF_CORE_ACTIVE_CYCLES: begin
-                bus_rdata = perf_snap_core_active_cycles;
-            end
-            NPU_OPSCHED_PERF_CORE_MATMUL_CYCLES: begin
-                bus_rdata = perf_snap_core_matmul_cycles;
-            end
-            NPU_OPSCHED_PERF_DATA_MOVER_ACTIVE_CYCLES: begin
-                bus_rdata = perf_snap_data_mover_active_cycles;
-            end
-            NPU_OPSCHED_PERF_DATA_MOVER_SETUP_CYCLES: begin
-                bus_rdata = perf_snap_data_mover_setup_cycles;
-            end
-            NPU_OPSCHED_PERF_DATA_MOVER_TRANSFER_CYCLES: begin
-                bus_rdata = perf_snap_data_mover_transfer_cycles;
-            end
-            NPU_OPSCHED_PERF_DATA_MOVER_STALL_CYCLES: begin
-                bus_rdata = perf_snap_data_mover_stall_cycles;
-            end
-            NPU_OPSCHED_PERF_DATA_MOVER_WORDS: begin
-                bus_rdata = perf_snap_data_mover_words;
-            end
-            NPU_OPSCHED_PERF_SRAM_READ_WORDS: begin
-                bus_rdata = perf_snap_sram_read_words;
-            end
-            NPU_OPSCHED_PERF_SRAM_WRITE_WORDS: begin
-                bus_rdata = perf_snap_sram_write_words;
-            end
-            NPU_OPSCHED_PERF_JOB_ID: begin
-                bus_rdata = perf_snap_job_id;
-            end
-            NPU_OPSCHED_PERF_OP_TYPE: begin
-                bus_rdata = perf_snap_op_type;
-            end
-            NPU_OPSCHED_PERF_DATA_MOVER_READ_WORDS: begin
-                bus_rdata = perf_snap_data_mover_read_words;
-            end
-            NPU_OPSCHED_PERF_DATA_MOVER_WRITE_WORDS: begin
-                bus_rdata = perf_snap_data_mover_write_words;
-            end
-            default: begin
-                if (!bus_we &&
-                    ((bus_addr >= NPU_OPSCHED_C_BASE && bus_addr < NPU_OPSCHED_C_BASE + NPU_OPSCHED_C_BASE_SIZE_BYTES) ||
-                     (bus_addr >= NPU_OPSCHED_Y_BASE && bus_addr < NPU_OPSCHED_Y_BASE + NPU_OPSCHED_Y_BASE_SIZE_BYTES))) begin
-                    bus_rdata = npu_host_rdata_lane0;
-                end
-            end
-        endcase
-    end
+    assign legacy_rdata = npu_host_rdata_lane0;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -531,6 +501,17 @@ module npu_v0_opsched #(
             perf_work_data_mover_write_words <= 32'h0000_0000;
             perf_work_sram_read_words <= 32'h0000_0000;
             perf_work_sram_write_words <= 32'h0000_0000;
+            perf_work_cmd_active_cycles <= 32'h0000_0000;
+            perf_work_cmd_wait_cycles <= 32'h0000_0000;
+            perf_work_dm_compute_overlap_cycles <= 32'h0000_0000;
+            perf_work_uop_sched_active_cycles <= 32'h0000_0000;
+            perf_work_uop_sched_wait_cycles <= 32'h0000_0000;
+            perf_work_core_wait_data_cycles <= 32'h0000_0000;
+            perf_work_core_local_active_cycles <= 32'h0000_0000;
+            perf_work_dm_program_cycles <= 32'h0000_0000;
+            perf_work_dm_initial_input_cycles <= 32'h0000_0000;
+            perf_work_dm_prefetch_cycles <= 32'h0000_0000;
+            perf_work_dm_output_cycles <= 32'h0000_0000;
             perf_snap_total_cycles <= 32'h0000_0000;
             perf_snap_core_active_cycles <= 32'h0000_0000;
             perf_snap_core_matmul_cycles <= 32'h0000_0000;
@@ -545,6 +526,17 @@ module npu_v0_opsched #(
             perf_snap_sram_write_words <= 32'h0000_0000;
             perf_snap_job_id <= 32'h0000_0000;
             perf_snap_op_type <= 32'h0000_0000;
+            perf_snap_cmd_active_cycles <= 32'h0000_0000;
+            perf_snap_cmd_wait_cycles <= 32'h0000_0000;
+            perf_snap_dm_compute_overlap_cycles <= 32'h0000_0000;
+            perf_snap_uop_sched_active_cycles <= 32'h0000_0000;
+            perf_snap_uop_sched_wait_cycles <= 32'h0000_0000;
+            perf_snap_core_wait_data_cycles <= 32'h0000_0000;
+            perf_snap_core_local_active_cycles <= 32'h0000_0000;
+            perf_snap_dm_program_cycles <= 32'h0000_0000;
+            perf_snap_dm_initial_input_cycles <= 32'h0000_0000;
+            perf_snap_dm_prefetch_cycles <= 32'h0000_0000;
+            perf_snap_dm_output_cycles <= 32'h0000_0000;
         end else if (perf_start_event) begin
             perf_running <= 1'b1;
             perf_work_overflow <= 1'b0;
@@ -560,24 +552,17 @@ module npu_v0_opsched #(
             perf_work_data_mover_write_words <= 32'h0000_0000;
             perf_work_sram_read_words <= 32'h0000_0000;
             perf_work_sram_write_words <= 32'h0000_0000;
-        end else if (bus_req && bus_we && bus_addr == NPU_OPSCHED_PERF_CTRL &&
-                     bus_wdata[NPU_OPSCHED_PERF_CTRL_CLEAR_BIT] && !perf_running) begin
-            perf_snapshot_valid <= 1'b0;
-            perf_snapshot_overflow <= 1'b0;
-            perf_snap_total_cycles <= 32'h0000_0000;
-            perf_snap_core_active_cycles <= 32'h0000_0000;
-            perf_snap_core_matmul_cycles <= 32'h0000_0000;
-            perf_snap_data_mover_active_cycles <= 32'h0000_0000;
-            perf_snap_data_mover_setup_cycles <= 32'h0000_0000;
-            perf_snap_data_mover_transfer_cycles <= 32'h0000_0000;
-            perf_snap_data_mover_stall_cycles <= 32'h0000_0000;
-            perf_snap_data_mover_words <= 32'h0000_0000;
-            perf_snap_data_mover_read_words <= 32'h0000_0000;
-            perf_snap_data_mover_write_words <= 32'h0000_0000;
-            perf_snap_sram_read_words <= 32'h0000_0000;
-            perf_snap_sram_write_words <= 32'h0000_0000;
-            perf_snap_job_id <= 32'h0000_0000;
-            perf_snap_op_type <= 32'h0000_0000;
+            perf_work_cmd_active_cycles <= 32'h0000_0000;
+            perf_work_cmd_wait_cycles <= 32'h0000_0000;
+            perf_work_dm_compute_overlap_cycles <= 32'h0000_0000;
+            perf_work_uop_sched_active_cycles <= 32'h0000_0000;
+            perf_work_uop_sched_wait_cycles <= 32'h0000_0000;
+            perf_work_core_wait_data_cycles <= 32'h0000_0000;
+            perf_work_core_local_active_cycles <= 32'h0000_0000;
+            perf_work_dm_program_cycles <= 32'h0000_0000;
+            perf_work_dm_initial_input_cycles <= 32'h0000_0000;
+            perf_work_dm_prefetch_cycles <= 32'h0000_0000;
+            perf_work_dm_output_cycles <= 32'h0000_0000;
         end else if (perf_complete_event) begin
             perf_running <= 1'b0;
             perf_snapshot_valid <= 1'b1;
@@ -596,6 +581,17 @@ module npu_v0_opsched #(
             perf_snap_sram_write_words <= perf_work_sram_write_words;
             perf_snap_job_id <= job_id;
             perf_snap_op_type <= job_op_type;
+            perf_snap_cmd_active_cycles <= perf_work_cmd_active_cycles;
+            perf_snap_cmd_wait_cycles <= perf_work_cmd_wait_cycles;
+            perf_snap_dm_compute_overlap_cycles <= perf_work_dm_compute_overlap_cycles;
+            perf_snap_uop_sched_active_cycles <= perf_work_uop_sched_active_cycles;
+            perf_snap_uop_sched_wait_cycles <= perf_work_uop_sched_wait_cycles;
+            perf_snap_core_wait_data_cycles <= perf_work_core_wait_data_cycles;
+            perf_snap_core_local_active_cycles <= perf_work_core_local_active_cycles;
+            perf_snap_dm_program_cycles <= perf_work_dm_program_cycles;
+            perf_snap_dm_initial_input_cycles <= perf_work_dm_initial_input_cycles;
+            perf_snap_dm_prefetch_cycles <= perf_work_dm_prefetch_cycles;
+            perf_snap_dm_output_cycles <= perf_work_dm_output_cycles;
         end else if (perf_running) begin
             perf_work_total_cycles <= perf_sat_add(perf_work_total_cycles, 32'h0000_0001);
             perf_work_core_active_cycles <= perf_sat_add(
@@ -635,6 +631,48 @@ module npu_v0_opsched #(
             perf_work_sram_write_words <= perf_sat_add(
                 perf_work_sram_write_words, perf_sram_write_increment
             );
+            perf_work_cmd_active_cycles <= perf_sat_add(
+                perf_work_cmd_active_cycles, perf_cmd_active_event ? 32'h1 : 32'h0
+            );
+            perf_work_cmd_wait_cycles <= perf_sat_add(
+                perf_work_cmd_wait_cycles, perf_cmd_wait_event ? 32'h1 : 32'h0
+            );
+            perf_work_dm_compute_overlap_cycles <= perf_sat_add(
+                perf_work_dm_compute_overlap_cycles,
+                perf_dm_compute_overlap_event ? 32'h1 : 32'h0
+            );
+            perf_work_uop_sched_active_cycles <= perf_sat_add(
+                perf_work_uop_sched_active_cycles,
+                core_perf_uop_sched_active ? 32'h1 : 32'h0
+            );
+            perf_work_uop_sched_wait_cycles <= perf_sat_add(
+                perf_work_uop_sched_wait_cycles,
+                core_perf_uop_sched_wait ? 32'h1 : 32'h0
+            );
+            perf_work_core_wait_data_cycles <= perf_sat_add(
+                perf_work_core_wait_data_cycles,
+                perf_core_wait_data_event ? 32'h1 : 32'h0
+            );
+            perf_work_core_local_active_cycles <= perf_sat_add(
+                perf_work_core_local_active_cycles, core_perf_local_active ? 32'h1 : 32'h0
+            );
+            perf_work_dm_program_cycles <= perf_sat_add(
+                perf_work_dm_program_cycles,
+                (mover_perf_active && desc_state == DESC_FETCH_PROGRAM) ? 32'h1 : 32'h0
+            );
+            perf_work_dm_initial_input_cycles <= perf_sat_add(
+                perf_work_dm_initial_input_cycles,
+                (mover_perf_active &&
+                 (desc_state == DESC_FETCH_INPUT0 || desc_state == DESC_FETCH_INPUT1)) ? 32'h1 : 32'h0
+            );
+            perf_work_dm_prefetch_cycles <= perf_sat_add(
+                perf_work_dm_prefetch_cycles,
+                (mover_perf_active && desc_state == DESC_WAIT_CORE) ? 32'h1 : 32'h0
+            );
+            perf_work_dm_output_cycles <= perf_sat_add(
+                perf_work_dm_output_cycles,
+                (mover_perf_active && desc_state == DESC_WRITE_OUTPUT) ? 32'h1 : 32'h0
+            );
             perf_work_overflow <= perf_work_overflow ||
                 perf_add_overflows(perf_work_total_cycles, 32'h0000_0001) ||
                 perf_add_overflows(
@@ -669,17 +707,59 @@ module npu_v0_opsched #(
                     (mover_perf_transfer && mover_store) ? mover_perf_words : 32'h0
                 ) ||
                 perf_add_overflows(perf_work_sram_read_words, perf_sram_read_increment) ||
-                perf_add_overflows(perf_work_sram_write_words, perf_sram_write_increment);
+                perf_add_overflows(perf_work_sram_write_words, perf_sram_write_increment) ||
+                perf_add_overflows(
+                    perf_work_cmd_active_cycles, perf_cmd_active_event ? 32'h1 : 32'h0
+                ) ||
+                perf_add_overflows(
+                    perf_work_cmd_wait_cycles, perf_cmd_wait_event ? 32'h1 : 32'h0
+                ) ||
+                perf_add_overflows(
+                    perf_work_dm_compute_overlap_cycles,
+                    perf_dm_compute_overlap_event ? 32'h1 : 32'h0
+                ) ||
+                perf_add_overflows(
+                    perf_work_uop_sched_active_cycles,
+                    core_perf_uop_sched_active ? 32'h1 : 32'h0
+                ) ||
+                perf_add_overflows(
+                    perf_work_uop_sched_wait_cycles,
+                    core_perf_uop_sched_wait ? 32'h1 : 32'h0
+                ) ||
+                perf_add_overflows(
+                    perf_work_core_wait_data_cycles,
+                    perf_core_wait_data_event ? 32'h1 : 32'h0
+                ) ||
+                perf_add_overflows(
+                    perf_work_core_local_active_cycles,
+                    core_perf_local_active ? 32'h1 : 32'h0
+                ) ||
+                perf_add_overflows(
+                    perf_work_dm_program_cycles,
+                    (mover_perf_active && desc_state == DESC_FETCH_PROGRAM) ? 32'h1 : 32'h0
+                ) ||
+                perf_add_overflows(
+                    perf_work_dm_initial_input_cycles,
+                    (mover_perf_active &&
+                     (desc_state == DESC_FETCH_INPUT0 ||
+                      desc_state == DESC_FETCH_INPUT1)) ? 32'h1 : 32'h0
+                ) ||
+                perf_add_overflows(
+                    perf_work_dm_prefetch_cycles,
+                    (mover_perf_active && desc_state == DESC_WAIT_CORE) ? 32'h1 : 32'h0
+                ) ||
+                perf_add_overflows(
+                    perf_work_dm_output_cycles,
+                    (mover_perf_active && desc_state == DESC_WRITE_OUTPUT) ? 32'h1 : 32'h0
+                );
         end
     end
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             start_pulse <= 1'b0;
+            core_done <= 1'b0;
             busy <= 1'b0;
-            done_latched <= 1'b0;
-            irq_enable <= 1'b0;
-            irq_status <= 1'b0;
             desc_addr <= 32'h0000_0000;
             desc_state <= DESC_IDLE;
             desc_idx <= 4'h0;
@@ -700,10 +780,10 @@ module npu_v0_opsched #(
             job_id <= 32'h0000_0000;
         end else begin
             start_pulse <= 1'b0;
+            core_done <= 1'b0;
             if (npu_done && desc_state == DESC_IDLE) begin
                 busy <= 1'b0;
-                done_latched <= 1'b1;
-                irq_status <= irq_enable;
+                core_done <= 1'b1;
             end
 
             case (desc_state)
@@ -822,48 +902,29 @@ module npu_v0_opsched #(
                 end
                 DESC_DONE: begin
                     busy <= 1'b0;
-                    done_latched <= 1'b1;
-                    irq_status <= irq_enable;
+                    core_done <= 1'b1;
                     desc_state <= DESC_IDLE;
                 end
                 default: begin
                     desc_state <= DESC_IDLE;
                     busy <= 1'b0;
-                    done_latched <= 1'b1;
+                    core_done <= 1'b1;
                 end
             endcase
 
-            if (bus_req && bus_we) begin
-                case (bus_addr)
-                    NPU_OPSCHED_CTRL: begin
-                        if (bus_wdata[NPU_OPSCHED_CTRL_START_BIT]) begin
-                            busy <= 1'b1;
-                            done_latched <= 1'b0;
-                            irq_status <= 1'b0;
-                            if (desc_addr != 32'h0000_0000) begin
-                                desc_idx <= 4'h0;
-                                transfer_idx <= 8'h0;
-                                stream_chunk_idx <= 16'h0000;
-                                prefetch_phase <= 2'd0;
-                                core_done_seen <= 1'b0;
-                                desc_state <= DESC_READ;
-                            end else begin
-                                start_pulse <= 1'b1;
-                            end
-                        end
-                    end
-                    NPU_OPSCHED_IRQ_ENABLE: begin
-                        irq_enable <= bus_wdata[NPU_OPSCHED_IRQ_ENABLE_ENABLE_BIT];
-                    end
-                    NPU_OPSCHED_IRQ_STATUS: begin
-                        if (bus_wdata[NPU_OPSCHED_IRQ_STATUS_PENDING_BIT]) irq_status <= 1'b0;
-                    end
-                    NPU_OPSCHED_DESC_ADDR: begin
-                        desc_addr <= bus_wdata;
-                    end
-                    default: begin
-                    end
-                endcase
+            if (cmd_valid && cmd_ready) begin
+                busy <= 1'b1;
+                desc_addr <= cmd_desc_addr;
+                if (cmd_desc_addr != 32'h0000_0000) begin
+                    desc_idx <= 4'h0;
+                    transfer_idx <= 8'h0;
+                    stream_chunk_idx <= 16'h0000;
+                    prefetch_phase <= 2'd0;
+                    core_done_seen <= 1'b0;
+                    desc_state <= DESC_READ;
+                end else begin
+                    start_pulse <= 1'b1;
+                end
             end
         end
     end

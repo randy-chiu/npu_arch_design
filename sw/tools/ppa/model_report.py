@@ -667,19 +667,18 @@ def _write_case_page(report: dict[str, Any], out_dir: Path, style: str) -> None:
         group = metadata.get("attention_group") or metadata.get("workload_family") or item["kind"]
         graph_groups.setdefault(str(group), []).append(item)
     graph = "".join(
-        f'<h3>{html.escape(group)}</h3><div class="flow">'
-        + " <strong>→</strong> ".join(
-            f'<span class="node"><strong>{html.escape(str(item.get("metadata", {}).get("logical_op", item["name"])))}</strong><br>'
-            f'{html.escape(json.dumps(item.get("metadata", {}).get("logical_shape", {})))}</span>'
+        f'<div class="graph-group"><h3>{html.escape(_display_group_name(group))}</h3><div class="graph-flow">'
+        + '<span class="graph-arrow">→</span>'.join(
+            _render_graph_node(item)
             for item in group_items
         )
-        + "</div>"
+        + "</div></div>"
         for group, group_items in graph_groups.items()
     )
     rows = "".join(
         "<tr>"
-        f"<td>{html.escape(item['name'])}</td>"
-        f"<td>{html.escape(str(item.get('metadata', {}).get('logical_op', item['kind'])))}</td>"
+        f"<td><strong>{html.escape(_display_operator_name(item))}</strong><br><span class=\"internal-id\">{html.escape(item['name'])}</span></td>"
+        f"<td>{html.escape(_display_operator_kind(item))}</td>"
         f"<td><code>{html.escape(json.dumps(item.get('metadata', {}).get('logical_shape', {})))}</code></td>"
         f"<td>{item['performance'].get('theoretical_compute_cycles')}</td>"
         f"<td>{item['performance'].get('measured_compute_cycles')}</td>"
@@ -698,37 +697,170 @@ def _write_case_page(report: dict[str, Any], out_dir: Path, style: str) -> None:
         job for job in report.get("pipeline_jobs", [])
         if int(job.get("job_id", job.get("id", -1))) in case_job_ids
     ]
-    timelines = "".join(_render_static_timeline(job) for job in timeline_jobs)
+    job_display_names = {
+        int(job_id): _display_operator_name(item)
+        for item in graph_items
+        for job_id in item.get("job_ids", [])
+    }
+    timelines = "".join(
+        _render_static_timeline(
+            job,
+            job_display_names.get(int(job.get("job_id", job.get("id", -1)))),
+        )
+        for job in timeline_jobs
+    )
+    legend = "".join(
+        f'<span class="legend-item"><i style="background:{color}"></i>{html.escape(module)}</span>'
+        for module, color in MODULE_COLORS.items()
+    )
     page = f"""<!doctype html><html><head><meta charset="utf-8"><title>PPA Case {html.escape(case_name)}</title>
-    <style>{style}.timeline{{display:grid;grid-template-columns:150px 1fr 100px;gap:7px;align-items:center}}.track{{position:relative;height:28px;background:#eef1f6;border-radius:5px}}.bar{{position:absolute;top:4px;height:20px;background:#2068d8;border-radius:4px;min-width:2px}}.lane-value{{text-align:right}}</style></head><body>
+    <style>{style}
+    .graph-group{{padding:18px;margin:14px 0;background:#f8faff;border:1px solid #d8e2f0;border-radius:12px}}
+    .graph-flow{{display:flex;align-items:stretch;gap:12px;overflow-x:auto;padding:8px 2px 14px}}
+    .graph-node{{min-width:230px;max-width:270px;border:1px solid #b8c8df;border-radius:10px;background:white;box-shadow:0 4px 12px rgba(35,62,98,.10);overflow:hidden}}
+    .node-head{{padding:11px 13px;background:linear-gradient(135deg,#245f9e,#3781c5);color:white}}
+    .node-kind{{font-size:11px;text-transform:uppercase;letter-spacing:.08em;opacity:.82}}
+    .node-name{{font-size:16px;font-weight:700;margin-top:3px}}.node-body{{padding:11px 13px;font-size:12px}}
+    .tensor-row{{display:grid;grid-template-columns:48px 1fr;gap:5px;margin:5px 0}}.tensor-label{{color:#6a7688;font-weight:650}}
+    .shape-pill{{display:inline-block;background:#e9f1fb;color:#245f9e;border-radius:10px;padding:3px 7px;margin-top:5px}}
+    .graph-arrow{{font-size:28px;color:#7a91ad;align-self:center}}.internal-id{{color:#748094;font-size:11px}}
+    .timeline{{display:grid;grid-template-columns:150px 1fr 100px;gap:7px;align-items:center}}
+    .track{{position:relative;height:28px;background:#eef1f6;border-radius:5px}}.bar{{position:absolute;top:4px;height:20px;border-radius:4px;min-width:2px}}
+    .bar.wait{{background:repeating-linear-gradient(45deg,#dce2ec,#dce2ec 6px,#cbd4e2 6px,#cbd4e2 12px)!important;border:1px solid #bcc7d8}}
+    .lane-label{{font-weight:650;padding:4px}}.lane-label.child{{border-left:2px solid #c7d2e2;color:#3c4b61}}
+    .lane-role{{display:block;color:#748094;font-size:10px;font-weight:500;margin-top:1px}}
+    .lane-value{{text-align:right}}.timeline-legend{{display:flex;flex-wrap:wrap;gap:12px;margin:10px 0 18px}}
+    .legend-item i{{display:inline-block;width:18px;height:10px;border-radius:3px;margin-right:5px}}
+    </style></head><body>
     <nav><a href="../ppa_overview.html">Overview</a> | <a href="../perf.html">Performance</a> | <a href="../power.html">Power</a> | <a href="../area.html">Area</a></nav>
     <h1>Test Case: {html.escape(case_name)}</h1>
-    <section><h2>Computation Graph</h2><div class="flow">{graph}</div></section>
-    <section><h2>Per-operator PPA</h2><table><thead><tr><th>Workload</th><th>Operator/layer</th><th>Shape</th><th>Theoretical cycles</th><th>Measured compute</th><th>Measured total</th><th>Energy model</th><th>Area model</th></tr></thead><tbody>{rows}</tbody></table></section>
-    <section><h2>Pipeline Timeline</h2><p>Only jobs belonging to this test-case graph are shown. Span placement provenance is displayed per job.</p>{timelines}</section>
+    <section><h2>Computation Graph</h2>{graph}</section>
+    <section><h2>Per-operator PPA</h2><table><thead><tr><th>Operator</th><th>Type</th><th>Shape</th><th>Theoretical cycles</th><th>Measured compute</th><th>Measured total</th><th>Energy model</th><th>Area model</th></tr></thead><tbody>{rows}</tbody></table></section>
+    <section><h2>Pipeline Timeline</h2><p>The Host wrapper is separate from the NPU core. Command processor, Uop scheduler, data mover, and compute cluster are nested under NPU core; execution engines refine compute-cluster activity. Group and child totals are not additive. Span placement provenance is displayed per job.</p><div class="timeline-legend">{legend}</div>{timelines}</section>
     </body></html>"""
     (case_dir / f"{case_name}.html").write_text(page, encoding="utf-8")
 
 
-def _render_static_timeline(job: dict[str, Any]) -> str:
+def _render_static_timeline(job: dict[str, Any], display_name: str | None = None) -> str:
     total = max(1, int(job.get("total_cycles", 0)))
     lanes = []
     for lane in job.get("timeline", []):
+        color = MODULE_COLORS.get(lane["module"], "#2068d8")
+        hierarchy = TIMELINE_HIERARCHY.get(lane["module"], {"depth": 0, "role": "module"})
+        depth = int(lane.get("depth", hierarchy["depth"]))
+        role = lane.get("role", hierarchy["role"])
+        label = (
+            f'<div class="lane-label {"child" if depth else "root"}" style="padding-left:{depth * 16 + 4}px">'
+            f'{"↳ " if depth else ""}{html.escape(lane["module"])}'
+            f'<small class="lane-role">{html.escape(str(role))}</small></div>'
+        )
         bars = "".join(
-            f'<span class="bar" title="{html.escape(span["label"])}: {span["start"]}-{span["end"]}" '
-            f'style="left:{span["start"] * 100 / total:.3f}%;width:{max(0.5, span["cycles"] * 100 / total):.3f}%"></span>'
+            f'<span class="bar {html.escape(span.get("kind", "work"))}" title="{html.escape(span["label"])}: {span["start"]}-{span["end"]}" '
+            f'style="background:{color};left:{span["start"] * 100 / total:.3f}%;width:{max(0.5, span["cycles"] * 100 / total):.3f}%"></span>'
             for span in lane.get("spans", [])
         )
-        active = sum(int(span.get("cycles", 0)) for span in lane.get("spans", []))
+        active = int(lane.get("measured_active_cycles", sum(int(span.get("cycles", 0)) for span in lane.get("spans", []) if span.get("kind", "work") == "work")))
+        wait = int(lane.get("measured_wait_cycles", sum(int(span.get("cycles", 0)) for span in lane.get("spans", []) if span.get("kind") == "wait")))
+        lane_value = "group" if role == "architecture group" else f"{active} active" + (f" / {wait} wait" if wait else "")
         lanes.append(
-            f'<div>{html.escape(lane["module"])}</div><div class="track">{bars}</div><div class="lane-value">{active} cycles</div>'
+            f'{label}<div class="track">{bars}</div><div class="lane-value">{lane_value}</div>'
         )
     provenance = job.get("timeline_provenance", {})
     return (
-        f'<h3>#{job.get("job_id", job.get("id"))} {html.escape(job.get("name", "unknown"))} - {total} cycles</h3>'
+        f'<h3>#{job.get("job_id", job.get("id"))} {html.escape(display_name or _display_job_name(job.get("name", "unknown")))} '
+        f'<span class="internal-id">{html.escape(job.get("name", "unknown"))}</span> - {total} cycles</h3>'
         f'<p><small>Counters: {html.escape(str(provenance.get("summary_counters", "legacy")))}; '
         f'placement: {html.escape(str(provenance.get("span_placement", "measured_or_legacy")))}</small></p>'
         f'<div class="timeline">{"".join(lanes)}</div>'
+    )
+
+
+MODULE_COLORS = {
+    "CPU firmware": "#7b61d1",
+    "NPU wrapper": "#2068d8",
+    "NPU core": "#526174",
+    "Command processor": "#4380b8",
+    "Uop scheduler": "#6f5aa8",
+    "Data mover": "#c46b1f",
+    "Compute cluster": "#1a9a7a",
+    "Accumulator file": "#8a6f3d",
+    "Local storage path": "#5b8f78",
+    "Matrix engine": "#1666b1",
+    "Vector engine": "#8b5a2b",
+    "Reduction engine": "#b04759",
+    "SFU": "#7b61d1",
+}
+
+TIMELINE_HIERARCHY = {
+    "CPU firmware": {"depth": 0, "role": "software"},
+    "NPU wrapper": {"depth": 0, "role": "host interface"},
+    "NPU core": {"depth": 0, "role": "architecture group"},
+    "Command processor": {"depth": 1, "role": "schedule/control"},
+    "Uop scheduler": {"depth": 1, "role": "uop fetch/decode/dispatch"},
+    "Data mover": {"depth": 1, "role": "data transfer"},
+    "Compute cluster": {"depth": 1, "role": "compute"},
+    "Accumulator file": {"depth": 2, "role": "partial-sum storage"},
+    "Local storage path": {"depth": 2, "role": "operand/result movement"},
+    "Matrix engine": {"depth": 2, "role": "execution unit"},
+    "Vector engine": {"depth": 2, "role": "execution unit"},
+    "Reduction engine": {"depth": 2, "role": "execution unit"},
+    "SFU": {"depth": 2, "role": "execution unit"},
+}
+
+
+DISPLAY_NAMES = {
+    "projection_gemm": "Prefill Projection GEMM",
+    "attention_qk_score": "Q × Kᵀ Score MatMul",
+    "attention_score_scale_mask": "Score Scale / Mask",
+    "attention_row_softmax": "Row Softmax",
+    "attention_probability_value": "Probability × Value MatMul",
+    "decode_skinny_gemm_m8_compat": "Decode Projection GEMM",
+    "matmul_k_stream": "Matrix K-stream",
+    "attention_scale_mask_v1": "Score Scale / Mask",
+    "attention_softmax_v1": "Row Softmax",
+    "matmul_u16s8_q15": "Probability × Value MatMul",
+}
+
+
+def _display_operator_name(item: dict[str, Any]) -> str:
+    logical_op = str(item.get("metadata", {}).get("logical_op", ""))
+    return DISPLAY_NAMES.get(logical_op, logical_op.replace("_", " ").title() or item["name"])
+
+
+def _display_operator_kind(item: dict[str, Any]) -> str:
+    stage = item.get("metadata", {}).get("attention_plan_stage", {})
+    operator = stage.get("operator") or item.get("metadata", {}).get("logical_op") or item["kind"]
+    return str(operator).replace("_", " ")
+
+
+def _display_group_name(group: str) -> str:
+    names = {
+        "transformer_prefill": "Transformer Prefill",
+        "attention_prefill_s8_d8": "Scaled Dot-Product Attention",
+        "transformer_decode": "Transformer Decode",
+    }
+    return names.get(group, group.replace("_", " ").title())
+
+
+def _display_job_name(name: str) -> str:
+    return DISPLAY_NAMES.get(name, name.replace("_", " ").title())
+
+
+def _render_graph_node(item: dict[str, Any]) -> str:
+    metadata = item.get("metadata", {})
+    stage = metadata.get("attention_plan_stage", {})
+    inputs = ", ".join(stage.get("inputs", [])) or "runtime input"
+    outputs = ", ".join(stage.get("outputs", [])) or "runtime output"
+    return (
+        '<article class="graph-node">'
+        f'<div class="node-head"><div class="node-kind">{html.escape(_display_operator_kind(item))}</div>'
+        f'<div class="node-name">{html.escape(_display_operator_name(item))}</div></div>'
+        '<div class="node-body">'
+        f'<div class="tensor-row"><span class="tensor-label">Input</span><code>{html.escape(inputs)}</code></div>'
+        f'<div class="tensor-row"><span class="tensor-label">Output</span><code>{html.escape(outputs)}</code></div>'
+        f'<span class="shape-pill">{html.escape(json.dumps(metadata.get("logical_shape", {})))}</span>'
+        f'<div class="internal-id">{html.escape(item["name"])}</div>'
+        '</div></article>'
     )
 
 

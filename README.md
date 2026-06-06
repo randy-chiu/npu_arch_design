@@ -128,9 +128,9 @@ build/rtl_fixture/*
 ```text
 hw/soc/                  SoC top, bus, boot ROM, SRAM, debug status
 hw/soc/cpu/              PicoRV32 integration
-hw/npu_wrapper/          CPU-visible NPU wrapper and descriptor/SRAM launch FSM
-hw/npu_core/             Phase 0 NPU core RTL
-hw/npu_subsystem/        Primary PPA boundary around wrapper/data mover/core
+hw/npu_wrapper/          Thin CPU-visible NPU host wrapper
+hw/npu_core/             NPU core system: command processor, data mover, compute cluster
+hw/npu_subsystem/        Primary PPA boundary around Host wrapper and NPU core system
 sw/soc_cpu/              CPU firmware, NPU driver, runtime smoke app
 sw/npu_core/             NPU-consumed operator/program design source area
 sw/tools/                Host-side compiler, assembler, fixture, firmware tools
@@ -159,7 +159,7 @@ Key simulation targets:
 | `make validate-arch` | NPU architecture spec validity |
 | `make demo` | Graph compile + Python simulator + golden reference |
 | `make npu-core-sim` | Standalone NPU core RTL fixture |
-| `make npu-subsystem-elab` | Elaborate the wrapper/data-mover/core PPA boundary without simulation SoC memories |
+| `make npu-subsystem-elab` | Elaborate the Host-wrapper/NPU-core PPA boundary without simulation SoC memories |
 | `make soc-sim` | Legacy direct-wrapper-window SoC smoke |
 | `make cpu-soc-sim` | PicoRV32 firmware-controlled descriptor/SRAM SoC smoke |
 | `make perf-report` | CPU-controlled SoC smoke plus cycle JSON/HTML report |
@@ -219,9 +219,9 @@ graph/input fixture
   -> RISC-V firmware copies input/program buffers into SRAM
   -> firmware fills soc_npu_job_desc_t in SRAM
   -> firmware writes NPU wrapper DESC_ADDR and CTRL.start
-  -> NPU wrapper fetches descriptor/program/input data from SRAM
-  -> wrapper loads NPU core and pulses start
-  -> NPU core executes matmul or softmax
+  -> Host wrapper forwards the launch into the NPU core
+  -> NPU core command processor fetches descriptor/program/input data
+  -> NPU core data mover stages data and compute cluster executes the operator
   -> wrapper writes output data back to SRAM
   -> firmware checks output and writes test_status
 ```

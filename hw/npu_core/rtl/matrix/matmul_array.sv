@@ -8,6 +8,7 @@ module matmul_array #(
     input  logic start,
     input  logic mixed_u16s8_q15,
     output logic done,
+    output logic perf_active,
 
     input  logic [(M*K*16)-1:0]  a_flat,
     input  logic [(K*N*8)-1:0]   b_flat,
@@ -22,6 +23,8 @@ module matmul_array #(
     integer i;
     integer j;
     integer r;
+
+    assign perf_active = active;
 
     function automatic logic signed [7:0] a_s8_at(input int row, input int k);
         begin

@@ -2,19 +2,32 @@
 
 [TOC]
 
-This document describes the current `npu_v0_top` compute core, the A1 matmul
-array, and the first Transformer primitive bring-up paths integrated into the
-core. It focuses on what the RTL implements today, not the final target NPU.
+This document describes the complete `npu_v0_core_system`, including its
+command processor, data mover, local storage boundary, and compute cluster.
 
 ## 1. Role
 
-The NPU core consumes a preloaded micro-op program and preloaded tensor data,
-executes the supported operators, and exposes results through host-readable
-output windows.
+The NPU core is the autonomous execution side of the NPU IP after a CPU command
+crosses the host wrapper. It owns:
+
+- descriptor fetch/decode and load/compute/store scheduling;
+- data movement between external SRAM and core-local windows/storage;
+- compute-cluster launch and completion handling;
+- job-scoped performance counter collection;
+- matrix, vector, reduction, and SFU execution.
+
+```text
+npu_v0_core_system
+  -> command processor
+  -> uop scheduler / dispatcher
+  -> npu_v0_data_mover
+  -> npu_v0_compute_cluster
+      -> matrix / vector / reduction / SFU
+```
 
 Current core properties:
 
-- no direct SRAM/DRAM master interface;
+- the core system has an SRAM-side movement interface;
 - no autonomous program fetch from SoC memory;
 - no queue or multi-job context;
 - no production valid/ready vector/SFU pipeline yet;
@@ -22,16 +35,165 @@ Current core properties:
 - Transformer attention stage bring-up uses explicit `op` modes for row
   softmax, mixed probability-value matmul, and unmasked score scale.
 
-The wrapper owns all SoC memory movement today.
+The data mover and command processor own all SoC memory movement today.
 
-## 2. External Interface
+The command processor and uop scheduler are distinct control levels:
 
-`npu_v0_top` ports:
+| Module | Responsibility |
+| --- | --- |
+| Command processor | descriptor fetch/decode, operator-level movement sequencing, K-chunk sequencing, compute-cluster launch, and job completion |
+| Uop scheduler / dispatcher | common uop fetch/decode, local LOAD/STORE dispatch, execution-engine issue, and engine-completion wait |
+| Compute cluster | execution engines and core-local operand/result storage |
+
+This is a deliberate two-level scheduling contract for the current
+architecture:
+
+```text
+descriptor + Command processor = external-memory movement and chunk scheduling
+uop program + Uop scheduler     = core-local movement and execution scheduling
+```
+
+The current encoded `UOP_LOAD` contains only a tensor-window identifier and a
+local-buffer identifier. It does not contain an external SRAM address, transfer
+length, destination preload bank, or asynchronous completion token. Therefore
+it cannot issue the current Data mover transaction. Those fields come from the
+descriptor, so the Command processor can preload chunk 0 before launching the
+uop scheduler and can prefetch chunk 1 while chunk 0 executes.
+
+For MatMul, the current `UOP_LOAD A/B` should be read as an operand-bank bind
+and dependency check. The opcode name is retained for Phase 0 binary
+compatibility, but it does not copy a second full tile:
+
+```text
+selected preload/operand bank -> Matrix input binding
+```
+
+The former RTL copied each full A/B tile from a preload bank into duplicate
+`spad_a/spad_b` arrays in one cycle. That copy had no modeled port width,
+banking, area, or multi-cycle cost, while the selected operand bank was already
+stable for the whole Matrix operation. It was therefore removed rather than
+reported as a credible one-cycle local-memory transfer.
+
+Softmax `UOP_LOAD X` remains a real local movement into `vec_buf`. A future
+Matrix operand feed/register module is valid only when its storage, bandwidth,
+latency, and active events are explicitly modeled.
+
+A future ISA where a decoded load instruction directly issues the Data mover
+would be a different contract. It would require address/length operands or a
+descriptor-reference operand, an asynchronous load token, dependency tracking,
+and explicit bank selection. Until that contract exists, reports must not
+describe descriptor-directed external movement as execution of `UOP_LOAD`.
+
+Execution engines do not fetch or decode the common uop stream. Matrix,
+vector, reduction, and SFU engines retain only engine-local control such as
+iteration counters, pipeline progress, accepted-operation state, and done
+generation.
+
+The word `program` in the descriptor means the encoded uop stream, not tensor
+data and not CPU firmware. For the current matmul path the meaningful uops are:
+
+```text
+LOAD A bind selected operand bank A
+LOAD B bind selected operand bank B
+MATMUL selected operand bank A/B -> accumulator
+STORE accumulator -> output window
+HALT
+```
+
+The current descriptor points to a fixed 16-word program image containing
+these uops plus HALT padding. With the four-word-per-cycle Data mover it costs
+four cycles to load. The v0 command processor reloads this image for every
+descriptor job; retaining or caching an unchanged program is a future
+optimization, not current behavior.
+
+Before the uop scheduler starts, the command processor must use the Data mover
+to copy both the uop program and the first A/B chunk from external SRAM into
+core-local storage. The initial A/B movement is descriptor-directed external
+movement; it is not caused by decoding the uop `LOAD A/B` instructions.
+
+For K-stream matmul, external movement and local uop execution are ordered as:
+
+```text
+descriptor read
+-> Data mover: uop program SRAM -> instr_mem
+-> Data mover: chunk 0 A/B SRAM -> preload bank 0
+-> launch chunk 0 uop program
+   -> uop LOAD A/B: preload bank 0 -> scratchpads
+   -> Matrix: compute chunk 0
+   -> uop STORE: accumulator remains resident
+|| Data mover: chunk 1 A/B SRAM -> preload bank 1
+-> wait if chunk 1 prefetch is incomplete
+-> launch chunk 1 uop program using preload bank 1
+```
+
+After chunk 0 A/B movement, the Command processor performs two visible control
+cycles before local execution begins:
+
+```text
+DESC_START_CORE       -> pulse compute-cluster start; chunk 0 latches bank 0
+DESC_CONFIG_NEXT_BANK -> select bank 1 as the Data-mover prefetch target and
+                         as the compute bank for the next chunk launch
+```
+
+`DESC_CONFIG_NEXT_BANK` does not change the bank already latched by the active
+chunk. This ordering prevents the chunk 1 prefetch from overwriting chunk 0.
+
+The alternate preload bank is what makes chunk `N+1` external movement legal
+while chunk `N` uses its selected bank and scratchpads. The uop scheduler does
+not fetch or decode a second program for every chunk; it reruns the same
+preloaded uop program against the selected A/B bank.
+
+## 2. Core-System Command Interface
+
+The core system does not decode CPU MMIO registers. It accepts descriptor
+commands from the Host wrapper:
+
+```text
+cmd_valid && cmd_ready
+  -> capture cmd_desc_addr
+  -> descriptor fetch/decode
+  -> movement / compute / writeback
+  -> core_done pulse + completed perf snapshot
+```
+
+The command processor owns descriptor memory reads and descriptor-field
+decode. The Host wrapper owns only the descriptor-address register and command
+submission. This split keeps the CPU ABI outside the autonomous execution
+engine while allowing the scheduler to understand operator dependencies and
+memory addresses.
+
+## 3. Scheduler And Compute-Cluster Boundary
+
+The v0 uop scheduler is an explicit RTL module between the command processor
+and compute cluster. For the legacy `op=0` path it owns:
+
+```text
+start
+  -> fetch instr_mem[pc]
+  -> decode LOAD / MATMUL / STORE / HALT
+  -> issue one local-storage or engine command
+  -> wait for engine completion when required
+  -> done
+```
+
+The scheduler reports separate active and wait events. Fetch/decode/issue and
+completion handling are scheduler active work. Waiting for an issued engine is
+scheduler wait time. These cycles must not be attributed to Matrix engine
+datapath activity.
+
+The current fixed `op=1` attention-softmax and `op=3` scale paths still use a
+bring-up sequencer colocated with the compute-cluster integration module. They
+must migrate to the common scheduler before being treated as the final
+primitive scheduling architecture.
+
+`npu_v0_compute_cluster` ports:
+
+`npu_v0_compute_cluster` ports:
 
 | Signal | Direction | Meaning |
 | --- | --- | --- |
 | `clk/rst_n` | input | clock/reset |
-| `start` | input | one-cycle start pulse from wrapper |
+| `start` | input | one-cycle launch pulse from the command processor |
 | `op[1:0]` | input | launch mode: uop program, attention softmax v1, or mixed PV matmul |
 | `done` | output | asserted when program reaches done state |
 | `host_we[CORE_HOST_LANES-1:0]` | input | lane write enables for host preload windows |
@@ -69,7 +231,7 @@ The `op=1`, `op=2`, and `op=3` paths are Transformer bring-up entry points. They
 the current host preload/output windows and wrapper descriptor launch path; they
 are not yet a general primitive scheduler or grouped attention command list.
 
-## 3. Internal Memories
+## 4. Internal Memories
 
 | Storage | Width | Entries | Purpose |
 | --- | ---: | ---: | --- |
@@ -88,8 +250,6 @@ and overwrites that dead score row with Q0.15 probabilities. The wrapper then
 stores C to the runtime probability buffer. This preserves the legacy softmax
 X/Y behavior and avoids adding another tile storage module.
 | `instr_mem` | 32 | 16 | encoded uop program |
-| `spad_a` | unsigned/signed 16 | 64 | matmul A/probability scratchpad |
-| `spad_b` | signed 8 | 64 | matmul B scratchpad |
 | `accumulator_file` | signed 32 | 2 banks x 64 | matmul accumulator/output staging; v0 currently uses bank 0 |
 | `vec_buf` | signed 16 | 8 | softmax vector staging |
 
@@ -97,15 +257,33 @@ Names like `dram_a` are historical. These are internal core arrays in the
 current RTL, not external DRAM.
 
 For K-streaming matmul, `matrix/accumulator_file.sv` is the resident
-partial-sum storage. The A/B preload and scratchpad arrays remain one `8x8`
-tile each for the active compute bank; they are overwritten for every K chunk
-while accumulator bank 0 persists until the final store.
+partial-sum storage. A/B operand banks alternate across K chunks while
+accumulator bank 0 persists for the complete descriptor.
 
 对于 K-streaming matmul，`matrix/accumulator_file.sv` 是常驻 partial-sum
-storage。A/B preload 和 scratchpad 数组仍然各自只保存一个 `8x8` tile；每个
-K chunk 都会覆盖它们，而 accumulator bank 0 会一直保持到最终 store。
+storage。A/B operand bank 在 K chunk 之间交替使用，而 accumulator bank 0
+在整个 descriptor 期间保持。
 
-## 4. Host Window Map
+Each chunk commits independently; there is no final operation that combines
+two operand-bank results:
+
+```text
+descriptor start -> clear accumulator bank 0
+chunk 0 Matrix done -> accumulator bank 0 += chunk 0 result
+chunk 1 Matrix done -> accumulator bank 0 += chunk 1 result
+...
+final output -> accumulator bank 0 -> C output window -> external SRAM
+```
+
+The current RTL implements each accumulator commit/add as one full-tile-wide
+clocked operation over 64 int32 elements. It reruns the same uop program for
+every K chunk, but the Command processor suppresses `STORE C, ACC` execution
+for non-final chunks; only the final resident sum is copied into the C output
+window before external writeback. The commit/add and final copy are valid
+current RTL cycle events but do not yet model realistic
+accumulator/output-window port width or banking cost.
+
+## 5. Host Window Map
 
 | Address range | Access | Storage |
 | ---: | --- | --- |
@@ -119,9 +297,9 @@ K chunk 都会覆盖它们，而 accumulator bank 0 会一直保持到最终 sto
 
 The core does not validate window overflows beyond these simple address ranges.
 
-## 5. Program Execution
+## 6. Program Execution
 
-For `op=0`, the core runs the uop state machine:
+For `op=0`, the uop scheduler runs:
 
 ```text
 ST_IDLE
@@ -132,14 +310,17 @@ ST_IDLE
   -> ST_IDLE after wrapper drops start
 ```
 
-In `ST_FETCH`, the core reads `instr_mem[pc]`, increments `pc`, and executes or
-dispatches the uop.
+In `ST_FETCH`, the scheduler reads `instr_mem[pc]`, increments `pc`, and
+dispatches the uop. LOAD/STORE commands operate on compute-cluster local
+storage through explicit scheduler commands. MATMUL is issued to Matrix engine
+and the scheduler waits for its completion.
 
 Supported uops:
 
 | Uop | Current behavior |
 | --- | --- |
-| `LOAD` | copy preloaded tensor window into scratch/vector buffer |
+| `LOAD A/B` | bind the selected MatMul operand bank; no duplicate full-tile copy |
+| `LOAD X` | copy the preloaded X window into the softmax vector buffer |
 | `MATMUL` | start A1 matmul array |
 | `STORE` | copy accumulator/vector buffer into output window |
 | `VREDMAX` | reduce max over `vec_buf` |
@@ -239,7 +420,7 @@ Behavior:
   parallel;
 - each active cycle performs 64 signed int8-by-int8 MACs into int32 results;
 - after `K` slices, assert `done`;
-- `npu_v0_top` commits `result_flat` into `accumulator_file`.
+- `npu_v0_compute_cluster` commits `result_flat` into `accumulator_file`.
 
 The nested `for i/j` loops inside the clocked block describe many same-cycle
 register updates, not software-style serial loop execution. Only `k_idx`
@@ -273,7 +454,7 @@ K-streaming matmul 不改变物理并行度。它只是对多个 K chunk 重复�
 Mixed mode changes the operand width and output scaling, not the physical
 parallelism: the array still updates 64 output elements per active K slice.
 Until the PPA model is upgraded, mixed `16x8` multiplier area/energy is reported
-as a proxy limitation, not a real ASIC cost.
+as an L0 model limitation, not a real ASIC cost.
 
 Detailed A1 explanation is in `docs/matmul_array_a1.md`.
 
@@ -284,7 +465,7 @@ Mixed PV verification requirements:
 - CPU-to-NPU transformer workload `transformer_attention_pv_s8_d8` using
   `SOC_NPU_JOB_OP_MATMUL_U16S8_Q15`;
 - PPA report labels PV provenance as measured mixed matrix path and states that
-  current L0 area/energy uses generic MAC proxy coefficients.
+  current L0 area/energy uses generic MAC model coefficients.
 
 ## 7. Softmax Path
 
@@ -320,7 +501,7 @@ From `make perf-report` after enabling the 4-lane core host interface and
 ```text
 matmul total cycles:       81
 core total cycles:         18
-core matmul cycles:        10
+Matrix datapath cycles:     8
 softmax total cycles:      30
 softmax core cycles:       11
 ```
@@ -337,7 +518,8 @@ compute.
 - Attention primitive engines still use start/done, not valid/ready.
 - `op=1` attention softmax is a fixed `8x8` tile loop, not a general tiled or
   grouped full-attention command.
-- `op=2` mixed PV has measured cycles but uses proxy `16x8` area/energy.
+- `op=2` mixed PV has measured cycles but uses a generic modeled `16x8`
+  area/energy estimate.
 - SFU EXP still uses the current bring-up approximation unless the target
   257-entry LUT path is explicitly implemented and selected.
 - No issue queue, hazard tracking, or pipeline backpressure.

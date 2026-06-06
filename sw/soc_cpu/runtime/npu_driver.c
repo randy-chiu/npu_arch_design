@@ -61,6 +61,26 @@ void npu_read_perf_snapshot(npu_perf_snapshot_t *snapshot)
     snapshot->data_mover_read_words = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DATA_MOVER_READ_WORDS);
     snapshot->data_mover_write_words = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DATA_MOVER_WRITE_WORDS);
     snapshot->sram_read_words = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_SRAM_READ_WORDS);
+    snapshot->command_active_cycles = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_CMD_ACTIVE_CYCLES);
+    snapshot->command_wait_cycles = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_CMD_WAIT_CYCLES);
+    snapshot->data_mover_compute_overlap_cycles =
+        *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DM_COMPUTE_OVERLAP_CYCLES);
+    snapshot->uop_scheduler_active_cycles =
+        *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_UOP_SCHED_ACTIVE_CYCLES);
+    snapshot->uop_scheduler_wait_cycles =
+        *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_UOP_SCHED_WAIT_CYCLES);
+    snapshot->core_wait_data_cycles =
+        *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_CORE_WAIT_DATA_CYCLES);
+    snapshot->core_local_active_cycles =
+        *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_CORE_LOCAL_ACTIVE_CYCLES);
+    snapshot->data_mover_program_cycles =
+        *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DM_PROGRAM_CYCLES);
+    snapshot->data_mover_initial_input_cycles =
+        *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DM_INITIAL_INPUT_CYCLES);
+    snapshot->data_mover_prefetch_cycles =
+        *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DM_PREFETCH_CYCLES);
+    snapshot->data_mover_output_cycles =
+        *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_DM_OUTPUT_CYCLES);
     snapshot->sram_write_words = *mmio32(SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PERF_SRAM_WRITE_WORDS);
 }
 

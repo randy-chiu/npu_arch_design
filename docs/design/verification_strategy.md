@@ -80,7 +80,7 @@ These tests catch software/tooling regressions before RTL simulation.
 
 ```text
 hw/npu_core/rtl/matrix/matmul_array.sv
-hw/npu_core/rtl/npu_v0_top.sv
+hw/npu_core/rtl/npu_v0_compute_cluster.sv
 hw/npu_core/tb/npu_v0_tb.sv
 ```
 
@@ -109,7 +109,7 @@ It verifies:
 - generated headers and linker script are usable;
 - firmware stages tensors/programs/descriptors in SRAM;
 - CPU launches wrapper through MMIO;
-- wrapper fetches through SRAM descriptor path;
+- NPU core command processor and data mover fetch through the SRAM descriptor path;
 - NPU core computes matmul and softmax;
 - wrapper writes output to SRAM;
 - firmware validates outputs;
@@ -149,7 +149,7 @@ PYTHONPATH=sw/tools python -m unittest test.ppa_contract.test_ppa_contract -v
 
 Current checks:
 
-- `npu_subsystem_top` elaborates from the existing wrapper/data-mover/core RTL
+- `npu_subsystem_top` elaborates from the Host wrapper and complete NPU core RTL
   while keeping CPU, boot ROM, and staging SRAM outside the top;
 - `arch/configs/ppa/sky130hd_v0.jsonc` declares `npu_subsystem_top` as the
   primary public-ASIC estimation boundary;
@@ -193,8 +193,8 @@ SoC tile smoke, and full `fc1` 16-output-N-tile K-stream SoC coverage:
 ```text
 make test        PASS, 46 tests (including manifest and strengthened PPA contract checks)
 make perf-report PASS
-matmul total cycles: 82
-matmul core matmul cycles: 10
+matmul total cycles: 81
+matmul Matrix datapath active cycles: 8
 softmax total cycles: 31
 digits_linear_classifier: 16 jobs, 1312 cycles
 real_mnist_cnn_fc1_tile0: 1 job, 82 cycles

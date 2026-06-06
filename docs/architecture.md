@@ -11,7 +11,7 @@
 | Document | Scope |
 | --- | --- |
 | `docs/design/soc_architecture.md` | SoC 顶层、memory map、bus、ROM/SRAM、NPU 接入方式 |
-| `docs/design/npu_wrapper.md` | NPU wrapper、descriptor FSM、core host window、A2 data mover |
+| `docs/design/npu_wrapper.md` | CPU-visible NPU Host wrapper |
 | `docs/design/npu_core.md` | NPU core、内部 memory、uop 执行、matmul array、softmax 路径 |
 | `docs/design/software_hardware_flow.md` | compiler/assembler/firmware/descriptor/wrapper/core 的交互 |
 | `docs/design/performance_instrumentation.md` | cycle 级 perf 计数、PERF_JOB、HTML timeline、counter 策略 |
@@ -32,14 +32,15 @@ wrapper、NPU core、firmware、compiler artifacts 串成真实软硬件闭环�
 
 - CPU 只通过 memory-mapped register 控制 NPU wrapper。
 - tensor 数据、program stream、descriptor 进入 SRAM。
-- NPU wrapper 根据 descriptor 从 SRAM fetch 数据和 program。
-- NPU core 仍保持简单，先复用现有 host interface 和内部执行状态机。
-- wrapper 是 SoC 和 NPU core 之间的边界，后续可以逐步演进为更真实的
+- NPU wrapper 仅作为 CPU-visible host interface。
+- NPU core system 根据 descriptor 从 SRAM fetch 数据和 program，并调度
+  data mover 与 compute cluster。
+- wrapper 是 SoC 和 NPU core system 之间的控制边界，后续可以逐步演进为更真实的
   scheduler/DMA/command queue。
 
 当前 PPA 评估边界补充：
 
-- `hw/npu_subsystem/rtl/npu_subsystem_top.sv` 将 wrapper、data mover 和 core
+- `hw/npu_subsystem/rtl/npu_subsystem_top.sv` 将 Host wrapper 和完整 NPU core
   封装为主要综合/PPA top；
 - 该 top 暴露外部 memory 接口，不包含当前仿真用 CPU、boot ROM、大容量 staging
   SRAM 或 `test_status`；
@@ -59,8 +60,8 @@ flowchart LR
     BUS["simple_bus"]
     ROM["boot_rom"]
     SRAM["simple_sram<br/>CPU port + NPU port"]
-    WRAP["npu_v0_opsched<br/>NPU wrapper"]
-    CORE["npu_v0_top<br/>NPU core"]
+    WRAP["npu_v0_wrapper<br/>Host wrapper"]
+    CORE["npu_v0_core_system<br/>NPU core"]
     STATUS["test_status"]
 
     TB --> TOP
@@ -198,27 +199,30 @@ CPU firmware 负责：
 9. 从 SRAM output buffer 读结果并校验。
 10. 写 `test_status` 报告仿真 PASS/FAIL。
 
-NPU wrapper 负责：
+NPU Host wrapper 负责：
+
+1. 暴露 CPU-visible MMIO、status、IRQ 和 perf CSR。
+2. 将 CPU launch/查询请求转发给 NPU core system。
+
+NPU core command processor 负责：
 
 1. 读取 `DESC_ADDR` 指向的 descriptor。
-2. 从 SRAM fetch program stream。
-3. 从 SRAM fetch input tensor。
-4. 通过当前 NPU core host interface 加载 core 内部 memory。
-5. 给 NPU core 一个 cycle 的 `start_pulse`。
-6. 等待 core `done`。
-7. 读取 core output host window。
-8. 写回 SRAM output buffer。
-9. 设置 `STATUS.done`。
+2. 调度 data mover 从 SRAM fetch program 和 input tensor。
+3. 配置并启动 compute cluster。
+4. 等待 compute cluster `done`。
+5. 调度 data mover 写回 output。
+6. 发布完成状态和性能快照。
 
-这里的 wrapper `fetch` 是 SoC 层数据搬运：wrapper 从 SRAM 读取 descriptor、
-program 或 tensor words，并通过 NPU core host window 写入 core 内部 memory。
+这里的 command processor/data mover `fetch` 是 NPU core 的 SoC memory
+movement：它从 SRAM 读取 descriptor、program 或 tensor words，并写入 core
+内部 memory。
 它不同于 NPU core 内部的 uop fetch。core 启动后会从已经加载好的 `instr_mem`
 读取 micro-op，并执行 `LOAD`、`MATMUL`、`STORE`、vector/SFU 等内部操作。
 
 当前 host-window preload/readback 是 A0/A1 bring-up 机制，不是最终 NPU
 memory architecture。具体来说：
 
-- `instr_mem`、`spad_a`、`spad_b`、`spad_x`、accumulator file、`spad_y` 都是
+- `instr_mem`、ping-pong Matrix operand banks、`spad_x`、accumulator file、`spad_y` 都是
   NPU core 内部小 memory/register array；
 - wrapper 先从 SoC SRAM 读 descriptor、program 和 tensor，再通过 core
   host window 逐 word 写入这些内部 memory；
@@ -244,7 +248,7 @@ DESC_READ
 
 ## 6. NPU Core 计算逻辑
 
-当前 NPU core 是 `hw/npu_core/rtl/npu_v0_top.sv`，它不是复杂可扩展硬件，而是
+当前 NPU core 是 `hw/npu_core/rtl/npu_v0_compute_cluster.sv`，它不是复杂可扩展硬件，而是
 Phase 0 的可验证计算核心。
 
 内部主要存储：
@@ -257,7 +261,7 @@ Phase 0 的可验证计算核心。
 | `dram_x` | Softmax input |
 | `dram_y` | Softmax output |
 | `instr_mem` | encoded micro-op program |
-| `spad_a/spad_b` | matmul scratchpad |
+| ping-pong A/B operand banks | Data-mover preload target and direct Matrix operand source |
 | accumulator file | matmul accumulator/output staging |
 | `vec_buf` | vector/SFU staging |
 
@@ -383,7 +387,8 @@ graph/input fixture
   -> NPU compiler/assembler emits program words
   -> firmware stages data/program/descriptor in SRAM
   -> CPU writes DESC_ADDR and CTRL.start
-  -> wrapper fetches and runs NPU core
+  -> Host wrapper forwards launch
+  -> NPU core command processor schedules movement and compute
   -> wrapper writes output to SRAM
   -> CPU checks output
   -> test_status reports PASS/FAIL
@@ -433,7 +438,7 @@ status；`mac_ops`、uop count 和更细的 phase counter 仍待事件合同稳�
 
 当前仍然是最小可验证架构，不是完整 NPU SoC：
 
-- NPU wrapper 的 SRAM fetch 是简单第二端口模型，不是完整 DMA/crossbar。
+- NPU core data mover 的 SRAM fetch 是简单第二端口模型，不是完整 DMA/crossbar。
 - descriptor ABI 已经收敛到 SoC spec，但字段仍只覆盖当前 matmul/softmax smoke。
 - NPU core 仍然使用内部 host memory，不是真正 streaming datapath。
 - program stream 仍主要由 Phase 0 fixture/tooling 生成，尚未把 operator 模板、

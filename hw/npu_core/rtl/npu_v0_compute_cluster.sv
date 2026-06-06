@@ -1,15 +1,20 @@
-module npu_v0_top #(
+module npu_v0_compute_cluster #(
     parameter int CORE_HOST_LANES = 4
 ) (
     input  logic        clk,
     input  logic        rst_n,
     input  logic        start,
     input  logic [1:0]  op,          // 0: uop, 1: attention softmax, 2: matrix u16s8 q15, 3: attention scale/mask.
+    input  logic        output_store_enable,
     output logic        done,
     output logic        perf_active,
     output logic        perf_fetch_active,
     output logic        perf_matmul_active,
     output logic        perf_done_active,
+    output logic        perf_uop_sched_active,
+    output logic        perf_uop_sched_wait,
+    output logic        perf_matrix_active,
+    output logic        perf_local_active,
 
     input  logic [CORE_HOST_LANES-1:0] host_we,
     input  logic [11:0] host_addr,
@@ -20,8 +25,6 @@ module npu_v0_top #(
 
     typedef enum logic [4:0] {
         ST_IDLE,
-        ST_FETCH,
-        ST_MATMUL,
         ST_DONE,
         ST_ATTN_PREPARE,
         ST_ATTN_REDMAX_START,
@@ -54,20 +57,12 @@ module npu_v0_top #(
     logic signed [7:0]  dram_x [0:RTL_SOFTMAX_LEN-1];
     logic [31:0]        dram_y [0:RTL_SOFTMAX_LEN-1];
 
-    logic [15:0]        spad_a [0:RTL_MATMUL_ELEMS-1];
-    logic signed [7:0]  spad_b [0:RTL_MATMUL_ELEMS-1];
     logic signed [15:0] vec_buf [0:RTL_SOFTMAX_LEN-1];
     logic signed [15:0] scalar_max;
     logic [15:0]        scalar_sum;
     logic [31:0]        instr_mem [0:RTL_HOST_PROGRAM_WORDS-1];
 
     state_t state;
-    logic [$clog2(RTL_HOST_PROGRAM_WORDS)-1:0] pc;
-    logic [31:0] instr;
-    logic [3:0] opcode;
-    logic [3:0] arg0;
-    logic [3:0] arg1;
-    logic matmul_start;
     logic matmul_done;
     logic matmul_accumulate_enable;
     logic host_write_bank;
@@ -109,6 +104,16 @@ module npu_v0_top #(
     logic [31:0] primitive_sfu_y;
     logic primitive_sfu_done;
     logic primitive_sfu_active;
+    logic uop_sched_done;
+    logic uop_sched_load_valid;
+    logic uop_sched_store_valid;
+    logic uop_sched_exec_valid;
+    logic [3:0] uop_sched_opcode;
+    logic [3:0] uop_sched_tensor;
+    logic [3:0] uop_sched_buffer;
+    logic uop_sched_matrix_start;
+    logic [$clog2(RTL_HOST_PROGRAM_WORDS)-1:0] uop_sched_program_addr;
+    logic matrix_datapath_active;
     logic [3:0] primitive_lane_idx;
     logic [3:0] primitive_row_idx;
 
@@ -121,24 +126,49 @@ module npu_v0_top #(
     genvar matmul_flat_idx;
     generate
         for (matmul_flat_idx = 0; matmul_flat_idx < RTL_MATMUL_ELEMS; matmul_flat_idx = matmul_flat_idx + 1) begin : gen_matmul_flat
-            assign matmul_a_flat[(matmul_flat_idx * 16) +: 16] = spad_a[matmul_flat_idx];
-            assign matmul_b_flat[(matmul_flat_idx * 8) +: 8] = spad_b[matmul_flat_idx];
+            assign matmul_a_flat[(matmul_flat_idx * 16) +: 16] =
+                compute_bank_active ? dram_a_bank1[matmul_flat_idx] : dram_a[matmul_flat_idx];
+            assign matmul_b_flat[(matmul_flat_idx * 8) +: 8] =
+                compute_bank_active ? dram_b_bank1[matmul_flat_idx] : dram_b[matmul_flat_idx];
         end
     endgenerate
 
-    assign opcode = instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB];
-    assign arg0 = instr[UOP_ARG0_MSB:UOP_ARG0_LSB];
-    assign arg1 = instr[UOP_ARG1_MSB:UOP_ARG1_LSB];
-    assign perf_active = start || state != ST_IDLE;
-    assign perf_fetch_active = state == ST_FETCH;
-    assign perf_matmul_active = state == ST_MATMUL;
+    assign perf_local_active =
+        (uop_sched_load_valid &&
+         uop_sched_tensor != TENSOR_A &&
+         uop_sched_tensor != TENSOR_B) ||
+        (uop_sched_store_valid && output_store_enable) ||
+        uop_sched_exec_valid ||
+        acc_write_enable;
+    assign perf_active =
+        state != ST_IDLE || perf_local_active || matrix_datapath_active;
+    assign perf_fetch_active = perf_uop_sched_active;
+    assign perf_matmul_active = matrix_datapath_active;
     assign perf_done_active = state == ST_DONE;
     assign acc_read_enable =
-        (state == ST_FETCH) &&
-        (instr_mem[pc][UOP_OPCODE_MSB:UOP_OPCODE_LSB] == UOP_STORE) &&
-        (instr_mem[pc][UOP_ARG0_MSB:UOP_ARG0_LSB] == TENSOR_C) &&
-        (instr_mem[pc][UOP_ARG1_MSB:UOP_ARG1_LSB] == BUF_ACC);
-    assign acc_write_enable = (state == ST_MATMUL) && matmul_done;
+        uop_sched_store_valid && output_store_enable &&
+        uop_sched_tensor == TENSOR_C &&
+        uop_sched_buffer == BUF_ACC;
+    assign acc_write_enable = matmul_done;
+
+    npu_v0_uop_scheduler u_uop_scheduler (
+        .clk(clk),
+        .rst_n(rst_n),
+        .start(start && op != 2'd1 && op != 2'd3),
+        .done(uop_sched_done),
+        .program_addr(uop_sched_program_addr),
+        .program_rdata(instr_mem[uop_sched_program_addr]),
+        .local_load_valid(uop_sched_load_valid),
+        .local_store_valid(uop_sched_store_valid),
+        .local_exec_valid(uop_sched_exec_valid),
+        .local_opcode(uop_sched_opcode),
+        .local_tensor(uop_sched_tensor),
+        .local_buffer(uop_sched_buffer),
+        .matrix_start(uop_sched_matrix_start),
+        .matrix_done(matmul_done),
+        .perf_active(perf_uop_sched_active),
+        .perf_wait(perf_uop_sched_wait)
+    );
 
     matmul_array #(
         .M(RTL_MATMUL_M),
@@ -147,9 +177,10 @@ module npu_v0_top #(
     ) u_matmul_array (
         .clk(clk),
         .rst_n(rst_n),
-        .start(matmul_start),
+        .start(uop_sched_matrix_start),
         .mixed_u16s8_q15(op == 2'd2),
         .done(matmul_done),
+        .perf_active(matrix_datapath_active),
         .a_flat(matmul_a_flat),
         .b_flat(matmul_b_flat),
         .result_flat(matmul_result_flat)
@@ -252,8 +283,6 @@ module npu_v0_top #(
                 dram_b[idx] <= '0;
                 dram_b_bank1[idx] <= '0;
                 dram_c[idx] <= '0;
-                spad_a[idx] <= '0;
-                spad_b[idx] <= '0;
             end
             for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
                 dram_x[idx] <= '0;
@@ -343,77 +372,42 @@ module npu_v0_top #(
         if (!rst_n) begin
             state <= ST_IDLE;
             done <= 1'b0;
-            pc <= '0;
-            instr <= '0;
-            matmul_start <= 1'b0;
             scalar_max <= '0;
             scalar_sum <= '0;
             compute_bank_active <= 1'b0;
         end else begin
             done <= 1'b0;
-            matmul_start <= 1'b0;
             primitive_softmax_start <= 1'b0;
             primitive_reduction_start <= 1'b0;
             primitive_sfu_start <= 1'b0;
+            if (uop_sched_load_valid) begin
+                run_load(uop_sched_tensor, uop_sched_buffer);
+            end
+            if (uop_sched_store_valid && output_store_enable) begin
+                run_store(uop_sched_tensor, uop_sched_buffer);
+            end
+            if (uop_sched_exec_valid) begin
+                case (uop_sched_opcode)
+                    UOP_VREDMAX: run_vredmax();
+                    UOP_VSUB: run_vsub();
+                    UOP_VEXP: run_vexp();
+                    UOP_VREDSUM: run_vredsum();
+                    UOP_VDIV: run_vdiv();
+                    default: begin
+                    end
+                endcase
+            end
+            if (uop_sched_done) begin
+                done <= 1'b1;
+            end
             case (state)
                 ST_IDLE: begin
                     if (start) begin
                         compute_bank_active <= compute_bank_select;
-                        pc <= 4'h0;
                         primitive_row_idx <= 4'h0;
                         if (op == 2'd1) state <= ST_ATTN_PREPARE;
                         else if (op == 2'd3) state <= ST_SCALE_PREPARE;
-                        else state <= ST_FETCH;
-                    end
-                end
-
-                ST_FETCH: begin
-                    instr <= instr_mem[pc];
-                    pc <= pc + 1'b1;
-                    case (instr_mem[pc][UOP_OPCODE_MSB:UOP_OPCODE_LSB])
-                        UOP_LOAD: begin
-                            run_load(
-                                instr_mem[pc][UOP_ARG0_MSB:UOP_ARG0_LSB],
-                                instr_mem[pc][UOP_ARG1_MSB:UOP_ARG1_LSB]
-                            );
-                        end
-                        UOP_STORE: begin
-                            run_store(
-                                instr_mem[pc][UOP_ARG0_MSB:UOP_ARG0_LSB],
-                                instr_mem[pc][UOP_ARG1_MSB:UOP_ARG1_LSB]
-                            );
-                        end
-                        UOP_MATMUL: begin
-                            matmul_start <= 1'b1;
-                            state <= ST_MATMUL;
-                        end
-                        UOP_VREDMAX: begin
-                            run_vredmax();
-                        end
-                        UOP_VSUB: begin
-                            run_vsub();
-                        end
-                        UOP_VEXP: begin
-                            run_vexp();
-                        end
-                        UOP_VREDSUM: begin
-                            run_vredsum();
-                        end
-                        UOP_VDIV: begin
-                            run_vdiv();
-                        end
-                        UOP_HALT: begin
-                            state <= ST_DONE;
-                        end
-                        default: begin
-                            state <= ST_DONE;
-                        end
-                    endcase
-                end
-
-                ST_MATMUL: begin
-                    if (matmul_done) begin
-                        state <= ST_FETCH;
+                        else state <= ST_IDLE;
                     end
                 end
 
@@ -591,19 +585,7 @@ module npu_v0_top #(
     task automatic run_load(input logic [3:0] tensor, input logic [3:0] buffer);
         integer l;
         begin
-            if (tensor == TENSOR_A && buffer == BUF_SPAD_A) begin
-                if (compute_bank_active) begin
-                    for (l = 0; l < RTL_MATMUL_ELEMS; l = l + 1) spad_a[l] = dram_a_bank1[l];
-                end else begin
-                    for (l = 0; l < RTL_MATMUL_ELEMS; l = l + 1) spad_a[l] = dram_a[l];
-                end
-            end else if (tensor == TENSOR_B && buffer == BUF_SPAD_B) begin
-                if (compute_bank_active) begin
-                    for (l = 0; l < RTL_MATMUL_ELEMS; l = l + 1) spad_b[l] = dram_b_bank1[l];
-                end else begin
-                    for (l = 0; l < RTL_MATMUL_ELEMS; l = l + 1) spad_b[l] = dram_b[l];
-                end
-            end else if (tensor == TENSOR_X && buffer == BUF_VEC) begin
+            if (tensor == TENSOR_X && buffer == BUF_VEC) begin
                 for (l = 0; l < RTL_SOFTMAX_LEN; l = l + 1) vec_buf[l] = {{8{dram_x[l][7]}}, dram_x[l]};
             end
         end

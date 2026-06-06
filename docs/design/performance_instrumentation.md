@@ -37,7 +37,7 @@ Every measured descriptor job must expose one aligned timeline with:
 
 | Lane | Purpose |
 | --- | --- |
-| wrapper/control | descriptor read, fetch, launch, wait, writeback, done |
+| command processor | descriptor read, fetch issue, compute launch/wait, writeback issue, done |
 | data mover | program/input/output transfer intervals and stalls |
 | matrix | active matrix interval |
 | vector | active vector intervals |
@@ -49,13 +49,140 @@ spans. Reconstructed spans are allowed only when their ordering and duration
 come from the reviewed descriptor/core state machine; arbitrary placement from
 summary totals is not allowed.
 
+K-stream reports require cycle-event placement because summary totals cannot
+tell where scheduler-only gaps occur inside a Data-mover prefetch interval.
+In particular, this subtraction is invalid for absolute placement:
+
+```text
+prefetch - compute overlap - wait for data
+```
+
+The remainder means that Data mover was active while Compute cluster was not;
+it does not prove that those cycles all occurred before compute started.
+Simulation reports therefore use `PERF_TRACE` cycle events for K-stream lane
+placement and retain CSR snapshots as the authoritative aggregate totals.
+
+Timeline lanes must also expose the hardware hierarchy instead of presenting
+every lane as an unrelated peer:
+
+```text
+CPU firmware
+NPU wrapper                    CPU-visible host transactions only
+NPU core                       architecture group, not an additive active lane
+  Command processor            descriptor decode and load/compute/store issue
+  Data mover                   external-memory/local-storage movement
+  Compute cluster              compute execution boundary
+    Matrix/Vector/Reduction/SFU compute-cluster child execution units
+```
+
+The wrapper lane must not reuse command-processor state residency. Accepting a
+CPU launch is wrapper work; descriptor fetch, movement issue, compute wait, and
+job retirement are NPU-core command-processor work. During data movement or
+compute, the wrapper is normally idle even though the NPU core remains busy.
+The `NPU core` row is a visual group boundary and has no additive active-cycle
+total. Matrix/vector/reduction/SFU lanes refine compute-cluster activity.
+
+Command-processor state residency is also not automatically active work. A
+fetch or writeback state that has issued a data-mover command and is waiting
+for completion must be shown as wait. Until individual command-issue events
+are traced, the report counts only confirmed descriptor handling, compute
+launch, and completion control as command-processor work.
+
+The production snapshot must expose these measured counters:
+
+| Counter | Event definition |
+| --- | --- |
+| command-processor active | descriptor word accepted, explicit control/config/launch/done state |
+| command-processor wait | waiting for data mover or compute cluster completion |
+| data-mover/compute overlap | `data_mover_active && compute_cluster_active` in the same cycle |
+| uop-scheduler active | common uop fetch/decode/issue/completion-control work |
+| uop-scheduler wait | an issued execution-engine command has not completed |
+| matrix datapath active | Matrix engine's internal MAC iteration state is active |
+| wait for prefetched data | K-stream command remains active after a chunk completes while the next chunk is still moving |
+| compute-cluster local active | accepted local LOAD/STORE or fixed primitive/local-storage operation; command launch is excluded |
+| data-mover program load | external SRAM to core-local `instr_mem` while the command processor is in program-fetch state |
+| data-mover initial input load | external SRAM to the first A/B preload bank before its first uop-program launch |
+| data-mover next-chunk prefetch | external SRAM to the alternate A/B preload bank while the current chunk is executing or waiting |
+| data-mover output store | mover transfer while writing the completed output |
+
+Reports must use movement labels that preserve the two scheduling levels:
+
+```text
+Data mover:         external SRAM -> preload bank
+Uop scheduler:      bind selected MatMul operand bank
+Local storage path: only explicitly modeled physical local movement
+```
+
+The generic word `LOAD` must not be used for both without identifying the
+source and destination.
+
+K-stream overlap must use the measured overlap counter. It must not be inferred
+from aggregate read cycles or drawn as an exact span without this event.
+
+Movement spans must expose overlap rather than stretching an initial-load
+label across compute. For the current K-stream Prefill Projection GEMM,
+`data_mover_active && compute_cluster_active` measures 9 overlap cycles. The
+report shows those cycles as `Measured K prefetch overlap`; it must not derive
+an overlap amount by subtracting aggregate read and wait counters.
+
+For K-stream timelines, aggregate compute-active cycles must not be drawn as
+one continuous span. The report uses the measured wait-for-prefetched-data
+counter to render:
+
+```text
+chunk 0 compute -> wait for prefetched A/B -> chunk 1 compute
+```
+
+Matrix-engine spans use the measured datapath-active event, not time spent by
+the scheduler waiting for the Matrix engine transaction.
+
+Compute-cluster active excludes command-processor launch and Uop-scheduler
+decode/issue-only cycles. For the common matmul path it is the union of:
+
+```text
+accumulator commit/add || local STORE execution || Matrix datapath active
+```
+
+The MatMul `LOAD A/B` uops are scheduler work that bind the selected operand
+bank; they are not Compute-cluster local-movement active cycles. For one chunk
+the current active-cycle breakdown is:
+
+```text
+non-final chunk: 8-cycle Matrix -> 1-cycle accumulator commit/add
+final chunk:     8-cycle Matrix -> 1-cycle accumulator commit/add
+                                -> 1-cycle accumulator-to-C-window copy
+```
+
+The accumulator commit and accumulator-to-C-window copy are currently
+full-tile-wide RTL events. Their one-cycle durations describe the implemented
+functional timing, not a reviewed physical SRAM/register-file bandwidth.
+Reports expose both in the `Accumulator file` lane rather than duplicating the
+same read/copy operation in a second Local-storage lane.
+
+Data-mover phase spans must come from state-qualified measured counters. The
+report must not reconstruct initial-load length by subtracting aggregate
+overlap and wait counters from total reads.
+
+Timeline lane totals must distinguish:
+
+```text
+elapsed span = wall-clock interval covered by the lane
+active cycles = cycles in work spans only
+wait cycles = cycles in wait spans only
+```
+
+A polling CPU/firmware lane may cover the full descriptor interval, but its
+poll/wait span must not be counted or colored as continuous firmware work.
+Until individual MMIO poll reads are traced, the report shows the interval as
+wait time and reports only the known launch write as firmware active time.
+
 The page must summarize bottlenecks, including the longest active lane,
 non-compute overhead, and whether movement overlaps compute.
 
 ## 2. Current Collection Method
 
 The report source is the CPU-visible completed-job snapshot implemented in
-`hw/npu_wrapper/rtl/npu_v0_opsched.sv`. Firmware reads it through MMIO after
+`hw/npu_core/rtl/npu_v0_core_system.sv`. Firmware reads it through MMIO after
 every descriptor job. `hw/soc/tb/soc_cpu_tb.sv` serializes those actual bus
 read responses into `PERF_JOB` JSON records labeled
 `architectural_perf_csr_snapshot`.
@@ -105,11 +232,13 @@ PERF_JOB {"source":"architectural_perf_csr_snapshot", ...}
 
 ```text
 build/ppa/data/perf.json
-build/ppa/data/pipeline_report.html
 ```
 
-`pipeline_report.html` is an internal detailed view linked or embedded by the
-selected PPA test-case page; it is not a separate top-level report family.
+`perf.json` is the single measured-performance data source. The selected PPA
+test-case page, for example `build/ppa/cases/transformer.html`, is the single
+HTML location for computation graphs, operator details, and pipeline timelines.
+The perf tool retains an optional standalone HTML mode for isolated tool tests,
+but the normal PPA build does not generate a duplicate pipeline report.
 
 For Transformer-oriented v1 reporting, `report.py` also joins each workload
 with manifest shape metadata and derives analysis fields that are not yet all
@@ -192,7 +321,7 @@ CPU-controlled SoC simulation, redirects simulator stdout to
 
 #### Data Mover Event Source
 
-`hw/npu_wrapper/rtl/npu_v0_data_mover.sv` exports the event signals consumed by
+`hw/npu_core/rtl/memory/npu_v0_data_mover.sv` exports the event signals consumed by
 both collection paths:
 
 | Signal | Current meaning | Consumer |
@@ -211,14 +340,14 @@ revised.
 
 #### Wrapper CSR Aggregation
 
-`hw/npu_wrapper/rtl/npu_v0_opsched.sv` implements the software-readable
+`hw/npu_core/rtl/npu_v0_core_system.sv` implements the software-readable
 completed-job snapshot:
 
 1. A write to `NPU_OPSCHED_CTRL.start` asserts `perf_start_event`, sets
    `perf_running`, and clears the private `perf_work_*` accumulator bank. The
    previous `perf_snap_*` values remain readable until completion or explicit
    idle clear.
-2. While `perf_running` is set, the wrapper saturating-adds total cycles,
+2. While `perf_running` is set, the NPU core counter block saturating-adds total cycles,
    selected core cycles, data-mover events, and SRAM boundary words into
    `perf_work_*`; any saturated increment latches working overflow.
 3. On `DESC_DONE`, or on a legacy idle-path `npu_done`, `perf_complete_event`
@@ -357,22 +486,25 @@ validation reference boundary are specified in `docs/design/perf_counter_csr_pla
 
 The report builds lanes:
 
-| Lane | Current source |
-| --- | --- |
-| `CPU firmware` | synthetic start + poll/wait span |
-| `NPU wrapper` | wrapper phase counters |
-| `Data mover` | currently reconstructed from wrapper movement phases |
-| `NPU core` | core phase counters offset to wrapper core-wait position |
+| Lane | Parent | Current source |
+| --- | --- | --- |
+| `CPU firmware` | none | synthetic start + poll/wait span |
+| `NPU wrapper` | none | confirmed CPU-visible launch transaction |
+| `NPU core` | none | visual architecture group; no additive cycle total |
+| `Command processor` | `NPU core` | descriptor/scheduler state-machine placement |
+| `Data mover` | `NPU core` | measured movement totals plus reviewed placement |
+| `Compute cluster` | `NPU core` | compute active counters offset to command-processor wait position |
+| matrix/vector/reduction/SFU engines and local-storage path | `Compute cluster` | engine active counters or reviewed state-machine placement |
 
 For legacy phase-rich records, the data mover lane is placed on wrapper
 fetch/write phases and `matmul_k_stream` records can render a `K prefetch
-overlap` span. Production CSR snapshots establish aggregate cycle/word
-reduction only. A future report step requires architectural trace events before
-asserting fine-grain overlap spans.
+overlap` span. Production CSR snapshots use state-qualified phase counters and
+the measured overlap counter; exact absolute span placement remains derived
+from the reviewed command/core state-machine sequence.
 
-旧 phase-rich 记录仍可按 wrapper fetch/write phase 回放 Data mover timeline
-与 `K prefetch overlap` span。正式 CSR snapshot 目前只声明 aggregate
-cycle/word 结果；若后续需要正式展示重叠子阶段，应先定义架构化 trace event。
+旧 phase-rich 记录仍可按 command-processor fetch/write phase 回放 Data mover timeline
+与 `K prefetch overlap` span。正式 CSR snapshot 的阶段时长与 overlap
+均来自实测计数器，绝对起止位置仍按已评审的 command/core 状态机顺序放置。
 
 ## 7. Report Panels
 

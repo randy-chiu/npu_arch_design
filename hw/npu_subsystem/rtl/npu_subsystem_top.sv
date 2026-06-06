@@ -18,9 +18,9 @@ module npu_subsystem_top #(
     input  logic [(CORE_HOST_LANES*32)-1:0] mem_rdata,
     input  logic        mem_ready
 );
-    npu_v0_opsched #(
+    npu_v0_wrapper #(
         .CORE_HOST_LANES(CORE_HOST_LANES)
-    ) u_opsched (
+    ) u_npu_wrapper (
         .clk(clk),
         .rst_n(rst_n),
         .bus_req(ctrl_req),

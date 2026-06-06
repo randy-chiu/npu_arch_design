@@ -23,7 +23,7 @@ registers expose the last completed snapshot and are read-only.
 | `PERF_STATUS` | `0x044` | bit 0 valid, bit 1 running, bit 2 overflow |
 | `PERF_TOTAL_CYCLES` | `0x048` | launch-to-completion elapsed cycles |
 | `PERF_CORE_ACTIVE_CYCLES` | `0x04c` | cycles attributed to core execution/completion |
-| `PERF_CORE_MATMUL_CYCLES` | `0x050` | cycles in the matrix-engine state |
+| `PERF_CORE_MATMUL_CYCLES` | `0x050` | cycles with the Matrix datapath internally active |
 | `PERF_DATA_MOVER_ACTIVE_CYCLES` | `0x054` | cycles in any mover phase |
 | `PERF_DATA_MOVER_SETUP_CYCLES` | `0x058` | mover setup cycles |
 | `PERF_DATA_MOVER_TRANSFER_CYCLES` | `0x05c` | mover valid-transfer cycles |
@@ -35,6 +35,20 @@ registers expose the last completed snapshot and are read-only.
 | `PERF_OP_TYPE` | `0x074` | descriptor operation identity retained in the snapshot |
 | `PERF_DATA_MOVER_READ_WORDS` | `0x078` | words moved from SRAM into core host windows |
 | `PERF_DATA_MOVER_WRITE_WORDS` | `0x07c` | words moved from core host windows into SRAM |
+| `PERF_CMD_ACTIVE_CYCLES` | `0x080` | command-processor active control/decode cycles |
+| `PERF_CMD_WAIT_CYCLES` | `0x084` | command-processor wait cycles |
+| `PERF_DM_COMPUTE_OVERLAP_CYCLES` | `0x088` | cycles with data mover and compute cluster both active |
+| `PERF_UOP_SCHED_ACTIVE_CYCLES` | `0x08c` | common uop scheduler fetch/decode/issue/control cycles |
+| `PERF_UOP_SCHED_WAIT_CYCLES` | `0x090` | common uop scheduler waiting for an issued engine |
+| `PERF_CORE_WAIT_DATA_CYCLES` | `0x094` | K-stream cycles waiting for prefetched data after compute completes |
+| `PERF_CORE_LOCAL_ACTIVE_CYCLES` | `0x098` | compute-cluster local LOAD/STORE/primitive cycles, excluding command launch |
+| `PERF_DM_PROGRAM_CYCLES` | `0x09c` | measured data-mover program-load cycles |
+| `PERF_DM_INITIAL_INPUT_CYCLES` | `0x0a0` | measured initial active-chunk input-load cycles |
+| `PERF_DM_PREFETCH_CYCLES` | `0x0a4` | measured next-K-chunk prefetch cycles |
+| `PERF_DM_OUTPUT_CYCLES` | `0x0a8` | measured output-store cycles |
+
+`PERF_CORE_MATMUL_CYCLES` now uses the Matrix engine's own datapath-active
+event. It no longer means scheduler residency while waiting for Matrix done.
 
 Semantics:
 
@@ -83,7 +97,7 @@ Implemented:
 
 1. `arch/configs/npu_wrapper_v0.jsonc` owns the first-batch register offsets
    and snapshot/clear semantics.
-2. `npu_v0_opsched.sv` aggregates the stable counter subset and publishes a
+2. `npu_v0_core_system.sv` aggregates the stable counter subset and publishes a
    completed-job snapshot.
 3. The core exposes explicit perf events; both descriptor and legacy launch
    paths now populate core counters without wrapper dependence on core FSM
@@ -95,6 +109,8 @@ Implemented:
    event-reference counters; that check is validation only, not report input.
 6. `soc_tb.sv` verifies legacy-path MMIO readback, nonzero matmul counting, and
    idle clear behavior.
+7. Host wrapper owns the visible snapshot registers; the NPU core publishes a
+   completed snapshot through an explicit wrapper/core interface.
 
 The formal performance interface is now a CPU/firmware read of defined
 CSR/perf registers. Detailed phase timelines are no longer formal production

@@ -15,8 +15,11 @@ Outputs:
 build/ppa/data/cpu_soc_perf.log
 build/ppa/data/workload_manifest.json
 build/ppa/data/perf.json
-build/ppa/data/pipeline_report.html
 ```
+
+`perf.json` is consumed by the PPA report generator. Pipeline timelines are
+rendered once in `build/ppa/cases/<WORKLOAD_PROFILE>.html`; the normal build
+does not generate a second standalone timeline page.
 
 The current report consumes `PERF_JOB` JSON lines printed by `soc_cpu_tb` from
 the values firmware actually reads through the wrapper perf CSR MMIO window.
@@ -194,7 +197,7 @@ window interface. It does not mean the core is independently writing SRAM.
 
 The core `Uop fetch/execute` phase is different from wrapper `fetch_*` phases.
 Wrapper fetch phases move data/program words from SRAM into the core before
-launch. Core uop fetch/execute happens after launch, inside `npu_v0_top`, where
+launch. Compute-cluster uop fetch/execute happens after launch, inside `npu_v0_compute_cluster`, where
 the core reads its already-loaded `instr_mem` and executes micro-ops such as
 `LOAD`, `STORE`, vector operations, and `MATMUL`.
 
