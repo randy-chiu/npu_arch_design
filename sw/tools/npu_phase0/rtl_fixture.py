@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from npu_assembler.phase0 import encode_program, encode_uop
+from npu_compiler.attention import build_softmax_expanded_primitive_program
 
 from .compiler import compile_graph
 from .golden import matmul
@@ -63,6 +64,28 @@ def generate_default_fixtures(
     _write_hex(
         out_dir / "softmax_program.hex",
         _pad_program(encode_program(softmax_artifact["program"], arch), arch),
+        8,
+    )
+    _write_hex(
+        out_dir / "attention_scale_mask_program.hex",
+        _pad_program(
+            [
+                encode_uop(arch, "VSCALE_FIXED", row)
+                for row in range(arch["rtl"]["softmax_vector_len"])
+            ]
+            + [encode_uop(arch, "HALT")],
+            arch,
+        ),
+        8,
+    )
+    attention_softmax_program = build_softmax_expanded_primitive_program(
+        rows=arch["rtl"]["softmax_vector_len"],
+        elements=arch["rtl"]["softmax_vector_len"],
+        capacity_words=arch["rtl"]["host_map"]["program"]["words"],
+    )
+    _write_hex(
+        out_dir / "attention_softmax_program.hex",
+        [_encode_attention_softmax_uop(arch, inst) for inst in attention_softmax_program["program"]],
         8,
     )
     _write_sv_spec_include(out_dir / TB_SPEC_INCLUDE, arch)
@@ -134,12 +157,24 @@ def _write_sv_spec_include(path: Path, arch: dict[str, Any]) -> None:
         f"localparam int RTL_MATMUL_K = {arch['rtl']['matmul_tile'][2]};",
         "localparam int RTL_MATMUL_ELEMS = RTL_MATMUL_M * RTL_MATMUL_N;",
         f"localparam int RTL_SOFTMAX_LEN = {arch['rtl']['softmax_vector_len']};",
+        f"localparam logic signed [31:0] RTL_SCORE_SCALE_MULTIPLIER = 32'sd{arch['vector_sfu']['score_scale_multiplier']};",
+        f"localparam logic [4:0] RTL_SCORE_SCALE_SHIFT = 5'd{arch['vector_sfu']['score_scale_shift']};",
+        f"localparam logic signed [31:0] RTL_SOFTMAX_CLAMP_LOW = {_sv_signed_decimal(arch['vector_sfu']['softmax_clamp_low'], 32)};",
+        f"localparam logic signed [31:0] RTL_SOFTMAX_CLAMP_HIGH = {_sv_signed_decimal(arch['vector_sfu']['softmax_clamp_high'], 32)};",
+        f"localparam logic [4:0] RTL_SOFTMAX_NORMALIZE_SHIFT = 5'd{arch['vector_sfu']['softmax_normalize_shift']};",
+        f"localparam int RTL_SFU_EXP_INPUT_SCALE = {arch['vector_sfu']['sfu_exp_input_scale']};",
+        f"localparam int RTL_SFU_EXP_LUT_ENTRIES = {arch['vector_sfu']['sfu_exp_lut_entries']};",
+        f"localparam int RTL_SFU_EXP_OUTPUT_Q = {arch['vector_sfu']['sfu_exp_output_q']};",
+        f"localparam int RTL_SFU_RECIP_OUTPUT_Q = {arch['vector_sfu']['sfu_recip_output_q']};",
+        f"localparam int RTL_SFU_RSQRT_OUTPUT_Q = {arch['vector_sfu']['sfu_rsqrt_output_q']};",
         _sv_field_param("UOP_OPCODE", encoding["opcode"]),
         _sv_field_param("UOP_ARG0", encoding["arg0"]),
         _sv_field_param("UOP_ARG1", encoding["arg1"]),
     ]
     for op, value in encoding["opcodes"].items():
         lines.append(f"localparam [3:0] UOP_{op} = 4'h{value:x};")
+    for idx, value in enumerate(arch["vector_sfu"]["sfu_bringup_exp_q15_segments"]):
+        lines.append(f"localparam int RTL_SFU_BRINGUP_EXP_SEG_{idx} = {int(value)};")
     for tensor, value in encoding["tensors"].items():
         lines.append(f"localparam [3:0] TENSOR_{tensor} = 4'h{value:x};")
     for buffer, value in encoding["buffers"].items():
@@ -151,6 +186,26 @@ def _write_sv_spec_include(path: Path, arch: dict[str, Any]) -> None:
     for name, bit in control_bits.items():
         lines.append(f"localparam int RTL_CTRL_{_sv_name(name)}_BIT = {int(bit)};")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _encode_attention_softmax_uop(arch: dict[str, Any], inst: dict[str, Any]) -> int:
+    op_map = {
+        "REDUCE_MAX": "VREDMAX",
+        "VEC_SUB": "VSUB",
+        "VEC_CLAMP": "VCLAMP",
+        "SFU_EXP": "VEXP",
+        "REDUCE_SUM": "VREDSUM",
+        "SFU_RECIP": "VDIV",
+        "VEC_SCALE": "VNORM",
+        "HALT": "HALT",
+    }
+    opcode = op_map[inst["op"]]
+    return encode_uop(arch, opcode, int(inst.get("row", 0)), int(inst.get("lane", 0)))
+
+
+def _sv_signed_decimal(value: int, width: int) -> str:
+    value = int(value)
+    return f"-{width}'sd{-value}" if value < 0 else f"{width}'sd{value}"
 
 
 def _write_sv_tb_fixture_include(

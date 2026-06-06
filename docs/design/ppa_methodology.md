@@ -110,6 +110,28 @@ Test-case pages are user-facing architecture views:
 - measured versus state-machine-derived timing is identified by provenance,
   not by collapsing every lane to one color.
 
+### Timeline Truthfulness Gate
+
+The primary purpose of the performance timeline is to let an architect inspect
+the real internal execution order and identify optimization opportunities.
+Every architecture iteration must therefore pass a timeline truthfulness gate:
+
+- every displayed work span names the real hardware module or explicitly names
+  control logic inside a module;
+- every span start/end comes from a cycle event, not from proportional
+  allocation of an aggregate total;
+- child execution/control spans account for every compute-cluster active cycle,
+  with overlap counted explicitly rather than added twice;
+- spans stay within the job measurement interval;
+- inactive, bypassed, waiting, and working are distinct states;
+- irrelevant empty lanes are omitted;
+- lane totals reconcile with authoritative completed-job counters;
+- tooltip text states the operation, source/destination or wait reason, and
+  cycle interval.
+
+If any gate fails, the report must label the timeline incomplete and the
+architecture change cannot use that timeline as optimization evidence.
+
 The word `model` must not appear in user-facing report names or page labels.
 When physical power or area is unavailable, the page remains the power or area
 page and explicitly labels the current evidence as a normalized model.
@@ -421,13 +443,16 @@ ppa/baselines/
 
 Transformer counter expansion order:
 
-1. keep current wrapper CSR snapshot as the production performance source;
-2. define primitive valid/ready event semantics before adding new counters;
-3. add local matrix/vector/reduction/SFU/scheduler event sources and directed
-   tests;
-4. aggregate stable events through wrapper-visible completed-job snapshots;
-5. extend `PERF_JOB` and PPA schema with provenance labels for each new field;
-6. update energy coefficients only after event names and units are stable.
+1. define and test one job measurement interval so no trace event lies outside
+   `total_cycles`;
+2. define stable semantic command, compute-control, engine-active, wait-reason,
+   and movement events;
+3. add automatic timeline conservation checks for every measured job;
+4. keep current wrapper CSR snapshot as the production aggregate source and
+   cross-check it against cycle events;
+5. aggregate stable events through wrapper-visible completed-job snapshots;
+6. extend `PERF_JOB` and PPA schema with provenance labels for each new field;
+7. update energy coefficients only after event names and units are stable.
 
 Reports must not mix measured primitive counters with derived/model-only
 attention fields without separate provenance fields.

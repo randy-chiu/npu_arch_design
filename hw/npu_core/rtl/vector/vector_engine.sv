@@ -7,7 +7,7 @@ module vector_engine #(
     parameter int OP_VEC_SCALE = 3,
     parameter int OP_VEC_REQUANT = 4,
     parameter int OP_VEC_CLAMP = 5,
-    parameter int OP_VEC_REQUANT_V2 = 6
+    parameter int OP_VEC_SCALE_FIXED = 6
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -30,7 +30,7 @@ module vector_engine #(
     localparam logic [2:0] VEC_SCALE = OP_VEC_SCALE[2:0];
     localparam logic [2:0] VEC_REQUANT = OP_VEC_REQUANT[2:0];
     localparam logic [2:0] VEC_CLAMP = OP_VEC_CLAMP[2:0];
-    localparam logic [2:0] VEC_REQUANT_V2 = OP_VEC_REQUANT_V2[2:0];
+    localparam logic [2:0] VEC_SCALE_FIXED = OP_VEC_SCALE_FIXED[2:0];
 
     integer lane;
     logic signed [DATA_WIDTH-1:0] a_value;
@@ -78,7 +78,7 @@ module vector_engine #(
                                 if (result_value < clamp_low) result_value = clamp_low;
                                 if (result_value > clamp_high) result_value = clamp_high;
                             end
-                            VEC_REQUANT_V2: begin
+                            VEC_SCALE_FIXED: begin
                                 wide_value = a_value * scalar;
                                 rounding_offset = (shift == 0) ? '0 :
                                     ({{((DATA_WIDTH*2)-1){1'b0}}, 1'b1} << (shift - 1'b1));

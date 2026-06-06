@@ -23,6 +23,8 @@ requirements for the minimal Phase 0/Phase 1 system.
 - Source: "In-Datacenter Performance Analysis of a Tensor Processing Unit",
   Jouppi et al., ISCA 2017.
 - Link: https://doi.org/10.1145/3079856.3080246
+- Google Research page:
+  https://research.google/pubs/in-datacenter-performance-analysis-of-a-tensor-processing-unit/
 - Accessible copy found during research:
   https://users.cs.duke.edu/~lkw34/papers/tpu-isca2017.pdf
 - Topic: systolic matrix unit, inference accelerator, software-managed memory.
@@ -30,6 +32,28 @@ requirements for the minimal Phase 0/Phase 1 system.
   - Start with a narrow domain-specific ISA.
   - Use a large matrix unit with explicit data movement.
   - Treat memory bandwidth and utilization as first-class design metrics.
+- Project status: `candidate`.
+
+### NVIDIA Deep Learning Accelerator
+
+- Source: NVDLA Hardware Architectural Specification.
+- Link: https://nvdla.org/hw/v1/hwarch.html
+- Topic: modular inference engines, configuration/control, convolution buffer,
+  fused pipelines, double-buffered register groups, and per-engine performance
+  counters.
+- Useful ideas:
+  - Preserve independent engine ownership while allowing adjacent engines to
+    stream through small FIFOs and avoid external-memory round trips.
+  - The Convolution Sequence Controller generates and issues convolution
+    sequences, while CMAC/CACC retain local datapath/pipeline control. This is
+    a useful scheduler-versus-engine ownership reference.
+  - Use ping-pong configuration/data buffering to overlap setup and execution.
+  - Report engine-specific stalls and memory latency instead of only total
+    operator cycles.
+- Potential use in this project:
+  - guide command-list and engine-to-engine streaming design;
+  - guide scratchpad/bank visibility and wait-reason counters;
+  - guide semantic per-engine PPA events.
 - Project status: `candidate`.
 
 ### Google TPU v4
@@ -119,4 +143,3 @@ requirements for the minimal Phase 0/Phase 1 system.
   - Keep low-level control programmable without hiding data movement.
   - NoC ideas should wait until shared bus limits are measured.
 - Project status: `watch`.
-

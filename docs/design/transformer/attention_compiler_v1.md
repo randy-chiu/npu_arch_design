@@ -316,7 +316,7 @@ Compiler unit tests:
 - lowering `scaled_dot_product_attention_v1` emits `qk`, `scale_mask`,
   `softmax`, `pv` in order;
 - QK uses transposed K layout and records whether transpose was materialized;
-- score scale metadata for `D_k=8` matches the executable requant v2 bridge;
+- score scale metadata for `D_k=8` matches the executable fixed-scale path;
 - causal mask plan marks future key lanes invalid for decode rows;
 - PV uses `matmul_u16s8_q15` and `uint16_q0.15` input0;
 - generated runtime job stage names match manifest attention stages;

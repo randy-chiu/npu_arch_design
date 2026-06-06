@@ -106,8 +106,7 @@ module soc_cpu_tb;
                 ref_job_id <= ref_job_id + 1;
                 reset_reference_counters();
             end else if (ref_active) begin
-                if (dut.u_npu_wrapper.u_core_system.job_is_k_stream) begin
-                    $display("PERF_TRACE {\"job_id\":%0d,\"cycle\":%0d,\"cmd_state\":%0d,\"cmd_active\":%0d,\"cmd_wait\":%0d,\"stream_chunk\":%0d,\"dm_program\":%0d,\"dm_input_a\":%0d,\"dm_input_b\":%0d,\"dm_prefetch_a\":%0d,\"dm_prefetch_b\":%0d,\"dm_output\":%0d,\"dm_target_bank\":%0d,\"core_active\":%0d,\"core_wait_data\":%0d,\"uop_active\":%0d,\"uop_wait\":%0d,\"uop_load\":%0d,\"uop_tensor\":%0d,\"uop_store\":%0d,\"output_store_enable\":%0d,\"matrix_issue\":%0d,\"matrix_active\":%0d,\"acc_clear\":%0d,\"acc_commit\":%0d,\"acc_readout\":%0d}",
+                $display("PERF_TRACE {\"job_id\":%0d,\"cycle\":%0d,\"cmd_state\":%0d,\"cmd_active\":%0d,\"cmd_wait\":%0d,\"stream_chunk\":%0d,\"dm_program\":%0d,\"dm_input_a\":%0d,\"dm_input_b\":%0d,\"dm_prefetch_a\":%0d,\"dm_prefetch_b\":%0d,\"dm_output\":%0d,\"dm_target_bank\":%0d,\"core_active\":%0d,\"core_wait_data\":%0d,\"uop_active\":%0d,\"uop_wait\":%0d,\"uop_load\":%0d,\"uop_tensor\":%0d,\"uop_buffer\":%0d,\"uop_exec\":%0d,\"uop_opcode\":%0d,\"uop_store\":%0d,\"output_store_enable\":%0d,\"matrix_issue\":%0d,\"matrix_active\":%0d,\"acc_clear\":%0d,\"acc_commit\":%0d,\"acc_readout\":%0d,\"vector_active\":%0d,\"vector_op\":%0d,\"reduction_active\":%0d,\"reduction_op\":%0d,\"sfu_active\":%0d,\"sfu_op\":%0d,\"primitive_row\":%0d,\"primitive_lane\":%0d}",
                         ref_job_id, ref_total_cycles,
                         dut.u_npu_wrapper.u_core_system.desc_state,
                         dut.u_npu_wrapper.u_core_system.perf_cmd_active_event,
@@ -134,14 +133,24 @@ module soc_cpu_tb;
                         dut.u_npu_wrapper.u_core_system.core_perf_uop_sched_wait,
                         dut.u_npu_wrapper.u_core_system.u_compute_cluster.uop_sched_load_valid,
                         dut.u_npu_wrapper.u_core_system.u_compute_cluster.uop_sched_tensor,
+                        dut.u_npu_wrapper.u_core_system.u_compute_cluster.uop_sched_buffer,
+                        dut.u_npu_wrapper.u_core_system.u_compute_cluster.uop_sched_exec_valid,
+                        dut.u_npu_wrapper.u_core_system.u_compute_cluster.uop_sched_opcode,
                         dut.u_npu_wrapper.u_core_system.u_compute_cluster.uop_sched_store_valid,
                         dut.u_npu_wrapper.u_core_system.u_compute_cluster.output_store_enable,
                         dut.u_npu_wrapper.u_core_system.u_compute_cluster.uop_sched_matrix_start,
                         dut.u_npu_wrapper.u_core_system.core_perf_matmul_active,
                         dut.u_npu_wrapper.u_core_system.u_compute_cluster.acc_clear_request,
                         dut.u_npu_wrapper.u_core_system.u_compute_cluster.acc_write_enable,
-                        dut.u_npu_wrapper.u_core_system.u_compute_cluster.acc_read_enable);
-                end
+                        dut.u_npu_wrapper.u_core_system.u_compute_cluster.acc_read_enable,
+                        dut.u_npu_wrapper.u_core_system.u_compute_cluster.primitive_vector_active,
+                        dut.u_npu_wrapper.u_core_system.u_compute_cluster.primitive_vector_op,
+                        dut.u_npu_wrapper.u_core_system.u_compute_cluster.primitive_reduction_active,
+                        dut.u_npu_wrapper.u_core_system.u_compute_cluster.primitive_reduction_op,
+                        dut.u_npu_wrapper.u_core_system.u_compute_cluster.primitive_sfu_active,
+                        dut.u_npu_wrapper.u_core_system.u_compute_cluster.primitive_sfu_op,
+                        dut.u_npu_wrapper.u_core_system.u_compute_cluster.primitive_row_idx,
+                        dut.u_npu_wrapper.u_core_system.u_compute_cluster.primitive_lane_idx);
                 ref_total_cycles <= ref_total_cycles + 1;
                 if (dut.u_npu_wrapper.u_core_system.core_perf_active) begin
                     ref_core_cycles <= ref_core_cycles + 1;

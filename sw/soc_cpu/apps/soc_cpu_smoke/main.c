@@ -13,6 +13,8 @@ static uint32_t matmul_c_sram[MATMUL_EXPECTED_C_LEN];
 static uint32_t softmax_x_sram[SOFTMAX_X_LEN];
 static uint32_t softmax_program_sram[SOFTMAX_PROGRAM_LEN];
 static uint32_t softmax_y_sram[SOFTMAX_EXPECTED_Y_LEN];
+static uint32_t attention_scale_mask_program_sram[ATTENTION_SCALE_MASK_PROGRAM_LEN];
+static uint32_t attention_softmax_program_sram[ATTENTION_SOFTMAX_PROGRAM_LEN];
 
 static uint32_t digits_a_tile_sram[DIGITS_TILE_WORDS];
 static uint32_t digits_b_tile_sram[DIGITS_TILE_WORDS];
@@ -481,8 +483,8 @@ static int run_transformer_attention_runtime_job(const transformer_runtime_job_t
         job_desc.output_words = TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS;
         job_desc.k_chunks = TRANSFORMER_ATTENTION_QK_S8_D8_CHUNKS;
     } else if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_SCALE_MASK) {
-        job_desc.program_addr = 0u;
-        job_desc.program_words = 0u;
+        job_desc.program_addr = ptr32(attention_scale_mask_program_sram);
+        job_desc.program_words = ATTENTION_SCALE_MASK_PROGRAM_LEN;
         job_desc.input0_addr = ptr32(transformer_attention_qk_s8_d8_c_sram);
         job_desc.input0_words = TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8_SCORE_WORDS;
         job_desc.input1_addr = 0u;
@@ -491,8 +493,8 @@ static int run_transformer_attention_runtime_job(const transformer_runtime_job_t
         job_desc.output_words = TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8_SCORE_WORDS;
         job_desc.k_chunks = 0u;
     } else if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_SOFTMAX) {
-        job_desc.program_addr = 0u;
-        job_desc.program_words = 0u;
+        job_desc.program_addr = ptr32(attention_softmax_program_sram);
+        job_desc.program_words = ATTENTION_SOFTMAX_PROGRAM_LEN;
         job_desc.input0_addr = ptr32(transformer_attention_scale_mask_s8_d8_scores_sram);
         job_desc.input0_words = TRANSFORMER_ATTENTION_SOFTMAX_S8_X_WORDS;
         job_desc.input1_addr = 0u;
@@ -582,6 +584,10 @@ int main(void)
 
     copy_words(softmax_x_sram, softmax_x, SOFTMAX_X_LEN);
     copy_words(softmax_program_sram, softmax_program, SOFTMAX_PROGRAM_LEN);
+    copy_words(attention_scale_mask_program_sram, attention_scale_mask_program,
+               ATTENTION_SCALE_MASK_PROGRAM_LEN);
+    copy_words(attention_softmax_program_sram, attention_softmax_program,
+               ATTENTION_SOFTMAX_PROGRAM_LEN);
 
     job_desc.op_type = SOC_NPU_JOB_OP_SOFTMAX;
     job_desc.job_id = JOB_ID_OPERATOR_SMOKE_SOFTMAX;

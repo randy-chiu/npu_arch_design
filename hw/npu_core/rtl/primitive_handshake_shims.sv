@@ -7,7 +7,7 @@ module vector_engine_handshake #(
     parameter int OP_VEC_SCALE = 3,
     parameter int OP_VEC_REQUANT = 4,
     parameter int OP_VEC_CLAMP = 5,
-    parameter int OP_VEC_REQUANT_V2 = 6,
+    parameter int OP_VEC_SCALE_FIXED = 6,
     parameter int COUNTER_WIDTH = 32
 ) (
     input  logic clk,
@@ -69,7 +69,7 @@ module vector_engine_handshake #(
         .OP_VEC_SCALE(OP_VEC_SCALE),
         .OP_VEC_REQUANT(OP_VEC_REQUANT),
         .OP_VEC_CLAMP(OP_VEC_CLAMP),
-        .OP_VEC_REQUANT_V2(OP_VEC_REQUANT_V2)
+        .OP_VEC_SCALE_FIXED(OP_VEC_SCALE_FIXED)
     ) u_engine (
         .clk(clk),
         .rst_n(rst_n),

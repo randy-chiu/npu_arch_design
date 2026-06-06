@@ -52,6 +52,20 @@ def validate_attention_plan(plan: dict[str, Any]) -> None:
     if descriptor_ops != expected_ops:
         raise ValueError(f"unexpected runtime descriptor ops: {descriptor_ops}")
 
+    softmax_stage = next(stage for stage in stages if stage["stage_id"] == "softmax")
+    softmax_program = softmax_stage.get("primitive_program")
+    if not isinstance(softmax_program, dict):
+        raise ValueError("softmax stage missing expanded primitive_program")
+    program = softmax_program.get("program")
+    if not isinstance(program, list) or not program or program[-1].get("op") != "HALT":
+        raise ValueError("softmax expanded primitive_program must end with HALT")
+    if int(softmax_program.get("required_words", -1)) != len(program):
+        raise ValueError("softmax primitive_program required_words mismatch")
+    capacity_words = int(softmax_program.get("capacity_words", 0))
+    expected_fit = len(program) <= capacity_words
+    if bool(softmax_program.get("fits_current_capacity")) != expected_fit:
+        raise ValueError("softmax primitive_program capacity result mismatch")
+
     if plan.get("group_state") not in ("model_only_full_attention", "software_group_measured_stages"):
         raise ValueError("unsupported attention group_state")
     if plan.get("group_state") == "software_group_measured_stages":

@@ -231,12 +231,12 @@ Level 0 energy model for measured attention stages:
 | `transformer_attention_softmax_s8` | 7832.75 | 152.75 | 7680.0 | 384 | n/a |
 | `transformer_attention_pv_s8_d8` | 6548.5 | 1428.5 | 5120.0 | 256 | 12.790039 |
 
-`transformer_attention_softmax_s8` is measured through a hardwired
-CPU-to-NPU `attention_softmax_v1` descriptor path that uses
-`reduction_engine.sv`, `vector_engine.sv`, and `sfu_lut.sv` inside
-`npu_v0_compute_cluster.sv`. It is still the bring-up numerical contract, because EXP and
-normalization use the current coarse SFU/scale behavior, but it is no longer
-the old Phase 0 Q0.8 softmax path.
+`transformer_attention_softmax_s8` is measured through a 113-word
+Compiler-expanded primitive program executed by the common Uop Scheduler. The
+Compute cluster routes each issued primitive to `reduction_engine.sv`,
+`vector_engine.sv`, or `sfu_lut.sv`; it does not contain the Softmax operation
+sequence. This remains the bring-up numerical contract because EXP and
+normalization use the current coarse SFU/scale behavior.
 
 `transformer_attention_pv_s8_d8` is measured through the shared matrix path in
 mixed `u16(Q0.15) x s8` mode. This removes the previous int8-probability model.

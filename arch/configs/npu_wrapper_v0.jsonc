@@ -180,7 +180,7 @@
     },
     "program_base": {
       "offset": 2048,
-      "size_bytes": 256,
+      "size_bytes": 512,
       "description": "NPU micro-op program window"
     }
   }

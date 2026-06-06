@@ -27,6 +27,7 @@ TIMELINE_HIERARCHY = {
     "Uop scheduler": {"parent": "NPU core", "depth": 1, "role": "uop fetch/decode/dispatch"},
     "Data mover": {"parent": "NPU core", "depth": 1, "role": "data transfer"},
     "Compute cluster": {"parent": "NPU core", "depth": 1, "role": "compute"},
+    "Compute cluster control": {"parent": "Compute cluster", "depth": 2, "role": "internal control FSM"},
     "Accumulator file": {"parent": "Compute cluster", "depth": 2, "role": "partial-sum storage"},
     "Local storage path": {"parent": "Compute cluster", "depth": 2, "role": "operand/result movement"},
     "Matrix engine": {"parent": "Compute cluster", "depth": 2, "role": "execution unit"},
@@ -146,6 +147,8 @@ def add_timeline(job: dict) -> dict:
                 else "derived_from_reviewed_state_machine"
             ),
         }
+        _validate_timeline(job, strict=True)
+        job["timeline_validation"] = {"status": "passed"}
         return job
 
     wrapper_order = [
@@ -228,7 +231,70 @@ def add_timeline(job: dict) -> dict:
         {"module": "Data mover", "spans": data_mover_spans},
         {"module": "Compute cluster", "spans": core_spans},
     ])
+    issues = _validate_timeline(job, strict=False)
+    job["timeline_validation"] = {
+        "status": "legacy_not_accepted_as_architectural_evidence",
+        "issues": issues,
+    }
     return job
+
+
+def _validate_timeline(job: dict, strict: bool) -> list[str]:
+    total = int(job["total_cycles"])
+    lanes = {lane["module"]: lane for lane in job.get("timeline", [])}
+    issues = []
+
+    def reject(message: str) -> None:
+        if strict:
+            raise ValueError(message)
+        issues.append(message)
+
+    for lane in lanes.values():
+        previous_end = 0
+        for span in lane.get("spans", []):
+            start = int(span["start"])
+            end = int(span["end"])
+            cycles = int(span["cycles"])
+            if start < 0 or end > total or end < start:
+                reject(
+                    f"timeline span outside job interval job={_job_id(job)} "
+                    f"module={lane['module']} span={start}-{end} total={total}"
+                )
+            if cycles != end - start:
+                reject(
+                    f"timeline cycle mismatch job={_job_id(job)} module={lane['module']}"
+                )
+            if start < previous_end:
+                reject(
+                    f"overlapping spans in one lane job={_job_id(job)} module={lane['module']}"
+                )
+            previous_end = end
+
+    if job.get("name") in ("attention_scale_mask_v1", "attention_softmax_v1"):
+        parent_cycles = {
+            cycle
+            for span in lanes["Compute cluster"]["spans"]
+            if span.get("kind", "work") == "work"
+            for cycle in range(int(span["start"]), int(span["end"]))
+        }
+        child_cycles = {
+            cycle
+            for module in (
+                "Compute cluster control",
+                "Vector engine",
+                "Reduction engine",
+                "SFU",
+            )
+            for span in lanes.get(module, {}).get("spans", [])
+            if span.get("kind", "work") == "work"
+            for cycle in range(int(span["start"]), int(span["end"]))
+        }
+        if parent_cycles != child_cycles:
+            reject(
+                f"compute-cluster child timeline does not conserve active cycles "
+                f"job={_job_id(job)} parent={len(parent_cycles)} children={len(child_cycles)}"
+            )
+    return issues
 
 
 def _with_timeline_hierarchy(lanes: list[dict]) -> list[dict]:
@@ -258,6 +324,7 @@ def _event_spans(trace: list[dict], label_for_event, kind: str = "work") -> list
 
 def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
     trace = job["cycle_trace"]
+    job_name = job.get("name")
 
     def command_label(event):
         state = int(event["cmd_state"])
@@ -280,9 +347,17 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
     def mover_label(event):
         bank = int(event["dm_target_bank"])
         if event["dm_program"]:
-            return "Uop program: external SRAM -> instr_mem"
+            return (
+                "Primitive-uop program: external SRAM -> instruction memory"
+                if job_name in ("attention_scale_mask_v1", "attention_softmax_v1")
+                else "Uop program: external SRAM -> instr_mem"
+            )
         if event["dm_input_a"]:
-            return f"Chunk 0 A: external SRAM -> preload bank {bank}"
+            return (
+                "Score tile: external SRAM -> compute-cluster local storage"
+                if job_name in ("attention_scale_mask_v1", "attention_softmax_v1")
+                else f"Chunk 0 A: external SRAM -> preload bank {bank}"
+            )
         if event["dm_input_b"]:
             return f"Chunk 0 B: external SRAM -> preload bank {bank}"
         if event["dm_prefetch_a"]:
@@ -290,7 +365,11 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
         if event["dm_prefetch_b"]:
             return f"Chunk 1 B prefetch: external SRAM -> preload bank {bank}"
         if event["dm_output"]:
-            return "Output window -> external SRAM"
+            return (
+                "Produced score/probability tile -> external SRAM"
+                if job_name in ("attention_scale_mask_v1", "attention_softmax_v1")
+                else "Output window -> external SRAM"
+            )
         return None
 
     def scheduler_label(event):
@@ -299,6 +378,21 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
             return f"Fetch/decode/issue LOAD {tensor}: bind selected operand bank"
         if event["matrix_issue"]:
             return "Fetch/decode/issue MATMUL"
+        if event.get("uop_exec"):
+            opcode = int(event.get("uop_opcode", 0))
+            row = int(event.get("uop_tensor", 0))
+            lane = int(event.get("uop_buffer", 0))
+            labels = {
+                4: f"Fetch/decode/issue reduction max row {row}",
+                5: f"Fetch/decode/issue vector subtract row {row}",
+                6: f"Fetch/decode/issue SFU EXP row {row}, lane {lane}",
+                7: f"Fetch/decode/issue reduction sum row {row}",
+                8: f"Fetch/decode/issue SFU reciprocal row {row}",
+                9: f"Fetch/decode/issue fixed score scale row {row}",
+                10: f"Fetch/decode/issue vector clamp row {row}",
+                11: f"Fetch/decode/issue vector normalize row {row}",
+            }
+            return labels.get(opcode, f"Fetch/decode/issue primitive opcode {opcode}")
         if event["uop_store"]:
             return (
                 "Fetch/decode/issue final accumulator -> C-window STORE"
@@ -306,7 +400,7 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
                 else "Decode/skip non-final accumulator STORE"
             )
         if event["uop_wait"]:
-            return "Wait for Matrix completion"
+            return "Wait for issued engine completion"
         if event["uop_active"]:
             return "HALT/completion control"
         return None
@@ -330,7 +424,94 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
     for span in compute_spans:
         span["kind"] = "wait" if span["label"].startswith("Wait") else "work"
 
-    return [
+    module_lanes = []
+    if job_name in ("attention_scale_mask_v1", "attention_softmax_v1"):
+        active_core_cycles = [int(event["cycle"]) for event in trace if event["core_active"]]
+
+        vector_names = {
+            1: "Vector subtract row {row}: score - row maximum",
+            3: "Vector normalize row {row}: exp * reciprocal(sum)",
+            5: "Vector clamp row {row}: limit shifted scores to EXP input range",
+            6: "Vector fixed scale row {row}: apply 1/sqrt(head_dim)",
+        }
+        reduction_names = {
+            0: "Reduction max row {row}: find stable-softmax row maximum",
+            1: "Reduction sum row {row}: sum exponentials",
+            2: "Reduction sum-of-squares row {row}",
+        }
+        sfu_names = {
+            0: "SFU EXP row {row}, lane {lane}: exponentiate one shifted score",
+            1: "SFU reciprocal row {row}: compute 1/sum(exp)",
+            2: "SFU reciprocal-sqrt row {row}",
+        }
+
+        def primitive_label(event, active_field, op_field, names):
+            if not event.get(active_field):
+                return None
+            template = names.get(int(event[op_field]), f"Unknown primitive op {event[op_field]}")
+            return template.format(
+                row=int(event.get("primitive_row", 0)),
+                lane=int(event.get("primitive_lane", 0)),
+            )
+
+        def control_row(event):
+            return int(event.get("uop_tensor", 0)) if event.get("uop_exec") else int(
+                event.get("primitive_row", 0)
+            )
+
+        def control_lane(event):
+            return int(event.get("uop_buffer", 0)) if event.get("uop_exec") else int(
+                event.get("primitive_lane", 0)
+            )
+
+        module_lanes.extend(
+            [
+                {
+                    "module": "Compute cluster control",
+                    "spans": _event_spans(
+                        trace,
+                        lambda event: (
+                            "Compute-cluster control row "
+                            f"{control_row(event)}, lane "
+                            f"{control_lane(event)}: prepare/start/wait/result handoff"
+                            if event["core_active"]
+                            and not event.get("vector_active")
+                            and not event.get("reduction_active")
+                            and not event.get("sfu_active")
+                            and not event.get("matrix_active")
+                            else None
+                        ),
+                    ),
+                },
+                {
+                    "module": "Vector engine",
+                    "spans": _event_spans(
+                        trace,
+                        lambda event: primitive_label(
+                            event, "vector_active", "vector_op", vector_names
+                        ),
+                    ),
+                },
+                {
+                    "module": "Reduction engine",
+                    "spans": _event_spans(
+                        trace,
+                        lambda event: primitive_label(
+                            event, "reduction_active", "reduction_op", reduction_names
+                        ),
+                    ),
+                },
+                {
+                    "module": "SFU",
+                    "spans": _event_spans(
+                        trace,
+                        lambda event: primitive_label(event, "sfu_active", "sfu_op", sfu_names),
+                    ),
+                },
+            ]
+        )
+
+    base_lanes = [
         cpu_lane,
         {"module": "NPU wrapper", "spans": [_span("Forward CPU launch", 0, 1, "work")]},
         {"module": "NPU core", "spans": []},
@@ -343,32 +524,31 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
         },
         {"module": "Data mover", "spans": _event_spans(trace, mover_label)},
         {"module": "Compute cluster", "spans": compute_spans},
-        {
-            "module": "Matrix engine",
-            "spans": _event_spans(
-                trace, lambda event: "Matrix datapath active" if event["matrix_active"] else None
-            ),
-        },
-        {
-            "module": "Accumulator file",
-            "spans": _event_spans(
-                trace,
-                lambda event: (
-                    "Clear resident partial sum"
-                    if event["acc_clear"]
-                    else (
-                        "Commit/add Matrix result into resident partial sum"
-                        if event["acc_commit"]
-                        else (
-                            "Read/copy resident sum into C output window"
-                            if event["acc_readout"]
-                            else None
-                        )
-                    )
-                ),
-            ),
-        },
     ]
+    matrix_spans = _event_spans(
+        trace, lambda event: "Matrix datapath active" if event["matrix_active"] else None
+    )
+    accumulator_spans = _event_spans(
+        trace,
+        lambda event: (
+            "Clear resident partial sum"
+            if event["acc_clear"]
+            else (
+                "Commit/add Matrix result into resident partial sum"
+                if event["acc_commit"]
+                else (
+                    "Read/copy resident sum into C output window"
+                    if event["acc_readout"]
+                    else None
+                )
+            )
+        ),
+    )
+    if matrix_spans:
+        base_lanes.append({"module": "Matrix engine", "spans": matrix_spans})
+    if accumulator_spans:
+        base_lanes.append({"module": "Accumulator file", "spans": accumulator_spans})
+    return base_lanes + module_lanes
 
 
 def _architectural_timeline(job: dict, cpu_lane: dict) -> list[dict]:
@@ -561,8 +741,12 @@ def parse_perf_log(path: Path, manifest_path: Path | None = None, model: dict = 
                 traces.setdefault(int(event["job_id"]), []).append(event)
     jobs = []
     for job in raw_jobs:
-        job_trace = traces.get(_job_id(job))
-        if job_trace:
+        job_trace = [
+            event
+            for event in traces.get(_job_id(job), [])
+            if int(event["cycle"]) < int(job.get("total_cycles", 0))
+        ]
+        if job_trace and len(job_trace) >= max(1, int(job.get("total_cycles", 0)) - 1):
             job["cycle_trace"] = job_trace
         job = add_timeline(add_movement_estimates(add_estimates(job, model), model))
         job.pop("cycle_trace", None)
@@ -1516,6 +1700,7 @@ def write_html(report: dict, path: Path) -> None:
       "Uop scheduler": "#6f5aa8",
       "Data mover": "#c46b1f",
       "Compute cluster": "#1a9a7a",
+      "Compute cluster control": "#68758a",
       "Accumulator file": "#8a6f3d",
       "Local storage path": "#5b8f78",
       "Matrix engine": "#1666b1",

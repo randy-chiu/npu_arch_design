@@ -150,8 +150,8 @@ class PPAContractTests(unittest.TestCase):
         workload = report["workloads"][0]
 
         self.assertEqual(report["evidence_level"], "L0_model")
-        self.assertEqual(report["area_model"]["storage_bits_total"], 7968)
-        self.assertEqual(report["area_model"]["normalized_area_units"], 6998.4)
+        self.assertEqual(report["area_model"]["storage_bits_total"], 11552)
+        self.assertEqual(report["area_model"]["normalized_area_units"], 7177.6)
         self.assertEqual(workload["performance"]["provenance"], "measured_architectural_perf_csr_snapshot")
         self.assertEqual(workload["energy_model"]["events"]["int8_mac_accumulate"], 1152 * 512)
         self.assertEqual(workload["energy_model"]["events"]["data_mover_read_word"], 147472)
@@ -195,7 +195,7 @@ class PPAContractTests(unittest.TestCase):
         self.assertEqual(comparison["baseline"]["variant"], "npu_v0_a2_serial_k_stream")
         self.assertEqual(comparison["candidate"]["variant"], "npu_v0_a2_ping_pong")
         self.assertEqual(comparison["area_delta"]["classification"], "regression")
-        self.assertEqual(comparison["area_delta"]["delta"], 51.2)
+        self.assertEqual(comparison["area_delta"]["delta"], 230.4)
         self.assertEqual(delta["cycles"]["classification"], "improvement")
         self.assertEqual(delta["cycles"]["delta"], -313072)
         self.assertEqual(delta["data_mover_words"]["classification"], "invariant")

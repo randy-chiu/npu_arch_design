@@ -43,7 +43,7 @@ The command processor and uop scheduler are distinct control levels:
 | --- | --- |
 | Command processor | descriptor fetch/decode, operator-level movement sequencing, K-chunk sequencing, compute-cluster launch, and job completion |
 | Uop scheduler / dispatcher | common uop fetch/decode, local LOAD/STORE dispatch, execution-engine issue, and engine-completion wait |
-| Compute cluster | execution engines and core-local operand/result storage |
+| Compute cluster | execution-engine integration, core-local operand/result storage, routing/arbitration, and engine-local datapath state; no operator-specific primitive sequence |
 
 This is a deliberate two-level scheduling contract for the current
 architecture:
@@ -89,6 +89,48 @@ vector, reduction, and SFU engines retain only engine-local control such as
 iteration counters, pipeline progress, accepted-operation state, and done
 generation.
 
+### Target control ownership
+
+Attention Softmax still violates the intended boundary:
+`npu_v0_compute_cluster` contains an operator-specific state machine that
+selects the next Vector/Reduction/SFU primitive and waits for its completion.
+Scale/Mask is the first migrated path: the common Uop Scheduler owns its eight
+row-level `VSCALE_FIXED` primitives, while Compute cluster retains only
+per-primitive operand routing, engine launch, and response handoff.
+
+Target ownership is:
+
+| Decision/control | Owner |
+| --- | --- |
+| descriptor and external movement sequence | Command processor |
+| micro-kernel primitive order, dependency checks, issue, and completion wait | Uop scheduler / dispatcher |
+| shared local-buffer selection, operand/result routing, and arbitration | Compute cluster integration logic |
+| accepted-operation execution, internal pipeline counters, and result-valid generation | Matrix/Vector/Reduction/SFU engine-local control |
+
+Therefore Softmax and Scale/Mask must become compiler-generated primitive-uop
+programs executed by the common Uop scheduler. The Compute cluster must not
+decode an attention-stage identity into a private primitive sequence.
+
+This does not mean removing all state machines from Compute cluster or the
+engines. Routing arbitration, response capture, and engine-internal iteration
+remain local because they implement the issued primitive rather than decide
+the operator-level primitive order.
+
+Industry comparison supports this split:
+
+- TPU-style designs expose a software/compiler scheduled instruction stream
+  over matrix, vector, and memory operations while each unit retains its own
+  datapath pipeline control.
+- NVDLA uses a Convolution Sequence Controller to generate and issue the
+  convolution sequence, while CMAC/CACC and other pipeline stages retain
+  local execution/control. NVDLA also gives independently configured engines
+  local controllers; it does not place an operator-specific sequence FSM
+  inside the MAC datapath.
+
+The project should follow the same principle without copying either design:
+centralize scheduler-visible primitive ordering and dependencies, but keep
+engine-local execution state close to the datapath.
+
 The word `program` in the descriptor means the encoded uop stream, not tensor
 data and not CPU firmware. For the current matmul path the meaningful uops are:
 
@@ -100,11 +142,12 @@ STORE accumulator -> output window
 HALT
 ```
 
-The current descriptor points to a fixed 16-word program image containing
-these uops plus HALT padding. With the four-word-per-cycle Data mover it costs
-four cycles to load. The v0 command processor reloads this image for every
-descriptor job; retaining or caching an unchanged program is a future
-optimization, not current behavior.
+The current program window and instruction memory hold `128` words. Small
+Matrix programs still contain 16 words including HALT padding and cost four
+Data-mover cycles to load. Compiler-expanded Attention Softmax contains `113`
+words and costs 29 Data-mover cycles. The v0 command processor reloads the
+selected image for every descriptor job; retaining or caching an unchanged
+program is a future optimization, not current behavior.
 
 Before the uop scheduler starts, the command processor must use the Data mover
 to copy both the uop program and the first A/B chunk from external SRAM into
@@ -225,7 +268,7 @@ executing.
 | `0` | uop program | fetch and execute the preloaded Phase 0 uop stream |
 | `1` | attention softmax v1 | run the integrated row-softmax primitive sequence over all eight rows of `dram_c` and write Q0.15-style words back to `dram_c` |
 | `2` | mixed PV matmul | run the shared matmul path in `u16 x s8 -> int32` Q15-shifted mode |
-| `3` | attention score scale/mask v1 | scale one unmasked `8x8 int32` score tile through vector requant v2 |
+| `3` | attention score scale/mask v1 | scale one unmasked `8x8 int32` score tile through fixed-point vector scale |
 
 The `op=1`, `op=2`, and `op=3` paths are Transformer bring-up entry points. They reuse
 the current host preload/output windows and wrapper descriptor launch path; they
@@ -333,8 +376,8 @@ Supported uops:
 Most non-matmul uops are implemented as single-cycle RTL tasks. This is useful
 for functional bring-up but is not a realistic vector pipeline timing model.
 
-For `op=1`, the core bypasses the uop stream and runs a fixed attention
-row-softmax sequence:
+For `op=1`, the common Uop Scheduler executes the Compiler-expanded attention
+row-softmax primitive program:
 
 ```text
 prepare input row
@@ -345,14 +388,15 @@ prepare input row
   -> REDUCE_SUM
   -> SFU RECIP
   -> vector normalization
-  -> ST_DONE
+  -> HALT
 ```
 
-This path uses the standalone `vector_engine`, `reduction_engine`, and
-`sfu_lut` modules through start/done pulses. It is descriptor-visible and useful
-for stage-level attention bring-up, but it is still not the final scheduler
-contract because there is no valid/ready backpressure, response queue, or
-per-engine stall counter.
+Row and lane operands come from the program; Compute cluster no longer
+increments them or selects the next Softmax primitive. It only routes operands,
+starts `vector_engine`, `reduction_engine`, or `sfu_lut`, captures the response,
+and returns completion to the Scheduler. The path remains an in-order
+start/done baseline without valid/ready backpressure, response queues, or
+per-engine stall counters.
 
 For `op=2`, the core uses the same matmul FSM but drives
 `matmul_array.mixed_u16s8_q15=1`. This lets the A-side operand carry unsigned
@@ -360,7 +404,7 @@ Q0.15 probabilities while B remains signed int8. The array accumulates Q15
 products internally and exposes `result >>> 15` as int32 output.
 
 For `op=3`, the wrapper loads an int32 score tile into `dram_c`. The core
-processes eight rows through `VEC_REQUANT_V2` using multiplier `11585`, shift
+processes eight rows through `VEC_SCALE_FIXED` using multiplier `11585`, shift
 `15`, and round-nearest-away-from-zero, then writes scaled int32 values back to
 `dram_c`. Mask policy is `none`; causal/padding/tail masks are not claimed.
 

@@ -109,9 +109,11 @@ fixed-point:
 
 So the fixed result is `354`, close to the floating result `353.553`.
 
-This is why attention needs vector requant v2: current `VEC_REQUANT` can shift
-and clamp, but it cannot multiply by a reviewed scale multiplier with reviewed
-rounding.
+This is why attention needs `VSCALE_FIXED`: current `VEC_REQUANT` can shift
+and clamp, but it cannot express a reviewed fixed-point scale multiplier with
+reviewed rounding. Because the score remains in the signed `int32` score
+domain, this operation is scaling rather than a conversion to a new quantized
+representation.
 
 ## Softmax Derivation
 

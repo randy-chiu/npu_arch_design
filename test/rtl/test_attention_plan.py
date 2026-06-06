@@ -1,7 +1,10 @@
 import unittest
 from pathlib import Path
 
-from npu_compiler.attention import build_attention_plan_from_manifest
+from npu_compiler.attention import (
+    build_attention_plan_from_manifest,
+    build_softmax_expanded_primitive_program,
+)
 from npu_compiler.attention_plan_schema import validate_attention_plan
 from transformer.generate_transformer_micro_fixtures import read_jsonc
 
@@ -38,6 +41,26 @@ class AttentionPlanTests(unittest.TestCase):
         self.assertEqual(jobs["softmax"]["descriptor_op"], "attention_softmax_v1")
         self.assertEqual(jobs["pv"]["descriptor_op"], "matmul_u16s8_q15")
         self.assertEqual(jobs["pv"]["input0"], "prob_q15")
+
+    def test_compiler_expands_softmax_and_fits_selected_capacity(self):
+        expanded = build_softmax_expanded_primitive_program(rows=8, elements=8)
+
+        self.assertEqual(expanded["representation"], "compiler_expanded_primitives")
+        self.assertEqual(expanded["required_words"], 113)
+        self.assertEqual(expanded["required_bytes"], 452)
+        self.assertEqual(expanded["capacity_words"], 128)
+        self.assertTrue(expanded["fits_current_capacity"])
+        self.assertEqual(expanded["shortfall_words"], 0)
+        self.assertEqual(expanded["program"][0], {"op": "REDUCE_MAX", "row": 0})
+        self.assertEqual(expanded["program"][3], {"op": "SFU_EXP", "row": 0, "lane": 0})
+        self.assertEqual(expanded["program"][-1], {"op": "HALT"})
+
+    def test_attention_plan_carries_compiler_expanded_softmax_program(self):
+        plan = build_attention_plan_from_manifest(MANIFEST, "attention_prefill_s8_d8")
+        softmax = next(stage for stage in plan["stages"] if stage["stage_id"] == "softmax")
+
+        self.assertEqual(softmax["primitive_program"]["required_words"], 113)
+        self.assertTrue(softmax["primitive_program"]["fits_current_capacity"])
 
     def test_validator_rejects_missing_scale_mask_stage(self):
         plan = build_attention_plan_from_manifest(MANIFEST, "attention_prefill_s8_d8")

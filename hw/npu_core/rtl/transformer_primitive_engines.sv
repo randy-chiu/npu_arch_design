@@ -41,7 +41,7 @@ module transformer_primitive_engines (
         .OP_VEC_SCALE(CFG_VEC_SCALE),
         .OP_VEC_REQUANT(CFG_VEC_REQUANT),
         .OP_VEC_CLAMP(CFG_VEC_CLAMP),
-        .OP_VEC_REQUANT_V2(CFG_VEC_REQUANT_V2)
+        .OP_VEC_SCALE_FIXED(CFG_VEC_SCALE_FIXED)
     ) u_vector_engine (
         .clk(clk),
         .rst_n(rst_n),

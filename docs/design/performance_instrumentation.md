@@ -484,6 +484,74 @@ validation reference boundary are specified in `docs/design/perf_counter_csr_pla
 
 ## 6. Timeline Reconstruction
 
+### 6.1 Command semantic-event boundary
+
+The per-cycle SoC trace currently records the real numeric command-processor
+FSM state. Therefore command span timing is measured. The report currently
+maps those numeric states to human-readable actions in
+`sw/tools/perf/report.py`, so the action names are implementation-coupled rather
+than a stable architectural trace interface.
+
+The required replacement is a semantic command event emitted by the command
+processor, with arguments such as chunk and bank identifiers. The PPA report
+must consume that event instead of translating an internal FSM number.
+Workload-specific synthetic command sequences are not allowed.
+
+Until that event contract is implemented:
+
+- command span cycles are measured RTL evidence;
+- command action labels are reviewed report-side interpretations;
+- adding or renumbering command states requires an explicit mapping review.
+
+Primitive execution timelines must follow the same rule. Scale/mask and
+attention softmax currently run through a compute-cluster micro-sequencer,
+bypassing the common uop scheduler. Their PPA timelines must therefore:
+
+- show the uop scheduler as bypassed, not silently empty or falsely active;
+- use measured vector/reduction/SFU active events and operation arguments;
+- show compute-cluster-control prepare/start/wait/result-handoff
+  cycles that are not execution-engine active cycles;
+- identify softmax row and SFU lane where applicable;
+- never split total compute time into estimated engine occupancy ratios.
+
+The current attention softmax is intentionally serial per row:
+
+```text
+reduce-max
+-> vector subtract
+-> vector clamp
+-> eight scalar SFU EXP operations
+-> reduce-sum
+-> scalar SFU reciprocal
+-> vector normalize
+```
+
+For eight rows this makes scalar SFU EXP issue the dominant latency. The
+timeline must expose that serialization so a future vectorized/pipelined SFU
+proposal can be compared against measured evidence.
+
+`Compute cluster control` is not a separate execution engine. It is the
+control FSM physically implemented inside `npu_v0_compute_cluster`. It is shown
+as a child lane only to account for compute-cluster-active cycles during which
+Matrix/Vector/Reduction/SFU are not active.
+
+For the current fixed `8x8` score-scale operation:
+
+```text
+8 rows * (
+  1 cycle prepare Vector inputs/configuration
+  + 1 cycle issue Vector start
+  + 1 cycle wait/result handoff/row advance
+) + 1 final completion-control cycle
+= 25 Compute cluster control cycles
+```
+
+The Vector engine itself is active for only one cycle per row, or eight cycles
+total. This `25 control / 8 execution` ratio is measured behavior but poor
+microarchitectural efficiency. A future scheduler/handshake path should issue
+consecutive rows without three control cycles around every one-cycle Vector
+operation.
+
 The report builds lanes:
 
 | Lane | Parent | Current source |
@@ -494,6 +562,7 @@ The report builds lanes:
 | `Command processor` | `NPU core` | descriptor/scheduler state-machine placement |
 | `Data mover` | `NPU core` | measured movement totals plus reviewed placement |
 | `Compute cluster` | `NPU core` | compute active counters offset to command-processor wait position |
+| `Compute cluster control` | `Compute cluster` | measured internal control-FSM cycles when no execution engine is active |
 | matrix/vector/reduction/SFU engines and local-storage path | `Compute cluster` | engine active counters or reviewed state-machine placement |
 
 For legacy phase-rich records, the data mover lane is placed on wrapper
@@ -581,6 +650,23 @@ input1 和 output；descriptor read 不计入 data mover work。
 - The TB-versus-CSR equality checker reads internal snapshot storage only as a
   verification reference; firmware and report consume MMIO-visible values.
 - No global multi-job timeline yet.
+- The trace currently includes the terminal `DESC_DONE` observation at
+  `cycle == total_cycles`, outside the `[0,total_cycles)` job interval. Reports
+  must not present that terminal observation as an additional in-range work
+  cycle; the measurement-boundary contract still needs correction at source.
+- Command labels still interpret raw FSM numbers instead of stable semantic
+  command events.
+- Compute-cluster control spans are currently identified as residual
+  `core_active && no_engine_active`; named control-state events are still
+  required to distinguish prepare, issue, wait, handoff, and completion.
+- The first strict per-job validator now rejects out-of-range spans,
+  same-lane overlap, cycle-length mismatch, and uncovered Attention
+  compute-cluster cycles. It does not yet validate every cross-module
+  dependency or overlap rule.
+- Legacy phase-reconstructed logs can contain internally inconsistent summary
+  values that produce out-of-range spans. They are now marked
+  `legacy_not_accepted_as_architectural_evidence`; only architectural
+  cycle-event timelines can pass the strict truthfulness validator.
 
 ## 10. Counter Placement Policy
 

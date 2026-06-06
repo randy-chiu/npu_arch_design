@@ -196,6 +196,122 @@ class PerfReportTests(unittest.TestCase):
         self.assertEqual(lanes["Matrix engine"]["spans"][0]["start"], 6)
         self.assertEqual(report["jobs"][0]["timeline_provenance"]["span_placement"], "measured_cycle_event_trace")
 
+    def test_attention_softmax_trace_describes_scheduler_and_primitive_work(self):
+        defaults = {
+            "cmd_state": 6, "cmd_active": 0, "cmd_wait": 1, "stream_chunk": 0,
+            "dm_program": 0, "dm_input_a": 0, "dm_input_b": 0, "dm_prefetch_a": 0,
+            "dm_prefetch_b": 0, "dm_output": 0, "dm_target_bank": 0,
+            "core_active": 1, "core_wait_data": 0, "uop_active": 0, "uop_wait": 0,
+            "uop_load": 0, "uop_tensor": 0, "uop_store": 0, "output_store_enable": 1,
+            "matrix_issue": 0, "matrix_active": 0, "acc_clear": 0, "acc_commit": 0,
+            "acc_readout": 0, "vector_active": 0, "vector_op": 0,
+            "reduction_active": 0, "reduction_op": 0, "sfu_active": 0, "sfu_op": 0,
+            "primitive_row": 2, "primitive_lane": 0,
+        }
+        events = [
+            {"job_id": 1, "cycle": 0, **defaults, "uop_active": 1, "uop_exec": 1, "uop_opcode": 4,
+             "reduction_active": 1, "reduction_op": 0},
+            {"job_id": 1, "cycle": 1, **defaults, "vector_active": 1, "vector_op": 1},
+            {"job_id": 1, "cycle": 2, **defaults, "sfu_active": 1, "sfu_op": 0, "primitive_lane": 3},
+            {"job_id": 1, "cycle": 3, **defaults, "reduction_active": 1, "reduction_op": 1},
+            {"job_id": 1, "cycle": 4, **defaults, "sfu_active": 1, "sfu_op": 1},
+            {"job_id": 1, "cycle": 5, **defaults},
+        ]
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "trace.log"
+            lines = ["PERF_TRACE " + json.dumps(event) for event in events]
+            lines.append(
+                'PERF_JOB {"source":"architectural_perf_csr_snapshot","job_id":1,"id":1,'
+                '"name":"attention_softmax_v1","total_cycles":7,"core":{"total":6,"matmul":0},'
+                '"data_mover":{"active_cycles":0,"read_words":0,"write_words":0},"sram":{}}'
+            )
+            log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            report = parse_perf_log(log_path)
+
+        lanes = {lane["module"]: lane for lane in report["jobs"][0]["timeline"]}
+        self.assertEqual(
+            lanes["Uop scheduler"]["spans"][0]["label"],
+            "Fetch/decode/issue reduction max row 0",
+        )
+        self.assertIn("Compute-cluster control", lanes["Compute cluster control"]["spans"][0]["label"])
+        self.assertEqual(
+            lanes["Reduction engine"]["spans"][0]["label"],
+            "Reduction max row 2: find stable-softmax row maximum",
+        )
+        self.assertEqual(
+            lanes["SFU"]["spans"][0]["label"],
+            "SFU EXP row 2, lane 3: exponentiate one shifted score",
+        )
+
+    def test_attention_scale_trace_shows_scheduler_issue_wait_and_vector_work(self):
+        defaults = {
+            "cmd_state": 6, "cmd_active": 0, "cmd_wait": 1, "stream_chunk": 0,
+            "dm_program": 0, "dm_input_a": 0, "dm_input_b": 0, "dm_prefetch_a": 0,
+            "dm_prefetch_b": 0, "dm_output": 0, "dm_target_bank": 0,
+            "core_active": 1, "core_wait_data": 0, "uop_active": 0, "uop_wait": 0,
+            "uop_load": 0, "uop_tensor": 3, "uop_exec": 0, "uop_opcode": 9,
+            "uop_store": 0, "output_store_enable": 1, "matrix_issue": 0,
+            "matrix_active": 0, "acc_clear": 0, "acc_commit": 0, "acc_readout": 0,
+            "vector_active": 0, "vector_op": 6, "reduction_active": 0,
+            "reduction_op": 0, "sfu_active": 0, "sfu_op": 0,
+            "primitive_row": 3, "primitive_lane": 0,
+        }
+        events = [
+            {"job_id": 1, "cycle": 0, **defaults, "uop_active": 1, "uop_exec": 1},
+            {"job_id": 1, "cycle": 1, **defaults, "uop_wait": 1},
+            {"job_id": 1, "cycle": 2, **defaults, "uop_wait": 1, "vector_active": 1},
+            {"job_id": 1, "cycle": 3, **defaults, "uop_wait": 1},
+            {"job_id": 1, "cycle": 4, **defaults, "core_active": 0, "uop_active": 1, "uop_opcode": 15},
+            {"job_id": 1, "cycle": 5, **defaults, "core_active": 0},
+        ]
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "trace.log"
+            lines = ["PERF_TRACE " + json.dumps(event) for event in events]
+            lines.append(
+                'PERF_JOB {"source":"architectural_perf_csr_snapshot","job_id":1,"id":1,'
+                '"name":"attention_scale_mask_v1","total_cycles":7,"core":{"total":4,"matmul":0},'
+                '"uop_scheduler":{"active_cycles":2,"wait_cycles":3},'
+                '"data_mover":{"active_cycles":0,"read_words":0,"write_words":0},"sram":{}}'
+            )
+            log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            report = parse_perf_log(log_path)
+
+        lanes = {lane["module"]: lane for lane in report["jobs"][0]["timeline"]}
+        self.assertEqual(
+            lanes["Uop scheduler"]["spans"][0]["label"],
+            "Fetch/decode/issue fixed score scale row 3",
+        )
+        self.assertEqual(
+            lanes["Uop scheduler"]["spans"][1]["label"],
+            "Wait for issued engine completion",
+        )
+        self.assertEqual(
+            lanes["Vector engine"]["spans"][0]["label"],
+            "Vector fixed scale row 3: apply 1/sqrt(head_dim)",
+        )
+
+    def test_incomplete_cycle_trace_is_not_used_for_timeline_placement(self):
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "trace.log"
+            log_path.write_text(
+                'PERF_TRACE {"job_id":1,"cycle":0}\n'
+                'PERF_JOB {"source":"architectural_perf_csr_snapshot","job_id":1,"id":1,'
+                '"name":"attention_scale_mask_v1","total_cycles":80,'
+                '"core":{"total":33,"matmul":0},"command_processor":{"active_cycles":12,"wait_cycles":68},'
+                '"data_mover":{"active_cycles":33,"read_words":64,"write_words":64,'
+                '"program_cycles":1,"initial_input_cycles":16,"output_cycles":16},"sram":{}}\n',
+                encoding="utf-8",
+            )
+            report = parse_perf_log(log_path)
+
+        lanes = {lane["module"]: lane for lane in report["jobs"][0]["timeline"]}
+        self.assertTrue(lanes["Data mover"]["spans"])
+        self.assertTrue(lanes["Compute cluster"]["spans"])
+        self.assertEqual(
+            report["jobs"][0]["timeline_provenance"]["span_placement"],
+            "derived_from_reviewed_state_machine",
+        )
+
     def test_firmware_fixture_tool_emits_manifest_from_job_counts(self):
         tool_path = Path("sw/tools/firmware/emit_soc_cpu_smoke_data.py")
         spec = importlib.util.spec_from_file_location("emit_soc_cpu_smoke_data", tool_path)

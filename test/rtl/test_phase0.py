@@ -86,10 +86,16 @@ class RTLFunctionalTests(unittest.TestCase):
                 "softmax_x.hex",
                 "softmax_expected_y.hex",
                 "softmax_program.hex",
+                "attention_scale_mask_program.hex",
+                "attention_softmax_program.hex",
                 "npu_v0_spec.svh",
                 "npu_v0_tb_params.svh",
             }
             self.assertEqual({p.name for p in Path(tmp).iterdir()}, expected)
+            softmax_program = (Path(tmp) / "attention_softmax_program.hex").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            self.assertEqual(len(softmax_program), 113)
 
     @unittest.skipUnless(
         shutil.which("iverilog") and shutil.which("vvp"),

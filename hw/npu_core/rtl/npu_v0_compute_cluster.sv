@@ -23,29 +23,11 @@ module npu_v0_compute_cluster #(
 );
     `include "npu_v0_spec.svh"
 
-    typedef enum logic [4:0] {
-        ST_IDLE,
-        ST_DONE,
-        ST_ATTN_PREPARE,
-        ST_ATTN_REDMAX_START,
-        ST_ATTN_REDMAX_WAIT,
-        ST_ATTN_VSUB_START,
-        ST_ATTN_VSUB_WAIT,
-        ST_ATTN_VCLAMP_START,
-        ST_ATTN_VCLAMP_WAIT,
-        ST_ATTN_EXP_START,
-        ST_ATTN_EXP_WAIT,
-        ST_ATTN_REDSUM_PREPARE,
-        ST_ATTN_REDSUM_START,
-        ST_ATTN_REDSUM_WAIT,
-        ST_ATTN_RECIP_START,
-        ST_ATTN_RECIP_WAIT,
-        ST_ATTN_NORM_START,
-        ST_ATTN_NORM_WAIT,
-        ST_SCALE_PREPARE,
-        ST_SCALE_START,
-        ST_SCALE_WAIT
-    } state_t;
+    typedef enum logic [1:0] {
+        LOCAL_ROUTE_IDLE,
+        LOCAL_ROUTE_START,
+        LOCAL_ROUTE_WAIT
+    } local_route_state_t;
 
     localparam logic [7:0] RTL_SOFTMAX_LEN_U8 = RTL_SOFTMAX_LEN;
 
@@ -62,7 +44,6 @@ module npu_v0_compute_cluster #(
     logic [15:0]        scalar_sum;
     logic [31:0]        instr_mem [0:RTL_HOST_PROGRAM_WORDS-1];
 
-    state_t state;
     logic matmul_done;
     logic matmul_accumulate_enable;
     logic host_write_bank;
@@ -112,10 +93,15 @@ module npu_v0_compute_cluster #(
     logic [3:0] uop_sched_tensor;
     logic [3:0] uop_sched_buffer;
     logic uop_sched_matrix_start;
+    logic uop_sched_local_exec_done;
     logic [$clog2(RTL_HOST_PROGRAM_WORDS)-1:0] uop_sched_program_addr;
     logic matrix_datapath_active;
     logic [3:0] primitive_lane_idx;
     logic [3:0] primitive_row_idx;
+    local_route_state_t local_route_state;
+    logic [3:0] local_route_opcode;
+    logic [3:0] local_route_row;
+    logic [3:0] local_route_lane;
 
     integer idx;
     integer host_lane_idx;
@@ -141,10 +127,11 @@ module npu_v0_compute_cluster #(
         uop_sched_exec_valid ||
         acc_write_enable;
     assign perf_active =
-        state != ST_IDLE || perf_local_active || matrix_datapath_active;
+        local_route_state != LOCAL_ROUTE_IDLE ||
+        perf_local_active || matrix_datapath_active;
     assign perf_fetch_active = perf_uop_sched_active;
     assign perf_matmul_active = matrix_datapath_active;
-    assign perf_done_active = state == ST_DONE;
+    assign perf_done_active = uop_sched_done;
     assign acc_read_enable =
         uop_sched_store_valid && output_store_enable &&
         uop_sched_tensor == TENSOR_C &&
@@ -154,7 +141,7 @@ module npu_v0_compute_cluster #(
     npu_v0_uop_scheduler u_uop_scheduler (
         .clk(clk),
         .rst_n(rst_n),
-        .start(start && op != 2'd1 && op != 2'd3),
+        .start(start),
         .done(uop_sched_done),
         .program_addr(uop_sched_program_addr),
         .program_rdata(instr_mem[uop_sched_program_addr]),
@@ -164,6 +151,19 @@ module npu_v0_compute_cluster #(
         .local_opcode(uop_sched_opcode),
         .local_tensor(uop_sched_tensor),
         .local_buffer(uop_sched_buffer),
+        .local_exec_blocking(
+            (op == 2'd3 && uop_sched_opcode == UOP_VSCALE_FIXED) ||
+            (op == 2'd1 && (
+                uop_sched_opcode == UOP_VREDMAX ||
+                uop_sched_opcode == UOP_VSUB ||
+                uop_sched_opcode == UOP_VCLAMP ||
+                uop_sched_opcode == UOP_VEXP ||
+                uop_sched_opcode == UOP_VREDSUM ||
+                uop_sched_opcode == UOP_VDIV ||
+                uop_sched_opcode == UOP_VNORM
+            ))
+        ),
+        .local_exec_done(uop_sched_local_exec_done),
         .matrix_start(uop_sched_matrix_start),
         .matrix_done(matmul_done),
         .perf_active(perf_uop_sched_active),
@@ -217,7 +217,7 @@ module npu_v0_compute_cluster #(
         .OP_VEC_SCALE(3),
         .OP_VEC_REQUANT(4),
         .OP_VEC_CLAMP(5),
-        .OP_VEC_REQUANT_V2(6)
+        .OP_VEC_SCALE_FIXED(6)
     ) u_attention_vector_engine (
         .clk(clk),
         .rst_n(rst_n),
@@ -256,11 +256,20 @@ module npu_v0_compute_cluster #(
 
     sfu_lut #(
         .DATA_WIDTH(32),
-        .EXP_INPUT_SCALE(32),
-        .EXP_LUT_ENTRIES(257),
-        .EXP_OUTPUT_Q(15),
-        .RECIP_OUTPUT_Q(24),
-        .RSQRT_OUTPUT_Q(24),
+        .EXP_INPUT_SCALE(RTL_SFU_EXP_INPUT_SCALE),
+        .EXP_LUT_ENTRIES(RTL_SFU_EXP_LUT_ENTRIES),
+        .EXP_OUTPUT_Q(RTL_SFU_EXP_OUTPUT_Q),
+        .RECIP_OUTPUT_Q(RTL_SFU_RECIP_OUTPUT_Q),
+        .RSQRT_OUTPUT_Q(RTL_SFU_RSQRT_OUTPUT_Q),
+        .BRINGUP_EXP_SEG_0(RTL_SFU_BRINGUP_EXP_SEG_0),
+        .BRINGUP_EXP_SEG_1(RTL_SFU_BRINGUP_EXP_SEG_1),
+        .BRINGUP_EXP_SEG_2(RTL_SFU_BRINGUP_EXP_SEG_2),
+        .BRINGUP_EXP_SEG_3(RTL_SFU_BRINGUP_EXP_SEG_3),
+        .BRINGUP_EXP_SEG_4(RTL_SFU_BRINGUP_EXP_SEG_4),
+        .BRINGUP_EXP_SEG_5(RTL_SFU_BRINGUP_EXP_SEG_5),
+        .BRINGUP_EXP_SEG_6(RTL_SFU_BRINGUP_EXP_SEG_6),
+        .BRINGUP_EXP_SEG_7(RTL_SFU_BRINGUP_EXP_SEG_7),
+        .BRINGUP_EXP_SEG_8(RTL_SFU_BRINGUP_EXP_SEG_8),
         .OP_SFU_EXP(0),
         .OP_SFU_RECIP(1),
         .OP_SFU_RSQRT(2)
@@ -332,13 +341,13 @@ module npu_v0_compute_cluster #(
                         end else begin
                             dram_b[host_lane_addr - RTL_HOST_B_BASE] <= host_wdata[(host_lane_idx * 32) +: 8];
                         end
-                    end else if (state == ST_IDLE && host_lane_addr >= RTL_HOST_X_BASE &&
+                    end else if (host_lane_addr >= RTL_HOST_X_BASE &&
                                  host_lane_addr < RTL_HOST_X_BASE + RTL_HOST_X_WORDS) begin
                         dram_x[host_lane_addr - RTL_HOST_X_BASE] <= host_wdata[(host_lane_idx * 32) +: 8];
-                    end else if (state == ST_IDLE && host_lane_addr >= RTL_HOST_C_BASE &&
+                    end else if (host_lane_addr >= RTL_HOST_C_BASE &&
                                  host_lane_addr < RTL_HOST_C_BASE + RTL_HOST_C_WORDS) begin
                         dram_c[host_lane_addr - RTL_HOST_C_BASE] <= host_wdata[(host_lane_idx * 32) +: 32];
-                    end else if (state == ST_IDLE && host_lane_addr >= RTL_HOST_PROGRAM_BASE &&
+                    end else if (host_lane_addr >= RTL_HOST_PROGRAM_BASE &&
                                  host_lane_addr < RTL_HOST_PROGRAM_BASE + RTL_HOST_PROGRAM_WORDS) begin
                         instr_mem[host_lane_addr - RTL_HOST_PROGRAM_BASE] <= host_wdata[(host_lane_idx * 32) +: 32];
                     end else if (host_lane_addr == RTL_HOST_CONTROL_BASE) begin
@@ -370,13 +379,18 @@ module npu_v0_compute_cluster #(
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state <= ST_IDLE;
             done <= 1'b0;
             scalar_max <= '0;
             scalar_sum <= '0;
             compute_bank_active <= 1'b0;
+            local_route_state <= LOCAL_ROUTE_IDLE;
+            local_route_opcode <= '0;
+            local_route_row <= '0;
+            local_route_lane <= '0;
+            uop_sched_local_exec_done <= 1'b0;
         end else begin
             done <= 1'b0;
+            uop_sched_local_exec_done <= 1'b0;
             primitive_softmax_start <= 1'b0;
             primitive_reduction_start <= 1'b0;
             primitive_sfu_start <= 1'b0;
@@ -387,198 +401,146 @@ module npu_v0_compute_cluster #(
                 run_store(uop_sched_tensor, uop_sched_buffer);
             end
             if (uop_sched_exec_valid) begin
+                if (op == 2'd0) begin
+                    case (uop_sched_opcode)
+                        UOP_VREDMAX: run_vredmax();
+                        UOP_VSUB: run_vsub();
+                        UOP_VEXP: run_vexp();
+                        UOP_VREDSUM: run_vredsum();
+                        UOP_VDIV: run_vdiv();
+                        default: begin
+                        end
+                    endcase
+                end else begin
+                local_route_opcode <= uop_sched_opcode;
+                local_route_row <= uop_sched_tensor;
+                local_route_lane <= uop_sched_buffer;
+                primitive_row_idx <= uop_sched_tensor;
+                primitive_lane_idx <= uop_sched_buffer;
+                primitive_vector_valid_mask <= {RTL_SOFTMAX_LEN{1'b1}};
                 case (uop_sched_opcode)
-                    UOP_VREDMAX: run_vredmax();
-                    UOP_VSUB: run_vsub();
-                    UOP_VEXP: run_vexp();
-                    UOP_VREDSUM: run_vredsum();
-                    UOP_VDIV: run_vdiv();
+                    UOP_VREDMAX: begin
+                        primitive_reduction_op <= 2'd0;
+                        for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
+                            primitive_vector_a_flat[(idx * 32) +: 32] <=
+                                dram_c[(uop_sched_tensor * RTL_SOFTMAX_LEN) + idx];
+                            primitive_reduction_x_flat[(idx * 32) +: 32] <=
+                                dram_c[(uop_sched_tensor * RTL_SOFTMAX_LEN) + idx];
+                        end
+                    end
+                    UOP_VSUB: primitive_vector_op <= 3'd1;
+                    UOP_VCLAMP: begin
+                        primitive_vector_op <= 3'd5;
+                        primitive_vector_clamp_low <= RTL_SOFTMAX_CLAMP_LOW;
+                        primitive_vector_clamp_high <= RTL_SOFTMAX_CLAMP_HIGH;
+                    end
+                    UOP_VEXP: begin
+                        primitive_sfu_op <= 2'd0;
+                        primitive_sfu_x <= primitive_vector_a_flat[(uop_sched_buffer * 32) +: 32];
+                    end
+                    UOP_VREDSUM: begin
+                        primitive_reduction_op <= 2'd1;
+                        primitive_reduction_x_flat <= primitive_vector_a_flat;
+                    end
+                    UOP_VDIV: begin
+                        primitive_sfu_op <= 2'd1;
+                        primitive_sfu_x <= primitive_reduction_result[31:0];
+                    end
+                    UOP_VNORM: begin
+                        primitive_vector_op <= 3'd3;
+                        primitive_vector_shift <= RTL_SOFTMAX_NORMALIZE_SHIFT;
+                    end
+                    UOP_VSCALE_FIXED: begin
+                        for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
+                            primitive_vector_a_flat[(idx * 32) +: 32] <=
+                                dram_c[(uop_sched_tensor * RTL_SOFTMAX_LEN) + idx];
+                        end
+                        primitive_vector_op <= 3'd6;
+                        primitive_vector_scalar <= RTL_SCORE_SCALE_MULTIPLIER;
+                        primitive_vector_shift <= RTL_SCORE_SCALE_SHIFT;
+                        primitive_vector_clamp_low <= 32'sh8000_0000;
+                        primitive_vector_clamp_high <= 32'sh7fff_ffff;
+                    end
                     default: begin
                     end
                 endcase
+                local_route_state <= LOCAL_ROUTE_START;
+                end
+            end
+            case (local_route_state)
+                LOCAL_ROUTE_IDLE: begin
+                end
+                LOCAL_ROUTE_START: begin
+                    case (local_route_opcode)
+                        UOP_VREDMAX, UOP_VREDSUM: primitive_reduction_start <= 1'b1;
+                        UOP_VEXP, UOP_VDIV: primitive_sfu_start <= 1'b1;
+                        default: primitive_softmax_start <= 1'b1;
+                    endcase
+                    local_route_state <= LOCAL_ROUTE_WAIT;
+                end
+                LOCAL_ROUTE_WAIT: begin
+                    case (local_route_opcode)
+                        UOP_VREDMAX: begin
+                            if (primitive_reduction_done) begin
+                                for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
+                                    primitive_vector_b_flat[(idx * 32) +: 32] <=
+                                        primitive_reduction_result[31:0];
+                                end
+                                uop_sched_local_exec_done <= 1'b1;
+                                local_route_state <= LOCAL_ROUTE_IDLE;
+                            end
+                        end
+                        UOP_VSUB, UOP_VCLAMP: begin
+                            if (primitive_vector_done) begin
+                                primitive_vector_a_flat <= primitive_vector_y_flat;
+                                uop_sched_local_exec_done <= 1'b1;
+                                local_route_state <= LOCAL_ROUTE_IDLE;
+                            end
+                        end
+                        UOP_VEXP: begin
+                            if (primitive_sfu_done) begin
+                                primitive_vector_a_flat[(local_route_lane * 32) +: 32] <= primitive_sfu_y;
+                                uop_sched_local_exec_done <= 1'b1;
+                                local_route_state <= LOCAL_ROUTE_IDLE;
+                            end
+                        end
+                        UOP_VREDSUM: begin
+                            if (primitive_reduction_done) begin
+                                uop_sched_local_exec_done <= 1'b1;
+                                local_route_state <= LOCAL_ROUTE_IDLE;
+                            end
+                        end
+                        UOP_VDIV: begin
+                            if (primitive_sfu_done) begin
+                                primitive_vector_scalar <= primitive_sfu_y;
+                                uop_sched_local_exec_done <= 1'b1;
+                                local_route_state <= LOCAL_ROUTE_IDLE;
+                            end
+                        end
+                        UOP_VNORM, UOP_VSCALE_FIXED: begin
+                            if (primitive_vector_done) begin
+                                for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
+                                    dram_c[(local_route_row * RTL_SOFTMAX_LEN) + idx] <=
+                                        primitive_vector_y_flat[(idx * 32) +: 32];
+                                end
+                                uop_sched_local_exec_done <= 1'b1;
+                                local_route_state <= LOCAL_ROUTE_IDLE;
+                            end
+                        end
+                        default: begin
+                            uop_sched_local_exec_done <= 1'b1;
+                            local_route_state <= LOCAL_ROUTE_IDLE;
+                        end
+                    endcase
+                end
+                default: local_route_state <= LOCAL_ROUTE_IDLE;
+            endcase
+            if (start) begin
+                compute_bank_active <= compute_bank_select;
             end
             if (uop_sched_done) begin
                 done <= 1'b1;
             end
-            case (state)
-                ST_IDLE: begin
-                    if (start) begin
-                        compute_bank_active <= compute_bank_select;
-                        primitive_row_idx <= 4'h0;
-                        if (op == 2'd1) state <= ST_ATTN_PREPARE;
-                        else if (op == 2'd3) state <= ST_SCALE_PREPARE;
-                        else state <= ST_IDLE;
-                    end
-                end
-
-                ST_DONE: begin
-                    done <= 1'b1;
-                    if (!start) begin
-                        state <= ST_IDLE;
-                    end
-                end
-
-                ST_ATTN_PREPARE: begin
-                    for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
-                        primitive_vector_a_flat[(idx * 32) +: 32] <=
-                            dram_c[(primitive_row_idx * RTL_SOFTMAX_LEN) + idx];
-                        primitive_reduction_x_flat[(idx * 32) +: 32] <=
-                            dram_c[(primitive_row_idx * RTL_SOFTMAX_LEN) + idx];
-                    end
-                    primitive_vector_valid_mask <= 8'hff;
-                    state <= ST_ATTN_REDMAX_START;
-                end
-
-                ST_ATTN_REDMAX_START: begin
-                    primitive_reduction_op <= 2'd0;
-                    primitive_reduction_start <= 1'b1;
-                    state <= ST_ATTN_REDMAX_WAIT;
-                end
-
-                ST_ATTN_REDMAX_WAIT: begin
-                    if (primitive_reduction_done) begin
-                        for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
-                            primitive_vector_b_flat[(idx * 32) +: 32] <= primitive_reduction_result[31:0];
-                        end
-                        state <= ST_ATTN_VSUB_START;
-                    end
-                end
-
-                ST_ATTN_VSUB_START: begin
-                    primitive_vector_op <= 3'd1;
-                    primitive_softmax_start <= 1'b1;
-                    state <= ST_ATTN_VSUB_WAIT;
-                end
-
-                ST_ATTN_VSUB_WAIT: begin
-                    if (primitive_vector_done) begin
-                        primitive_vector_a_flat <= primitive_vector_y_flat;
-                        state <= ST_ATTN_VCLAMP_START;
-                    end
-                end
-
-                ST_ATTN_VCLAMP_START: begin
-                    primitive_vector_op <= 3'd5;
-                    primitive_vector_clamp_low <= -32'sd256;
-                    primitive_vector_clamp_high <= 32'sd0;
-                    primitive_softmax_start <= 1'b1;
-                    state <= ST_ATTN_VCLAMP_WAIT;
-                end
-
-                ST_ATTN_VCLAMP_WAIT: begin
-                    if (primitive_vector_done) begin
-                        primitive_vector_a_flat <= primitive_vector_y_flat;
-                        primitive_lane_idx <= 4'h0;
-                        state <= ST_ATTN_EXP_START;
-                    end
-                end
-
-                ST_ATTN_EXP_START: begin
-                    primitive_sfu_op <= 2'd0;
-                    primitive_sfu_x <= primitive_vector_a_flat[(primitive_lane_idx * 32) +: 32];
-                    primitive_sfu_start <= 1'b1;
-                    state <= ST_ATTN_EXP_WAIT;
-                end
-
-                ST_ATTN_EXP_WAIT: begin
-                    if (primitive_sfu_done) begin
-                        primitive_vector_a_flat[(primitive_lane_idx * 32) +: 32] <= primitive_sfu_y;
-                        if (primitive_lane_idx == RTL_SOFTMAX_LEN - 1) begin
-                            state <= ST_ATTN_REDSUM_PREPARE;
-                        end else begin
-                            primitive_lane_idx <= primitive_lane_idx + 1'b1;
-                            state <= ST_ATTN_EXP_START;
-                        end
-                    end
-                end
-
-                ST_ATTN_REDSUM_PREPARE: begin
-                    primitive_reduction_x_flat <= primitive_vector_a_flat;
-                    state <= ST_ATTN_REDSUM_START;
-                end
-
-                ST_ATTN_REDSUM_START: begin
-                    primitive_reduction_op <= 2'd1;
-                    primitive_reduction_start <= 1'b1;
-                    state <= ST_ATTN_REDSUM_WAIT;
-                end
-
-                ST_ATTN_REDSUM_WAIT: begin
-                    if (primitive_reduction_done) begin
-                        primitive_sfu_op <= 2'd1;
-                        primitive_sfu_x <= primitive_reduction_result[31:0];
-                        state <= ST_ATTN_RECIP_START;
-                    end
-                end
-
-                ST_ATTN_RECIP_START: begin
-                    primitive_sfu_start <= 1'b1;
-                    state <= ST_ATTN_RECIP_WAIT;
-                end
-
-                ST_ATTN_RECIP_WAIT: begin
-                    if (primitive_sfu_done) begin
-                        primitive_vector_scalar <= primitive_sfu_y;
-                        primitive_vector_shift <= 5'd9;
-                        state <= ST_ATTN_NORM_START;
-                    end
-                end
-
-                ST_ATTN_NORM_START: begin
-                    primitive_vector_op <= 3'd3;
-                    primitive_softmax_start <= 1'b1;
-                    state <= ST_ATTN_NORM_WAIT;
-                end
-
-                ST_ATTN_NORM_WAIT: begin
-                    if (primitive_vector_done) begin
-                        for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
-                            dram_c[(primitive_row_idx * RTL_SOFTMAX_LEN) + idx] <=
-                                primitive_vector_y_flat[(idx * 32) +: 32];
-                        end
-                        if (primitive_row_idx == RTL_SOFTMAX_LEN - 1) begin
-                            state <= ST_DONE;
-                        end else begin
-                            primitive_row_idx <= primitive_row_idx + 1'b1;
-                            state <= ST_ATTN_PREPARE;
-                        end
-                    end
-                end
-
-                ST_SCALE_PREPARE: begin
-                    for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
-                        primitive_vector_a_flat[(idx * 32) +: 32] <=
-                            dram_c[(primitive_row_idx * RTL_SOFTMAX_LEN) + idx];
-                    end
-                    primitive_vector_valid_mask <= 8'hff;
-                    primitive_vector_op <= 3'd6;
-                    primitive_vector_scalar <= 32'sd11585;
-                    primitive_vector_shift <= 5'd15;
-                    primitive_vector_clamp_low <= 32'sh8000_0000;
-                    primitive_vector_clamp_high <= 32'sh7fff_ffff;
-                    state <= ST_SCALE_START;
-                end
-
-                ST_SCALE_START: begin
-                    primitive_softmax_start <= 1'b1;
-                    state <= ST_SCALE_WAIT;
-                end
-
-                ST_SCALE_WAIT: begin
-                    if (primitive_vector_done) begin
-                        for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
-                            dram_c[(primitive_row_idx * RTL_SOFTMAX_LEN) + idx] <=
-                                primitive_vector_y_flat[(idx * 32) +: 32];
-                        end
-                        if (primitive_row_idx == RTL_SOFTMAX_LEN - 1) begin
-                            state <= ST_DONE;
-                        end else begin
-                            primitive_row_idx <= primitive_row_idx + 1'b1;
-                            state <= ST_SCALE_PREPARE;
-                        end
-                    end
-                end
-            endcase
         end
     end
 

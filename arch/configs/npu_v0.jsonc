@@ -59,6 +59,9 @@
         "VEXP": 6,
         "VREDSUM": 7,
         "VDIV": 8,
+        "VSCALE_FIXED": 9,
+        "VCLAMP": 10,
+        "VNORM": 11,
         "HALT": 15
       },
       "tensors": {
@@ -93,6 +96,9 @@
       "VEXP",
       "VREDSUM",
       "VDIV",
+      "VSCALE_FIXED",
+      "VCLAMP",
+      "VNORM",
       "HALT"
     ]
   },
@@ -123,7 +129,21 @@
     // Simulator mode. RTL uses a small LUT approximation documented under
     // hw/npu_core/rtl/README.md.
     "exp_mode": "math_exp",
-    "div_mode": "math_div"
+    "div_mode": "math_div",
+
+    // Fixed attention numerical parameters consumed by generated RTL
+    // constants. They must not be retyped as literals in Compute cluster.
+    "score_scale_multiplier": 11585,
+    "score_scale_shift": 15,
+    "softmax_clamp_low": -256,
+    "softmax_clamp_high": 0,
+    "softmax_normalize_shift": 9,
+    "sfu_exp_input_scale": 32,
+    "sfu_exp_lut_entries": 257,
+    "sfu_exp_output_q": 15,
+    "sfu_recip_output_q": 24,
+    "sfu_rsqrt_output_q": 24,
+    "sfu_bringup_exp_q15_segments": [32767, 12055, 4435, 1632, 600, 221, 81, 30, 11]
   },
 
   "memory": {
@@ -177,7 +197,7 @@
       "c": {"base_word": 512, "words": 64},
       "x": {"base_word": 768, "words": 8},
       "y": {"base_word": 896, "words": 8},
-      "program": {"base_word": 1024, "words": 16},
+      "program": {"base_word": 1024, "words": 128},
       "control": {"base_word": 1280, "words": 1}
     },
     "control_bits": {

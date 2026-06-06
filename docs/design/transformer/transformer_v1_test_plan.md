@@ -21,7 +21,7 @@ hardware can execute, with explicit labels for every approximation.
 | QK score tile | CPU-to-NPU RTL measured | `transformer_attention_qk_s8_d8` |
 | attention row softmax | CPU-to-NPU RTL measured V1 primitive path | `transformer_attention_softmax_s8` |
 | PV weighted sum | CPU-to-NPU RTL measured shared mixed matrix path | `transformer_attention_pv_s8_d8` |
-| executable unmasked score scale | CPU-to-NPU RTL measured vector requant v2 bridge | `transformer_attention_scale_mask_s8_d8` |
+| executable unmasked score scale | CPU-to-NPU RTL measured fixed-point vector scale | `transformer_attention_scale_mask_s8_d8` |
 | full attention group | software-sequenced measured stage grouping | `transformer_attention_prefill_s8_d8` |
 | target Q0.15 softmax | Python golden and standalone primitive sequence | `attention_numerical_v1.md`, primitive TB |
 | mixed Q0.15-by-int8 PV | CPU-to-NPU RTL measured for `S=8,D=8` | `matmul_u16s8_q15` |

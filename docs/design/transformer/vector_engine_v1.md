@@ -121,7 +121,16 @@ For active lanes in `valid_mask`, operations are lane-wise:
 
 Inactive lanes produce zero in current RTL.
 
-### Requantization Modes
+### Fixed Scale And Requantization
+
+The vector engine may share a multiply-round-shift-clamp datapath between
+fixed scaling and requantization, but their architectural contracts differ:
+
+- `VSCALE_FIXED` keeps the same integer score domain and approximates a
+  mathematical scalar such as `1/sqrt(D_k)`;
+- `VEC_REQUANT` converts an intermediate into a target quantized
+  representation with an explicit target scale and optional zero-point,
+  dtype, and saturation policy.
 
 `VEC_REQUANT` is owned by this vector engine document. It does not have a
 separate module-level design source.
@@ -194,7 +203,7 @@ else:
 For `shift = 0`, no rounding offset is applied.
 
 The first executable consumer is unmasked `S=8,D_k=8` attention score scaling.
-It uses a distinct `VEC_REQUANT_V2` operation so the existing shift-only
+It uses a distinct `VEC_SCALE_FIXED` operation so the existing shift-only
 `VEC_REQUANT` behavior and regressions remain unchanged.
 
 ### Executable Attention Score Scale
@@ -235,7 +244,7 @@ else:
     score_scaled = -(((-wide) + 2^14) >>> 15)
 ```
 
-The core issues one eight-lane `VEC_REQUANT_V2` operation per score row. One
+The core issues one eight-lane `VEC_SCALE_FIXED` operation per score row. One
 `8x8` tile therefore requires eight vector operations. Causal, padding, and
 tail mask-select behavior remains deferred.
 

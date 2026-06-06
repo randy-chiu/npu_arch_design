@@ -195,7 +195,7 @@ engine. The runtime path is:
 QK output SRAM
   -> attention_scale_mask_v1 descriptor
   -> int32 core C window
-  -> eight VEC_REQUANT_V2 row operations
+  -> eight VEC_SCALE_FIXED row operations
   -> int32 core C window
   -> scaled-score SRAM
 ```
@@ -206,7 +206,7 @@ firmware cannot silently replace executed QK results with fixture-owned data.
 
 Current runtime step:
 
-- executes one unmasked `8x8 int32` tile through vector requant v2;
+- executes one unmasked `8x8 int32` tile through fixed-point vector scale;
 - consumes the SRAM output produced by the preceding QK descriptor;
 - emits a measured scale/mask stage snapshot;
 - feeds the produced scaled-score tile to the all-row softmax descriptor.

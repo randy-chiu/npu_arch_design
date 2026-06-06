@@ -49,6 +49,8 @@ DATASETS = (
     ("softmax_x", "softmax_x.hex"),
     ("softmax_expected_y", "softmax_expected_y.hex"),
     ("softmax_program", "softmax_program.hex"),
+    ("attention_scale_mask_program", "attention_scale_mask_program.hex"),
+    ("attention_softmax_program", "attention_softmax_program.hex"),
 )
 
 

@@ -13,6 +13,8 @@ module npu_v0_uop_scheduler (
     output logic [3:0]  local_opcode,
     output logic [3:0]  local_tensor,
     output logic [3:0]  local_buffer,
+    input  logic        local_exec_blocking,
+    input  logic        local_exec_done,
     output logic        matrix_start,
     input  logic        matrix_done,
 
@@ -21,10 +23,11 @@ module npu_v0_uop_scheduler (
 );
     `include "npu_v0_spec.svh"
 
-    typedef enum logic [1:0] {
+    typedef enum logic [2:0] {
         SCHED_IDLE,
         SCHED_FETCH,
         SCHED_WAIT_MATRIX,
+        SCHED_WAIT_LOCAL,
         SCHED_DONE
     } sched_state_t;
 
@@ -54,7 +57,7 @@ module npu_v0_uop_scheduler (
         current_instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB] == UOP_MATMUL;
     assign done = state == SCHED_DONE;
     assign perf_active = state == SCHED_FETCH || state == SCHED_DONE;
-    assign perf_wait = state == SCHED_WAIT_MATRIX;
+    assign perf_wait = state == SCHED_WAIT_MATRIX || state == SCHED_WAIT_LOCAL;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -73,11 +76,22 @@ module npu_v0_uop_scheduler (
                     case (current_instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB])
                         UOP_MATMUL: state <= SCHED_WAIT_MATRIX;
                         UOP_HALT: state <= SCHED_DONE;
-                        default: state <= SCHED_FETCH;
+                        default: begin
+                            if (local_exec_valid && local_exec_blocking) begin
+                                state <= SCHED_WAIT_LOCAL;
+                            end else begin
+                                state <= SCHED_FETCH;
+                            end
+                        end
                     endcase
                 end
                 SCHED_WAIT_MATRIX: begin
                     if (matrix_done) begin
+                        state <= SCHED_FETCH;
+                    end
+                end
+                SCHED_WAIT_LOCAL: begin
+                    if (local_exec_done) begin
                         state <= SCHED_FETCH;
                     end
                 end

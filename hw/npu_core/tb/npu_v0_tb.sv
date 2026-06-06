@@ -214,6 +214,10 @@ module npu_v0_tb;
                 input_value = (i - 32) * 97;
                 dut.dram_c[i] = input_value;
             end
+            for (i = 0; i < RTL_SOFTMAX_LEN; i = i + 1) begin
+                dut.instr_mem[i] = uop(UOP_VSCALE_FIXED, i[3:0], 4'h0);
+            end
+            dut.instr_mem[RTL_SOFTMAX_LEN] = uop(UOP_HALT, 4'h0, 4'h0);
             op <= 2'd3;
             launch_and_wait();
             op <= 2'd0;

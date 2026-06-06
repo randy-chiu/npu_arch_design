@@ -27,7 +27,7 @@
       "spad_b": 512,
       "accumulator": 2048,
       "output_window": 2048,
-      "instruction_memory": 512,
+      "instruction_memory": 4096,
       "softmax_state": 288
     }
   },

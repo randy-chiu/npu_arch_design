@@ -30,7 +30,7 @@ class TransformerNpuV1ContractTests(unittest.TestCase):
         self.assertEqual(config["modules"]["reduction_engine"]["result_width"], 64)
         self.assertEqual(config["modules"]["sfu"]["exp_lut_entries"], 257)
         self.assertEqual(config["primitive_op_encodings"]["vector"]["VEC_REQUANT"], 4)
-        self.assertEqual(config["primitive_op_encodings"]["vector"]["VEC_REQUANT_V2"], 6)
+        self.assertEqual(config["primitive_op_encodings"]["vector"]["VEC_SCALE_FIXED"], 6)
         self.assertEqual(config["primitive_op_encodings"]["reduction"]["REDUCE_SUMSQ"], 2)
         self.assertEqual(config["primitive_op_encodings"]["sfu"]["SFU_RSQRT"], 2)
 
@@ -75,7 +75,7 @@ class TransformerNpuV1ContractTests(unittest.TestCase):
             "CFG_SFU_RECIP_OUTPUT_Q",
             "CFG_SFU_RSQRT_OUTPUT_Q",
             "CFG_VEC_REQUANT",
-            "CFG_VEC_REQUANT_V2",
+            "CFG_VEC_SCALE_FIXED",
             "CFG_REDUCE_SUMSQ",
             "CFG_SFU_RSQRT",
         ):

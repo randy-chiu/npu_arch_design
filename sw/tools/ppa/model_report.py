@@ -727,6 +727,7 @@ def _write_case_page(report: dict[str, Any], out_dir: Path, style: str) -> None:
     .timeline{{display:grid;grid-template-columns:150px 1fr 100px;gap:7px;align-items:center}}
     .track{{position:relative;height:28px;background:#eef1f6;border-radius:5px}}.bar{{position:absolute;top:4px;height:20px;border-radius:4px;min-width:2px}}
     .bar.wait{{background:repeating-linear-gradient(45deg,#dce2ec,#dce2ec 6px,#cbd4e2 6px,#cbd4e2 12px)!important;border:1px solid #bcc7d8}}
+    .bar.inactive{{background:repeating-linear-gradient(135deg,#f4f5f7,#f4f5f7 6px,#e2e5e9 6px,#e2e5e9 12px)!important;border:1px dashed #aeb6c2}}
     .lane-label{{font-weight:650;padding:4px}}.lane-label.child{{border-left:2px solid #c7d2e2;color:#3c4b61}}
     .lane-role{{display:block;color:#748094;font-size:10px;font-weight:500;margin-top:1px}}
     .lane-value{{text-align:right}}.timeline-legend{{display:flex;flex-wrap:wrap;gap:12px;margin:10px 0 18px}}
@@ -783,6 +784,7 @@ MODULE_COLORS = {
     "Uop scheduler": "#6f5aa8",
     "Data mover": "#c46b1f",
     "Compute cluster": "#1a9a7a",
+    "Compute cluster control": "#68758a",
     "Accumulator file": "#8a6f3d",
     "Local storage path": "#5b8f78",
     "Matrix engine": "#1666b1",
@@ -799,6 +801,7 @@ TIMELINE_HIERARCHY = {
     "Uop scheduler": {"depth": 1, "role": "uop fetch/decode/dispatch"},
     "Data mover": {"depth": 1, "role": "data transfer"},
     "Compute cluster": {"depth": 1, "role": "compute"},
+    "Compute cluster control": {"depth": 2, "role": "internal control FSM"},
     "Accumulator file": {"depth": 2, "role": "partial-sum storage"},
     "Local storage path": {"depth": 2, "role": "operand/result movement"},
     "Matrix engine": {"depth": 2, "role": "execution unit"},

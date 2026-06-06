@@ -28,6 +28,48 @@ DESCRIPTOR_OP_BY_STAGE = {
     "pv": "matmul_u16s8_q15",
 }
 
+CURRENT_RTL_PROGRAM_CAPACITY_WORDS = 128
+
+
+def build_softmax_expanded_primitive_program(
+    rows: int,
+    elements: int,
+    *,
+    capacity_words: int = CURRENT_RTL_PROGRAM_CAPACITY_WORDS,
+) -> dict[str, Any]:
+    """Expand row Softmax into primitive uops and report program capacity."""
+
+    if rows <= 0 or elements <= 0:
+        raise ValueError("softmax rows and elements must be positive")
+    program: list[dict[str, int | str]] = []
+    for row in range(rows):
+        program.extend(
+            [
+                {"op": "REDUCE_MAX", "row": row},
+                {"op": "VEC_SUB", "row": row},
+                {"op": "VEC_CLAMP", "row": row},
+            ]
+        )
+        program.extend({"op": "SFU_EXP", "row": row, "lane": lane} for lane in range(elements))
+        program.extend(
+            [
+                {"op": "REDUCE_SUM", "row": row},
+                {"op": "SFU_RECIP", "row": row},
+                {"op": "VEC_SCALE", "row": row},
+            ]
+        )
+    program.append({"op": "HALT"})
+    required_words = len(program)
+    return {
+        "representation": "compiler_expanded_primitives",
+        "program": program,
+        "required_words": required_words,
+        "required_bytes": required_words * 4,
+        "capacity_words": capacity_words,
+        "fits_current_capacity": required_words <= capacity_words,
+        "shortfall_words": max(0, required_words - capacity_words),
+    }
+
 
 def build_attention_plan_from_manifest(spec: dict[str, Any], attention_group: str) -> dict[str, Any]:
     """Lower one manifest attention group into a compiler AttentionPlan.
@@ -56,6 +98,10 @@ def build_attention_plan_from_manifest(spec: dict[str, Any], attention_group: st
     }
     numerical_contract = parent.get("numerical_contract") or stage_workloads["pv"].get("numerical_contract")
     stages = _build_stages(stage_workloads, numerical_contract)
+    softmax_program = build_softmax_expanded_primitive_program(
+        shape["softmax_rows"], shape["softmax_elements"]
+    )
+    next(stage for stage in stages if stage["stage_id"] == "softmax")["primitive_program"] = softmax_program
     buffers = [
         _buffer("q_tile", "int8", [int(qk_shape["m"]), int(qk_shape["k"])], "input", [0]),
         _buffer("k_t_tile", "int8", [int(qk_shape["k"]), int(qk_shape["n"])], "input", [0], layout="transposed_d_by_s"),
