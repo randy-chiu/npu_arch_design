@@ -34,7 +34,6 @@ order. Invocation without a manifest is retained for legacy logs only and
 prints a warning before order-based inference.
 
 - `operator_smoke_matmul`: the original single matmul job;
-- `operator_smoke_softmax`: the original single softmax job;
 - `digits_linear_classifier`: 16 tiled `8x8x8` matmul jobs that implement the
   linear digit classifier, with CPU firmware accumulating partial sums and
   checking the predicted label;

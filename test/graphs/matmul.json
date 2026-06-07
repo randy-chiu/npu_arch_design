@@ -4,8 +4,6 @@
     "B": {"shape": [8, 8], "dtype": "int8"}
   },
   "ops": [
-    {"type": "matmul", "a": "A", "b": "B", "out": "C"},
-    {"type": "softmax", "x": "C", "out": "Y"}
+    {"type": "matmul", "a": "A", "b": "B", "out": "C"}
   ]
 }
-

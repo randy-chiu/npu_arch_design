@@ -187,3 +187,33 @@ PPA must expose:
 Acceptance requires the private Attention Softmax sequence states to be
 removed, fixed-case output to remain unchanged, and the measured timeline to
 reconcile every Scheduler, Compute-cluster, and engine cycle.
+
+### Native primitive command/response contract
+
+The production Scheduler-to-Compute-cluster boundary uses one in-order
+valid/ready command channel and one held response channel:
+
+```text
+primitive command accepted = cmd_valid && cmd_ready
+primitive response retired = rsp_valid && rsp_ready
+```
+
+The Scheduler holds opcode/row/lane stable until command acceptance. Compute
+cluster holds the response valid until retirement. The first implementation
+allows only one primitive in flight. It directly launches the selected engine
+when the command is accepted; there is no separate route-start state.
+Current engines still consume a registered `start` pulse internally, so the
+cycle between command acceptance and engine-active assertion is reported as
+the `ENGINE_START_ADAPTER` Compute-cluster control event. It is real overhead,
+not inferred occupancy.
+
+Scheduler wait reasons are architectural trace values:
+
+| Wait reason | Meaning |
+| --- | --- |
+| `MATRIX_RESPONSE` | issued Matrix operation has not completed |
+| `PRIMITIVE_ACCEPT` | primitive command is valid but Compute cluster cannot accept it |
+| `PRIMITIVE_RESPONSE` | accepted primitive has not produced a response |
+
+These values describe why the Scheduler cannot advance and must not encode
+private Scheduler or engine state numbers.

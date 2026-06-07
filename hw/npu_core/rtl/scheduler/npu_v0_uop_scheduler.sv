@@ -9,17 +9,22 @@ module npu_v0_uop_scheduler (
 
     output logic        local_load_valid,
     output logic        local_store_valid,
-    output logic        local_exec_valid,
     output logic [3:0]  local_opcode,
     output logic [3:0]  local_tensor,
     output logic [3:0]  local_buffer,
-    input  logic        local_exec_blocking,
-    input  logic        local_exec_done,
+    output logic        primitive_cmd_valid,
+    input  logic        primitive_cmd_ready,
+    output logic [3:0]  primitive_cmd_opcode,
+    output logic [3:0]  primitive_cmd_row,
+    output logic [3:0]  primitive_cmd_lane,
+    input  logic        primitive_rsp_valid,
+    output logic        primitive_rsp_ready,
     output logic        matrix_start,
     input  logic        matrix_done,
 
     output logic        perf_active,
-    output logic        perf_wait
+    output logic        perf_wait,
+    output logic [3:0]  perf_wait_reason
 );
     `include "npu_v0_spec.svh"
 
@@ -37,27 +42,45 @@ module npu_v0_uop_scheduler (
 
     assign program_addr = pc;
     assign current_instr = program_rdata;
-    assign local_tensor = current_instr[UOP_ARG0_MSB:UOP_ARG0_LSB];
-    assign local_buffer = current_instr[UOP_ARG1_MSB:UOP_ARG1_LSB];
-    assign local_opcode = current_instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB];
+    assign primitive_cmd_row = current_instr[UOP_ARG0_MSB:UOP_ARG0_LSB];
+    assign primitive_cmd_lane = current_instr[UOP_ARG1_MSB:UOP_ARG1_LSB];
+    assign primitive_cmd_opcode = current_instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB];
+    assign local_tensor = primitive_cmd_row;
+    assign local_buffer = primitive_cmd_lane;
+    assign local_opcode = primitive_cmd_opcode;
     assign local_load_valid =
         state == SCHED_FETCH &&
         current_instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB] == UOP_LOAD;
     assign local_store_valid =
         state == SCHED_FETCH &&
         current_instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB] == UOP_STORE;
-    assign local_exec_valid =
+    assign primitive_cmd_valid =
         state == SCHED_FETCH &&
         current_instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB] != UOP_LOAD &&
         current_instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB] != UOP_STORE &&
         current_instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB] != UOP_MATMUL &&
         current_instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB] != UOP_HALT;
+    assign primitive_rsp_ready = state == SCHED_WAIT_LOCAL;
     assign matrix_start =
         state == SCHED_FETCH &&
         current_instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB] == UOP_MATMUL;
     assign done = state == SCHED_DONE;
-    assign perf_active = state == SCHED_FETCH || state == SCHED_DONE;
-    assign perf_wait = state == SCHED_WAIT_MATRIX || state == SCHED_WAIT_LOCAL;
+    always_comb begin
+        perf_wait_reason = TRACE_SCHED_WAIT_NONE;
+        if (state == SCHED_WAIT_MATRIX && !matrix_done) begin
+            perf_wait_reason = TRACE_SCHED_WAIT_MATRIX_RESPONSE;
+        end else if (state == SCHED_FETCH && primitive_cmd_valid && !primitive_cmd_ready) begin
+            perf_wait_reason = TRACE_SCHED_WAIT_PRIMITIVE_ACCEPT;
+        end else if (state == SCHED_WAIT_LOCAL && !primitive_rsp_valid) begin
+            perf_wait_reason = TRACE_SCHED_WAIT_PRIMITIVE_RESPONSE;
+        end
+    end
+    assign perf_wait = perf_wait_reason != TRACE_SCHED_WAIT_NONE;
+    assign perf_active =
+        (state == SCHED_FETCH && !perf_wait) ||
+        (state == SCHED_WAIT_MATRIX && matrix_done) ||
+        (state == SCHED_WAIT_LOCAL && primitive_rsp_valid) ||
+        state == SCHED_DONE;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -72,14 +95,23 @@ module npu_v0_uop_scheduler (
                     end
                 end
                 SCHED_FETCH: begin
-                    pc <= pc + 1'b1;
                     case (current_instr[UOP_OPCODE_MSB:UOP_OPCODE_LSB])
-                        UOP_MATMUL: state <= SCHED_WAIT_MATRIX;
-                        UOP_HALT: state <= SCHED_DONE;
+                        UOP_MATMUL: begin
+                            pc <= pc + 1'b1;
+                            state <= SCHED_WAIT_MATRIX;
+                        end
+                        UOP_HALT: begin
+                            pc <= pc + 1'b1;
+                            state <= SCHED_DONE;
+                        end
                         default: begin
-                            if (local_exec_valid && local_exec_blocking) begin
-                                state <= SCHED_WAIT_LOCAL;
+                            if (primitive_cmd_valid) begin
+                                if (primitive_cmd_ready) begin
+                                    pc <= pc + 1'b1;
+                                    state <= SCHED_WAIT_LOCAL;
+                                end
                             end else begin
+                                pc <= pc + 1'b1;
                                 state <= SCHED_FETCH;
                             end
                         end
@@ -91,7 +123,7 @@ module npu_v0_uop_scheduler (
                     end
                 end
                 SCHED_WAIT_LOCAL: begin
-                    if (local_exec_done) begin
+                    if (primitive_rsp_valid) begin
                         state <= SCHED_FETCH;
                     end
                 end

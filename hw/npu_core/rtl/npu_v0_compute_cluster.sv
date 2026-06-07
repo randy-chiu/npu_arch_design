@@ -13,6 +13,7 @@ module npu_v0_compute_cluster #(
     output logic        perf_done_active,
     output logic        perf_uop_sched_active,
     output logic        perf_uop_sched_wait,
+    output logic [3:0]  perf_uop_sched_wait_reason,
     output logic        perf_matrix_active,
     output logic        perf_local_active,
 
@@ -23,9 +24,29 @@ module npu_v0_compute_cluster #(
 );
     `include "npu_v0_spec.svh"
 
-    typedef enum logic [1:0] {
+    initial begin
+        if (RTL_PERF_ACC_ELEMENTS != RTL_MATMUL_ELEMS ||
+            RTL_PERF_ACC_CLEAR_ELEMENTS_PER_CYCLE != RTL_MATMUL_ELEMS ||
+            RTL_PERF_ACC_COMMIT_ELEMENTS_PER_CYCLE != RTL_MATMUL_ELEMS ||
+            RTL_PERF_ACC_READOUT_ELEMENTS_PER_CYCLE != RTL_MATMUL_ELEMS ||
+            RTL_PERF_ACC_COMMIT_ADD_LANES != RTL_MATMUL_ELEMS ||
+            RTL_PERF_ACC_READ_BUS_BITS != RTL_MATMUL_ELEMS * 32 ||
+            RTL_PERF_ACC_WRITE_BUS_BITS != RTL_MATMUL_ELEMS * 32) begin
+            $fatal(1, "Accumulator RTL violates performance-first full-tile contract");
+        end
+        if (RTL_PERF_ATTN_ROW_ELEMENTS != RTL_SOFTMAX_LEN ||
+            RTL_PERF_ATTN_ROW_READ_ELEMENTS_PER_CYCLE != RTL_SOFTMAX_LEN ||
+            RTL_PERF_ATTN_ROW_WRITE_ELEMENTS_PER_CYCLE != RTL_SOFTMAX_LEN) begin
+            $fatal(1, "Attention row RTL violates performance-first full-row contract");
+        end
+        if (RTL_PERF_MATRIX_A_ELEMENTS_PER_CYCLE != RTL_MATMUL_M ||
+            RTL_PERF_MATRIX_B_ELEMENTS_PER_CYCLE != RTL_MATMUL_N) begin
+            $fatal(1, "Matrix operand feed violates performance-first slice contract");
+        end
+    end
+
+    typedef enum logic {
         LOCAL_ROUTE_IDLE,
-        LOCAL_ROUTE_START,
         LOCAL_ROUTE_WAIT
     } local_route_state_t;
 
@@ -36,12 +57,6 @@ module npu_v0_compute_cluster #(
     logic signed [7:0]  dram_b [0:RTL_MATMUL_ELEMS-1];
     logic signed [7:0]  dram_b_bank1 [0:RTL_MATMUL_ELEMS-1];
     logic signed [31:0] dram_c [0:RTL_MATMUL_ELEMS-1];
-    logic signed [7:0]  dram_x [0:RTL_SOFTMAX_LEN-1];
-    logic [31:0]        dram_y [0:RTL_SOFTMAX_LEN-1];
-
-    logic signed [15:0] vec_buf [0:RTL_SOFTMAX_LEN-1];
-    logic signed [15:0] scalar_max;
-    logic [15:0]        scalar_sum;
     logic [31:0]        instr_mem [0:RTL_HOST_PROGRAM_WORDS-1];
 
     logic matmul_done;
@@ -89,11 +104,13 @@ module npu_v0_compute_cluster #(
     logic uop_sched_load_valid;
     logic uop_sched_store_valid;
     logic uop_sched_exec_valid;
+    logic uop_sched_exec_ready;
     logic [3:0] uop_sched_opcode;
     logic [3:0] uop_sched_tensor;
     logic [3:0] uop_sched_buffer;
     logic uop_sched_matrix_start;
-    logic uop_sched_local_exec_done;
+    logic uop_sched_local_rsp_valid;
+    logic uop_sched_local_rsp_ready;
     logic [$clog2(RTL_HOST_PROGRAM_WORDS)-1:0] uop_sched_program_addr;
     logic matrix_datapath_active;
     logic [3:0] primitive_lane_idx;
@@ -102,6 +119,7 @@ module npu_v0_compute_cluster #(
     logic [3:0] local_route_opcode;
     logic [3:0] local_route_row;
     logic [3:0] local_route_lane;
+    logic [3:0] perf_compute_control_event;
 
     integer idx;
     integer host_lane_idx;
@@ -128,7 +146,8 @@ module npu_v0_compute_cluster #(
         acc_write_enable;
     assign perf_active =
         local_route_state != LOCAL_ROUTE_IDLE ||
-        perf_local_active || matrix_datapath_active;
+        perf_local_active || matrix_datapath_active ||
+        perf_compute_control_event != TRACE_COMPUTE_CTRL_NONE;
     assign perf_fetch_active = perf_uop_sched_active;
     assign perf_matmul_active = matrix_datapath_active;
     assign perf_done_active = uop_sched_done;
@@ -147,28 +166,34 @@ module npu_v0_compute_cluster #(
         .program_rdata(instr_mem[uop_sched_program_addr]),
         .local_load_valid(uop_sched_load_valid),
         .local_store_valid(uop_sched_store_valid),
-        .local_exec_valid(uop_sched_exec_valid),
         .local_opcode(uop_sched_opcode),
         .local_tensor(uop_sched_tensor),
         .local_buffer(uop_sched_buffer),
-        .local_exec_blocking(
-            (op == 2'd3 && uop_sched_opcode == UOP_VSCALE_FIXED) ||
-            (op == 2'd1 && (
-                uop_sched_opcode == UOP_VREDMAX ||
-                uop_sched_opcode == UOP_VSUB ||
-                uop_sched_opcode == UOP_VCLAMP ||
-                uop_sched_opcode == UOP_VEXP ||
-                uop_sched_opcode == UOP_VREDSUM ||
-                uop_sched_opcode == UOP_VDIV ||
-                uop_sched_opcode == UOP_VNORM
-            ))
-        ),
-        .local_exec_done(uop_sched_local_exec_done),
+        .primitive_cmd_valid(uop_sched_exec_valid),
+        .primitive_cmd_ready(uop_sched_exec_ready),
+        .primitive_cmd_opcode(),
+        .primitive_cmd_row(),
+        .primitive_cmd_lane(),
+        .primitive_rsp_valid(uop_sched_local_rsp_valid),
+        .primitive_rsp_ready(uop_sched_local_rsp_ready),
         .matrix_start(uop_sched_matrix_start),
         .matrix_done(matmul_done),
         .perf_active(perf_uop_sched_active),
-        .perf_wait(perf_uop_sched_wait)
+        .perf_wait(perf_uop_sched_wait),
+        .perf_wait_reason(perf_uop_sched_wait_reason)
     );
+    assign uop_sched_exec_ready =
+        local_route_state == LOCAL_ROUTE_IDLE &&
+        !uop_sched_local_rsp_valid &&
+        op != 2'd0;
+    assign perf_compute_control_event =
+        (uop_sched_exec_valid && uop_sched_exec_ready) ? TRACE_COMPUTE_CTRL_PRIMITIVE_ACCEPT :
+        ((uop_sched_local_rsp_valid && uop_sched_local_rsp_ready) ? TRACE_COMPUTE_CTRL_PRIMITIVE_RESPONSE :
+        ((local_route_state == LOCAL_ROUTE_WAIT &&
+          !primitive_vector_active &&
+          !primitive_reduction_active &&
+          !primitive_sfu_active) ? TRACE_COMPUTE_CTRL_ENGINE_START_ADAPTER :
+        TRACE_COMPUTE_CTRL_NONE));
 
     matmul_array #(
         .M(RTL_MATMUL_M),
@@ -293,11 +318,6 @@ module npu_v0_compute_cluster #(
                 dram_b_bank1[idx] <= '0;
                 dram_c[idx] <= '0;
             end
-            for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
-                dram_x[idx] <= '0;
-                dram_y[idx] <= '0;
-                vec_buf[idx] <= '0;
-            end
             for (idx = 0; idx < RTL_HOST_PROGRAM_WORDS; idx = idx + 1) begin
                 instr_mem[idx] <= '0;
             end
@@ -341,9 +361,6 @@ module npu_v0_compute_cluster #(
                         end else begin
                             dram_b[host_lane_addr - RTL_HOST_B_BASE] <= host_wdata[(host_lane_idx * 32) +: 8];
                         end
-                    end else if (host_lane_addr >= RTL_HOST_X_BASE &&
-                                 host_lane_addr < RTL_HOST_X_BASE + RTL_HOST_X_WORDS) begin
-                        dram_x[host_lane_addr - RTL_HOST_X_BASE] <= host_wdata[(host_lane_idx * 32) +: 8];
                     end else if (host_lane_addr >= RTL_HOST_C_BASE &&
                                  host_lane_addr < RTL_HOST_C_BASE + RTL_HOST_C_WORDS) begin
                         dram_c[host_lane_addr - RTL_HOST_C_BASE] <= host_wdata[(host_lane_idx * 32) +: 32];
@@ -370,9 +387,6 @@ module npu_v0_compute_cluster #(
             if (host_read_lane_addr >= RTL_HOST_C_BASE &&
                 host_read_lane_addr < RTL_HOST_C_BASE + RTL_HOST_C_WORDS) begin
                 host_rdata[(host_read_lane_idx * 32) +: 32] = dram_c[host_read_lane_addr - RTL_HOST_C_BASE];
-            end else if (host_read_lane_addr >= RTL_HOST_Y_BASE &&
-                         host_read_lane_addr < RTL_HOST_Y_BASE + RTL_HOST_Y_WORDS) begin
-                host_rdata[(host_read_lane_idx * 32) +: 32] = dram_y[host_read_lane_addr - RTL_HOST_Y_BASE];
             end
         end
     end
@@ -380,38 +394,24 @@ module npu_v0_compute_cluster #(
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             done <= 1'b0;
-            scalar_max <= '0;
-            scalar_sum <= '0;
             compute_bank_active <= 1'b0;
             local_route_state <= LOCAL_ROUTE_IDLE;
             local_route_opcode <= '0;
             local_route_row <= '0;
             local_route_lane <= '0;
-            uop_sched_local_exec_done <= 1'b0;
+            uop_sched_local_rsp_valid <= 1'b0;
         end else begin
             done <= 1'b0;
-            uop_sched_local_exec_done <= 1'b0;
+            if (uop_sched_local_rsp_valid && uop_sched_local_rsp_ready) begin
+                uop_sched_local_rsp_valid <= 1'b0;
+            end
             primitive_softmax_start <= 1'b0;
             primitive_reduction_start <= 1'b0;
             primitive_sfu_start <= 1'b0;
-            if (uop_sched_load_valid) begin
-                run_load(uop_sched_tensor, uop_sched_buffer);
-            end
             if (uop_sched_store_valid && output_store_enable) begin
                 run_store(uop_sched_tensor, uop_sched_buffer);
             end
-            if (uop_sched_exec_valid) begin
-                if (op == 2'd0) begin
-                    case (uop_sched_opcode)
-                        UOP_VREDMAX: run_vredmax();
-                        UOP_VSUB: run_vsub();
-                        UOP_VEXP: run_vexp();
-                        UOP_VREDSUM: run_vredsum();
-                        UOP_VDIV: run_vdiv();
-                        default: begin
-                        end
-                    endcase
-                end else begin
+            if (uop_sched_exec_valid && uop_sched_exec_ready) begin
                 local_route_opcode <= uop_sched_opcode;
                 local_route_row <= uop_sched_tensor;
                 local_route_lane <= uop_sched_buffer;
@@ -464,19 +464,15 @@ module npu_v0_compute_cluster #(
                     default: begin
                     end
                 endcase
-                local_route_state <= LOCAL_ROUTE_START;
-                end
-            end
-            case (local_route_state)
-                LOCAL_ROUTE_IDLE: begin
-                end
-                LOCAL_ROUTE_START: begin
-                    case (local_route_opcode)
+                case (uop_sched_opcode)
                         UOP_VREDMAX, UOP_VREDSUM: primitive_reduction_start <= 1'b1;
                         UOP_VEXP, UOP_VDIV: primitive_sfu_start <= 1'b1;
                         default: primitive_softmax_start <= 1'b1;
-                    endcase
-                    local_route_state <= LOCAL_ROUTE_WAIT;
+                endcase
+                local_route_state <= LOCAL_ROUTE_WAIT;
+            end
+            case (local_route_state)
+                LOCAL_ROUTE_IDLE: begin
                 end
                 LOCAL_ROUTE_WAIT: begin
                     case (local_route_opcode)
@@ -486,34 +482,34 @@ module npu_v0_compute_cluster #(
                                     primitive_vector_b_flat[(idx * 32) +: 32] <=
                                         primitive_reduction_result[31:0];
                                 end
-                                uop_sched_local_exec_done <= 1'b1;
+                                uop_sched_local_rsp_valid <= 1'b1;
                                 local_route_state <= LOCAL_ROUTE_IDLE;
                             end
                         end
                         UOP_VSUB, UOP_VCLAMP: begin
                             if (primitive_vector_done) begin
                                 primitive_vector_a_flat <= primitive_vector_y_flat;
-                                uop_sched_local_exec_done <= 1'b1;
+                                uop_sched_local_rsp_valid <= 1'b1;
                                 local_route_state <= LOCAL_ROUTE_IDLE;
                             end
                         end
                         UOP_VEXP: begin
                             if (primitive_sfu_done) begin
                                 primitive_vector_a_flat[(local_route_lane * 32) +: 32] <= primitive_sfu_y;
-                                uop_sched_local_exec_done <= 1'b1;
+                                uop_sched_local_rsp_valid <= 1'b1;
                                 local_route_state <= LOCAL_ROUTE_IDLE;
                             end
                         end
                         UOP_VREDSUM: begin
                             if (primitive_reduction_done) begin
-                                uop_sched_local_exec_done <= 1'b1;
+                                uop_sched_local_rsp_valid <= 1'b1;
                                 local_route_state <= LOCAL_ROUTE_IDLE;
                             end
                         end
                         UOP_VDIV: begin
                             if (primitive_sfu_done) begin
                                 primitive_vector_scalar <= primitive_sfu_y;
-                                uop_sched_local_exec_done <= 1'b1;
+                                uop_sched_local_rsp_valid <= 1'b1;
                                 local_route_state <= LOCAL_ROUTE_IDLE;
                             end
                         end
@@ -523,12 +519,12 @@ module npu_v0_compute_cluster #(
                                     dram_c[(local_route_row * RTL_SOFTMAX_LEN) + idx] <=
                                         primitive_vector_y_flat[(idx * 32) +: 32];
                                 end
-                                uop_sched_local_exec_done <= 1'b1;
+                                uop_sched_local_rsp_valid <= 1'b1;
                                 local_route_state <= LOCAL_ROUTE_IDLE;
                             end
                         end
                         default: begin
-                            uop_sched_local_exec_done <= 1'b1;
+                            uop_sched_local_rsp_valid <= 1'b1;
                             local_route_state <= LOCAL_ROUTE_IDLE;
                         end
                     endcase
@@ -544,15 +540,6 @@ module npu_v0_compute_cluster #(
         end
     end
 
-    task automatic run_load(input logic [3:0] tensor, input logic [3:0] buffer);
-        integer l;
-        begin
-            if (tensor == TENSOR_X && buffer == BUF_VEC) begin
-                for (l = 0; l < RTL_SOFTMAX_LEN; l = l + 1) vec_buf[l] = {{8{dram_x[l][7]}}, dram_x[l]};
-            end
-        end
-    endtask
-
     task automatic run_store(input logic [3:0] tensor, input logic [3:0] buffer);
         integer s;
         begin
@@ -560,73 +547,7 @@ module npu_v0_compute_cluster #(
                 for (s = 0; s < RTL_MATMUL_ELEMS; s = s + 1) begin
                     dram_c[s] = $signed(acc_read_data_flat[(s * 32) +: 32]);
                 end
-            end else if (tensor == TENSOR_Y && buffer == BUF_VEC) begin
-                for (s = 0; s < RTL_SOFTMAX_LEN; s = s + 1) dram_y[s] = vec_buf[s][7:0];
             end
         end
     endtask
-
-    task automatic run_vredmax;
-        integer v;
-        begin
-            scalar_max = vec_buf[0];
-            for (v = 1; v < RTL_SOFTMAX_LEN; v = v + 1) begin
-                if (vec_buf[v] > scalar_max) scalar_max = vec_buf[v];
-            end
-        end
-    endtask
-
-    task automatic run_vsub;
-        integer v;
-        begin
-            for (v = 0; v < RTL_SOFTMAX_LEN; v = v + 1) begin
-                vec_buf[v] = vec_buf[v] - scalar_max;
-            end
-        end
-    endtask
-
-    task automatic run_vexp;
-        integer v;
-        begin
-            for (v = 0; v < RTL_SOFTMAX_LEN; v = v + 1) begin
-                vec_buf[v] = {8'h0, exp_lut_q8(vec_buf[v][8:0])};
-            end
-        end
-    endtask
-
-    task automatic run_vredsum;
-        integer v;
-        begin
-            scalar_sum = 16'h0;
-            for (v = 0; v < RTL_SOFTMAX_LEN; v = v + 1) begin
-                scalar_sum = scalar_sum + vec_buf[v][7:0];
-            end
-        end
-    endtask
-
-    task automatic run_vdiv;
-        integer v;
-        logic [23:0] norm_prod;
-        logic [23:0] quotient;
-        begin
-            for (v = 0; v < RTL_SOFTMAX_LEN; v = v + 1) begin
-                norm_prod = {16'h0, vec_buf[v][7:0]} * 24'd255;
-                quotient = (scalar_sum == 0) ? 24'h0 : (norm_prod / {8'h0, scalar_sum});
-                vec_buf[v] = {8'h0, quotient[7:0]};
-            end
-        end
-    endtask
-
-    function automatic [7:0] exp_lut_q8(input logic signed [8:0] delta);
-        begin
-            if (delta >= 0) exp_lut_q8 = 8'd255;
-            else if (delta == -1) exp_lut_q8 = 8'd94;
-            else if (delta == -2) exp_lut_q8 = 8'd35;
-            else if (delta == -3) exp_lut_q8 = 8'd13;
-            else if (delta == -4) exp_lut_q8 = 8'd5;
-            else if (delta == -5) exp_lut_q8 = 8'd2;
-            else if (delta == -6) exp_lut_q8 = 8'd1;
-            else exp_lut_q8 = 8'd0;
-        end
-    endfunction
 endmodule

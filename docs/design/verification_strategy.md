@@ -26,7 +26,7 @@ silently regresses.
 | Layer | Command/Test | Purpose |
 | --- | --- | --- |
 | Architecture spec | `make validate-arch` | validate NPU config structure |
-| Python golden | unit tests in `test/rtl/test_phase0.py` | verify matmul/softmax expected math |
+| Python golden | unit tests in `test/rtl/test_phase0.py` and Transformer tests | verify MatMul and current Attention Softmax expected math |
 | Compiler/simulator | `compile_graph` + `MicroOpFunctionalSimulator` tests | verify graph lowering and functional execution |
 | RTL fixture generation | `make rtl-fixtures` | produce RTL hex/includes from tooling |
 | NPU core RTL | `make npu-core-sim` | standalone NPU core fixture test |
@@ -39,7 +39,8 @@ silently regresses.
 | PPA contract | `test/ppa_contract/test_ppa_contract.py` | check PPA target/schema and Transformer manifest contracts |
 | PPA L0 report | `make ppa-l0-report` | produce Level 0 measured-performance and normalized area/energy estimate output |
 | Fast PPA L0 derivative | `make ppa-l0-from-perf` | regenerate and validate L0 output from an existing perf artifact; not a substitute for a fresh simulation gate |
-| Full unit gate | `make test` | Python tests and available RTL sims, using quick firmware profile by default |
+| Quick unit/RTL gate | `make test` | Python tests and available RTL sims, using quick firmware profile |
+| Full functional regression gate | `make test-full` | Run the quick unit/RTL gate, then explicitly run the combined full CNN plus Transformer CPU-to-NPU RTL profile |
 
 Compatibility aliases remain available:
 
@@ -57,17 +58,17 @@ Workload profiles:
 
 | Profile | Target examples | Contents |
 | --- | --- | --- |
-| `quick` | `make cpu-soc-quick`, default `make test` | operator smoke, digits classifier, tiny Transformer micro workloads |
+| `quick` | `make cpu-soc-quick`, default `make test` | MatMul operator smoke, digits classifier, tiny Transformer micro workloads |
 | `transformer` | `make cpu-soc-transformer` | same executable coverage as quick today, reserved for Transformer-focused growth |
-| `cnn-full` | `make cpu-soc-cnn-full` | operator smoke, digits classifier, real MNIST CNN full `fc1`/`fc2`; no Transformer micro jobs |
-| `all` | `make cpu-soc-all`, `make test-full` | real MNIST CNN full path plus Transformer micro jobs |
+| `cnn-full` | `make cpu-soc-cnn-full` | MatMul operator smoke, digits classifier, real MNIST CNN full `fc1`/`fc2`; no Transformer micro jobs |
+| `all` | `make cpu-soc-all`, included explicitly by `make test-full` | real MNIST CNN full path plus Transformer micro jobs |
 
 ## 3. Golden And Simulator Tests
 
 Golden tests cover:
 
 - basic matmul correctness;
-- graph-level matmul/softmax expected output;
+- Attention Softmax numerical behavior through Transformer golden tests;
 - compiler output matching compatibility path;
 - assembler encoding matching historical fixture path;
 - simulator counters such as `mac_ops` and `dma_transfers`.
@@ -86,8 +87,8 @@ hw/npu_core/tb/npu_v0_tb.sv
 
 It uses generated fixture files under `build/rtl_fixture`.
 
-This layer checks that the core can execute generated programs and match
-expected matmul/softmax outputs without the CPU wrapper path.
+This layer checks that the core can execute generated MatMul and Attention
+primitive programs without the CPU wrapper path.
 
 ## 5. SoC Legacy Wrapper Test
 
@@ -110,7 +111,7 @@ It verifies:
 - firmware stages tensors/programs/descriptors in SRAM;
 - CPU launches wrapper through MMIO;
 - NPU core command processor and data mover fetch through the SRAM descriptor path;
-- NPU core computes matmul and softmax;
+- NPU core computes MatMul/CNN and current Transformer Attention stages;
 - wrapper writes output to SRAM;
 - firmware validates outputs;
 - each descriptor job's first-batch wrapper perf CSR snapshot matches the

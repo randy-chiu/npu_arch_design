@@ -7,16 +7,16 @@ from pathlib import Path
 
 from npu_phase0.arch import load_arch
 from npu_phase0.compiler import compile_graph
-from npu_phase0.golden import assert_close, matmul, softmax
-from npu_phase0.rtl_fixture import encode_program, encode_uop, generate_default_fixtures, softmax_q0_8
+from npu_phase0.golden import matmul
+from npu_phase0.rtl_fixture import encode_program, encode_uop, generate_default_fixtures
 from npu_phase0.simulator import MicroOpFunctionalSimulator
 from npu_assembler.phase0 import encode_program as assembler_encode_program
 from npu_compiler.phase0 import compile_graph as compiler_compile_graph
 
 
 ARCH_PATH = "arch/configs/npu_v0.jsonc"
-GRAPH_PATH = Path("test/graphs/matmul_softmax.json")
-INPUTS_PATH = Path("test/inputs/matmul_softmax.json")
+GRAPH_PATH = Path("test/graphs/matmul.json")
+INPUTS_PATH = Path("test/inputs/matmul.json")
 
 
 class ArchitectureAndGoldenTests(unittest.TestCase):
@@ -44,20 +44,16 @@ class CompilerMicroOpFunctionalTests(unittest.TestCase):
             encode_program(compat_artifact["program"], arch),
         )
 
-    def test_compiler_micro_ops_match_graph_golden(self):
+    def test_compiler_matmul_micro_ops_match_graph_golden(self):
         arch = load_arch(ARCH_PATH)
-        graph = _read_json(GRAPH_PATH)
+        graph = _single_matmul_graph(_read_json(GRAPH_PATH))
         inputs = _read_json(INPUTS_PATH)
         artifact = compile_graph(graph, arch)
         result = MicroOpFunctionalSimulator(arch).run(artifact, inputs)
         expected_tensors = _run_golden_graph(graph, inputs)
         output_tensor = graph["ops"][-1]["out"]
 
-        assert_close(
-            result["dram"][output_tensor],
-            expected_tensors[output_tensor],
-            arch["verification"]["softmax_abs_tolerance"],
-        )
+        self.assertEqual(result["dram"][output_tensor], expected_tensors[output_tensor])
         self.assertGreater(result["counters"]["mac_ops"], 0)
         self.assertGreater(result["counters"]["dma_transfers"], 0)
 
@@ -66,10 +62,6 @@ class RTLFunctionalTests(unittest.TestCase):
     def test_rtl_fixture_generator_emits_expected_files(self):
         arch = load_arch(ARCH_PATH)
         self.assertEqual(encode_uop(arch, "LOAD", 0, 1), 0x10100000)
-        self.assertEqual(
-            softmax_q0_8([0] * arch["rtl"]["softmax_vector_len"]),
-            [31] * arch["rtl"]["softmax_vector_len"],
-        )
         graph = _read_json(GRAPH_PATH)
         artifact = compile_graph(_single_matmul_graph(graph), arch)
         self.assertEqual(
@@ -83,9 +75,6 @@ class RTLFunctionalTests(unittest.TestCase):
                 "matmul_b.hex",
                 "matmul_expected_c.hex",
                 "matmul_program.hex",
-                "softmax_x.hex",
-                "softmax_expected_y.hex",
-                "softmax_program.hex",
                 "attention_scale_mask_program.hex",
                 "attention_softmax_program.hex",
                 "npu_v0_spec.svh",
@@ -159,8 +148,6 @@ def _run_golden_graph(graph, inputs):
         op_type = op["type"]
         if op_type == "matmul":
             tensors[op["out"]] = matmul(tensors[op["a"]], tensors[op["b"]])
-        elif op_type == "softmax":
-            tensors[op["out"]] = softmax(tensors[op["x"]])
         else:
             raise ValueError(f"unsupported golden op type: {op_type}")
     return tensors

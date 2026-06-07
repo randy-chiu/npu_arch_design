@@ -61,6 +61,7 @@ def build_ppa_report(
             "timing": "unavailable_until_mapped_or_physical_analysis",
             "power": "unavailable_until_activity_based_tool_flow",
         },
+        "performance_contract": perf.get("performance_contract", {}),
         "area_model": area_model,
         "pipeline_jobs": perf.get("jobs", []),
         "workloads": workload_results,
@@ -598,6 +599,7 @@ def _write_dimension_pages(report: dict[str, Any], out_dir: Path) -> None:
     case_name = str(report.get("test_case", {}).get("name", "unspecified"))
     perf_page = f"""<!doctype html><html><head><meta charset="utf-8"><title>PPA Performance</title><style>{style}</style></head><body>
     {nav}<h1>Performance</h1><p class="note">Cycle counters are measured from architectural CSR snapshots. Detailed job timelines distinguish measured counters from state-machine-derived span placement.</p>
+    <section><h2>Architecture Performance Contract</h2><p>The current baseline intentionally declares wide parallel local-storage resources. Mapped timing remains unverified; changing these widths requires a spec-first performance rebaseline.</p><pre><code>{html.escape(json.dumps(report.get("performance_contract", {}), indent=2))}</code></pre></section>
     {''.join(flows)}
     <section><h2>Theoretical Versus Measured</h2><table><thead><tr><th>Workload</th><th>Operator/layer</th><th>Shape</th><th>Theoretical compute</th><th>Measured compute</th><th>Measured total</th><th>Efficiency</th><th>Primary bottleneck</th><th>Formula</th></tr></thead><tbody>{''.join(perf_rows)}</tbody></table></section>
     <section><h2>Per-job Module Timelines</h2><p><a href="cases/{html.escape(case_name)}.html">Open the {html.escape(case_name)} test-case report</a>. It includes wrapper, data mover, core, matrix, vector, reduction, and SFU lanes where applicable.</p></section>

@@ -17,6 +17,7 @@ REQUIRED_TOP_LEVEL = {
     "compute",
     "vector_sfu",
     "memory",
+    "performance_contract",
     "dma",
     "bus",
     "runtime",
@@ -87,6 +88,62 @@ def validate_arch(spec: dict[str, Any]) -> None:
     vector = spec["vector_sfu"]
     _require_positive_int(vector, "lanes")
 
+    contract = spec["performance_contract"]
+    accumulator = contract.get("accumulator", {})
+    attention_row = contract.get("attention_row_storage", {})
+    matrix_feed = contract.get("matrix_operand_feed", {})
+    for key in (
+        "elements", "element_bits", "clear_elements_per_cycle",
+        "commit_elements_per_cycle", "readout_elements_per_cycle",
+        "clear_cycles", "commit_cycles", "readout_cycles", "commit_add_lanes",
+        "read_bus_bits", "write_bus_bits",
+    ):
+        _require_positive_int(accumulator, key)
+    for key in (
+        "elements_per_row", "element_bits", "read_elements_per_cycle",
+        "write_elements_per_cycle", "row_read_cycles", "row_write_cycles",
+        "read_bus_bits", "write_bus_bits",
+    ):
+        _require_positive_int(attention_row, key)
+    for key in (
+        "a_elements_per_cycle", "a_element_bits", "b_elements_per_cycle",
+        "b_element_bits", "feed_cycles_per_k_slice", "a_read_bus_bits",
+        "b_read_bus_bits",
+    ):
+        _require_positive_int(matrix_feed, key)
+    tile_elems = compute["array_m"] * compute["array_n"]
+    if accumulator["elements"] != tile_elems:
+        raise ArchSpecError("performance_contract accumulator elements must match tile elements")
+    if accumulator["commit_add_lanes"] != tile_elems:
+        raise ArchSpecError("performance-first accumulator must provide one add lane per tile element")
+    if accumulator["read_bus_bits"] != tile_elems * accumulator["element_bits"]:
+        raise ArchSpecError("accumulator read_bus_bits must cover the full tile")
+    if accumulator["write_bus_bits"] != tile_elems * accumulator["element_bits"]:
+        raise ArchSpecError("accumulator write_bus_bits must cover the full tile")
+    for width_key, cycles_key in (
+        ("clear_elements_per_cycle", "clear_cycles"),
+        ("commit_elements_per_cycle", "commit_cycles"),
+        ("readout_elements_per_cycle", "readout_cycles"),
+    ):
+        if accumulator[width_key] * accumulator[cycles_key] < accumulator["elements"]:
+            raise ArchSpecError(f"accumulator {width_key} cannot satisfy declared {cycles_key}")
+    if attention_row["elements_per_row"] != vector["lanes"]:
+        raise ArchSpecError("attention row width must match vector lanes")
+    if (
+        attention_row["read_elements_per_cycle"] * attention_row["row_read_cycles"]
+        < attention_row["elements_per_row"]
+    ):
+        raise ArchSpecError("attention row read bandwidth cannot satisfy declared latency")
+    if (
+        attention_row["write_elements_per_cycle"] * attention_row["row_write_cycles"]
+        < attention_row["elements_per_row"]
+    ):
+        raise ArchSpecError("attention row write bandwidth cannot satisfy declared latency")
+    if matrix_feed["a_elements_per_cycle"] != compute["array_m"]:
+        raise ArchSpecError("matrix A feed must provide one element per output row")
+    if matrix_feed["b_elements_per_cycle"] != compute["array_n"]:
+        raise ArchSpecError("matrix B feed must provide one element per output column")
+
     rtl = spec.get("rtl", {})
     _require_positive_int(rtl, "host_data_width_bits")
     _require_positive_int(rtl, "host_addr_width_bits")
@@ -98,8 +155,8 @@ def validate_arch(spec: dict[str, Any]) -> None:
         raise ArchSpecError("rtl.matmul_tile must match compute tile shape in Phase 0")
 
     supported_ops = set(spec["scope"].get("operators", []))
-    if not {"matmul", "softmax"}.issubset(supported_ops):
-        raise ArchSpecError("Phase 0 scope must support matmul and softmax")
+    if "matmul" not in supported_ops:
+        raise ArchSpecError("Phase 0 scope must support matmul")
 
 
 def _require_positive_int(parent: dict[str, Any], key: str) -> None:

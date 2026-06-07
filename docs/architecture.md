@@ -151,7 +151,7 @@ build/npu_wrapper/npu_v0_regs.h
 | `0x044` | `PERF_STATUS` | bit 0 valid, bit 1 running, bit 2 overflow |
 | `0x048` - `0x06c` | `PERF_*` counters | completed-job cycle and SRAM/data-mover word snapshot |
 
-旧的 A/B/C/X/Y/program windows 还保留，用于 `soc-sim` legacy wrapper smoke。
+旧的 A/B/C/program windows 还保留，用于 `soc-sim` legacy wrapper MatMul smoke。
 但 CPU firmware-controlled 路径已经转向 descriptor/SRAM launch，不再依赖逐
 word MMIO 数据窗口。
 
@@ -258,12 +258,9 @@ Phase 0 的可验证计算核心。
 | `dram_a` | Matrix A input |
 | `dram_b` | Matrix B input |
 | `dram_c` | Matrix C output |
-| `dram_x` | Softmax input |
-| `dram_y` | Softmax output |
 | `instr_mem` | encoded micro-op program |
 | ping-pong A/B operand banks | Data-mover preload target and direct Matrix operand source |
 | accumulator file | matmul accumulator/output staging |
-| `vec_buf` | vector/SFU staging |
 
 核心状态机：
 

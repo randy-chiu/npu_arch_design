@@ -10,9 +10,6 @@ static uint32_t matmul_b_sram[MATMUL_B_LEN];
 static uint32_t matmul_program_sram[MATMUL_PROGRAM_LEN];
 static uint32_t matmul_c_sram[MATMUL_EXPECTED_C_LEN];
 
-static uint32_t softmax_x_sram[SOFTMAX_X_LEN];
-static uint32_t softmax_program_sram[SOFTMAX_PROGRAM_LEN];
-static uint32_t softmax_y_sram[SOFTMAX_EXPECTED_Y_LEN];
 static uint32_t attention_scale_mask_program_sram[ATTENTION_SCALE_MASK_PROGRAM_LEN];
 static uint32_t attention_softmax_program_sram[ATTENTION_SOFTMAX_PROGRAM_LEN];
 
@@ -84,17 +81,6 @@ static int check_words(const uint32_t *actual, const uint32_t *expected, uint32_
 {
     for (uint32_t i = 0; i < len; ++i) {
         if (actual[i] != expected[i]) {
-            test_status_fail_code(fail_base | ((actual[i] & 0xffu) << 8) | (expected[i] & 0xffu));
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static int check_low_bytes(const uint32_t *actual, const uint32_t *expected, uint32_t len, uint32_t fail_base)
-{
-    for (uint32_t i = 0; i < len; ++i) {
-        if ((actual[i] & 0xffu) != (expected[i] & 0xffu)) {
             test_status_fail_code(fail_base | ((actual[i] & 0xffu) << 8) | (expected[i] & 0xffu));
             return 0;
         }
@@ -582,29 +568,10 @@ int main(void)
         return 1;
     }
 
-    copy_words(softmax_x_sram, softmax_x, SOFTMAX_X_LEN);
-    copy_words(softmax_program_sram, softmax_program, SOFTMAX_PROGRAM_LEN);
     copy_words(attention_scale_mask_program_sram, attention_scale_mask_program,
                ATTENTION_SCALE_MASK_PROGRAM_LEN);
     copy_words(attention_softmax_program_sram, attention_softmax_program,
                ATTENTION_SOFTMAX_PROGRAM_LEN);
-
-    job_desc.op_type = SOC_NPU_JOB_OP_SOFTMAX;
-    job_desc.job_id = JOB_ID_OPERATOR_SMOKE_SOFTMAX;
-    job_desc.program_addr = ptr32(softmax_program_sram);
-    job_desc.program_words = SOFTMAX_PROGRAM_LEN;
-    job_desc.input0_addr = ptr32(softmax_x_sram);
-    job_desc.input0_words = SOFTMAX_X_LEN;
-    job_desc.input1_addr = 0u;
-    job_desc.input1_words = 0u;
-    job_desc.output_addr = ptr32(softmax_y_sram);
-    job_desc.output_words = SOFTMAX_EXPECTED_Y_LEN;
-    job_desc.k_chunks = 0u;
-    run_job();
-
-    if (!check_low_bytes(softmax_y_sram, softmax_expected_y, SOFTMAX_EXPECTED_Y_LEN, 0x200u)) {
-        return 1;
-    }
 
     if (!run_digits_classifier()) {
         return 1;

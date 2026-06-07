@@ -69,13 +69,13 @@ Major blocks inside the module:
 | Block | Current implementation |
 | --- | --- |
 | Host interface | Simple write/read ports: `host_we`, `host_addr`, `host_wdata`, `host_rdata` |
-| Tensor memories | Small register arrays for `dram_a`, `dram_b`, `dram_c`, `dram_x`, and `dram_y` |
-| On-chip buffers | Ping-pong Matrix operand banks and `vec_buf`; accumulator storage is in `matrix/accumulator_file.sv` |
-| Instruction memory | 16-entry register array, one 32-bit encoded micro-op per entry |
-| Sequencer | FSM with `ST_IDLE`, `ST_FETCH`, `ST_MATMUL`, and `ST_DONE` |
+| Tensor memories | Small register arrays for `dram_a`, `dram_b`, and `dram_c` |
+| On-chip buffers | Ping-pong Matrix operand banks; accumulator storage is in `matrix/accumulator_file.sv` |
+| Instruction memory | 128-entry register array, one 32-bit encoded micro-op per entry |
+| Sequencer | Common Uop Scheduler plus primitive routing control |
 | Matmul datapath | `matrix/matmul_array.sv` updates the 8x8 output tile in parallel, one K slice per active cycle |
 | Accumulator file | `matrix/accumulator_file.sv` provides the matmul and K-stream resident int32 accumulator storage |
-| Vector datapath | Whole-vector task execution for each vector micro-op in `ST_FETCH` |
+| Vector datapath | Shared vector/reduction/SFU primitive engines |
 
 ### Execution Model
 

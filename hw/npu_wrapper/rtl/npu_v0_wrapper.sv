@@ -99,8 +99,6 @@ module npu_v0_wrapper #(
         (bus_addr >= NPU_OPSCHED_A_BASE && bus_addr < NPU_OPSCHED_A_BASE + NPU_OPSCHED_A_BASE_SIZE_BYTES) ||
         (bus_addr >= NPU_OPSCHED_B_BASE && bus_addr < NPU_OPSCHED_B_BASE + NPU_OPSCHED_B_BASE_SIZE_BYTES) ||
         (bus_addr >= NPU_OPSCHED_C_BASE && bus_addr < NPU_OPSCHED_C_BASE + NPU_OPSCHED_C_BASE_SIZE_BYTES) ||
-        (bus_addr >= NPU_OPSCHED_X_BASE && bus_addr < NPU_OPSCHED_X_BASE + NPU_OPSCHED_X_BASE_SIZE_BYTES) ||
-        (bus_addr >= NPU_OPSCHED_Y_BASE && bus_addr < NPU_OPSCHED_Y_BASE + NPU_OPSCHED_Y_BASE_SIZE_BYTES) ||
         (bus_addr >= NPU_OPSCHED_PROGRAM_BASE && bus_addr < NPU_OPSCHED_PROGRAM_BASE + NPU_OPSCHED_PROGRAM_BASE_SIZE_BYTES);
 
     npu_v0_core_system #(

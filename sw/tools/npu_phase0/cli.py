@@ -17,7 +17,7 @@ from .digits_classifier import (
     image_to_glyph_rows,
     predict_label,
 )
-from .golden import assert_close, matmul, softmax
+from .golden import matmul
 from .rtl_fixture import generate_default_fixtures
 from .simulator import MicroOpFunctionalSimulator
 
@@ -89,10 +89,7 @@ def _run_demo(arch_path: Path) -> None:
             "A": {"shape": [tile_m, tile_k], "dtype": "int8"},
             "B": {"shape": [tile_k, tile_n], "dtype": "int8"},
         },
-        "ops": [
-            {"type": "matmul", "a": "A", "b": "B", "out": "C"},
-            {"type": "softmax", "x": "C", "out": "Y"},
-        ],
+        "ops": [{"type": "matmul", "a": "A", "b": "B", "out": "C"}],
     }
     inputs = {
         "A": [[(i + j) % 5 - 2 for j in range(tile_k)] for i in range(tile_m)],
@@ -100,9 +97,10 @@ def _run_demo(arch_path: Path) -> None:
     }
     artifact = compile_graph(graph, arch)
     result = MicroOpFunctionalSimulator(arch).run(artifact, inputs)
-    expected = softmax(matmul(inputs["A"], inputs["B"]))
-    assert_close(result["dram"]["Y"], expected, arch["verification"]["softmax_abs_tolerance"])
-    print("PASS demo matmul -> softmax")
+    expected = matmul(inputs["A"], inputs["B"])
+    if result["dram"]["C"] != expected:
+        raise AssertionError("matmul demo result mismatch")
+    print("PASS demo matmul")
     print(json.dumps({"program": artifact["program"], "counters": result["counters"]}, indent=2))
 
 

@@ -37,7 +37,6 @@ runtime buffer allocation, or RTL state-machine implementation details.
 | `matmul_k_stream` | wrapper descriptor + matrix array | implemented | int8 x int8 -> int32, K chunks accumulate into one 8x8 tile |
 | `attention_softmax_v1` | wrapper descriptor + vector/reduction/SFU sequence | implemented | one 8-lane row/tile, approximate exp/recip path, Q0.15 output |
 | `matmul_u16s8_q15` | wrapper descriptor + shared matrix mixed mode | implemented | Q0.15 probability x int8 value -> int32, current RTL returns `acc >> 15` |
-| `softmax` | Phase 0 operator template | legacy | generic smoke path, not the attention numerical contract |
 | `matmul` | Phase 0 operator template | legacy | single-tile template used by older core tests |
 
 Attention v1 must reuse these paths and make their contracts explicit in

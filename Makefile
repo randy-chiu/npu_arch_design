@@ -64,7 +64,8 @@ test:
 	PYTHONPATH=$(PYTHONPATH) python -m unittest discover -s test -v
 
 test-full:
-	$(MAKE) test WORKLOAD_PROFILE=all
+	$(MAKE) test
+	$(MAKE) cpu-soc-all
 
 refresh-references:
 	PYTHONPATH=$(PYTHONPATH) python scripts/refresh_references.py --output references/discovered_references.md

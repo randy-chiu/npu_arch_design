@@ -14,8 +14,6 @@ module soc_tb;
     localparam logic [31:0] NPU_WRAPPER_A_BASE = SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_A_BASE;
     localparam logic [31:0] NPU_WRAPPER_B_BASE = SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_B_BASE;
     localparam logic [31:0] NPU_WRAPPER_C_BASE = SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_C_BASE;
-    localparam logic [31:0] NPU_WRAPPER_X_BASE = SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_X_BASE;
-    localparam logic [31:0] NPU_WRAPPER_Y_BASE = SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_Y_BASE;
     localparam logic [31:0] NPU_WRAPPER_PROGRAM_BASE = SOC_NPU_WRAPPER_BASE + NPU_OPSCHED_PROGRAM_BASE;
 
     logic clk;
@@ -32,9 +30,6 @@ module soc_tb;
     logic [31:0] matmul_b [0:63];
     logic [31:0] matmul_program [0:15];
     logic [31:0] matmul_expected_c [0:63];
-    logic [31:0] softmax_x [0:7];
-    logic [31:0] softmax_program [0:15];
-    logic [31:0] softmax_expected_y [0:7];
     logic [31:0] actual_status;
 
     soc_top dut (
@@ -63,7 +58,6 @@ module soc_tb;
 
         run_cpu_controlled_matmul();
         check_and_clear_perf_snapshot();
-        run_cpu_controlled_softmax();
         bus_write(SOC_TEST_STATUS_BASE, SOC_TEST_STATUS_PASS_VALUE);
         bus_read(SOC_TEST_STATUS_BASE, actual_status);
 
@@ -202,36 +196,4 @@ module soc_tb;
         end
     endtask
 
-    task automatic run_cpu_controlled_softmax;
-        integer i;
-        logic [31:0] actual;
-        begin
-            $readmemh(SOFTMAX_X_HEX, softmax_x);
-            $readmemh(SOFTMAX_PROGRAM_HEX, softmax_program);
-            $readmemh(SOFTMAX_EXPECTED_Y_HEX, softmax_expected_y);
-
-            for (i = 0; i < SOFTMAX_OUTPUT_COUNT; i = i + 1) begin
-                bus_write(NPU_WRAPPER_X_BASE + (i * 4), softmax_x[i]);
-            end
-            for (i = 0; i < 16; i = i + 1) begin
-                bus_write(NPU_WRAPPER_PROGRAM_BASE + (i * 4), softmax_program[i]);
-            end
-
-            bus_write(NPU_WRAPPER_CTRL, NPU_OPSCHED_CTRL_START_MASK);
-            wait_opsched_done();
-
-            for (i = 0; i < SOFTMAX_OUTPUT_COUNT; i = i + 1) begin
-                bus_read(NPU_WRAPPER_Y_BASE + (i * 4), actual);
-                if (actual[7:0] !== softmax_expected_y[i][7:0]) begin
-                    $display(
-                        "FAIL soc softmax[%0d] actual=%0d expected=%0d",
-                        i,
-                        actual[7:0],
-                        softmax_expected_y[i][7:0]
-                    );
-                    $fatal(1);
-                end
-            end
-        end
-    endtask
 endmodule

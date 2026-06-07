@@ -67,24 +67,17 @@
       "tensors": {
         "A": 0,
         "B": 1,
-        "C": 2,
-        "X": 3,
-        "Y": 4
+        "C": 2
       },
       "buffers": {
         "spad_a": 0,
         "spad_b": 1,
-        "acc": 2,
-        "vec": 3
+        "acc": 2
       },
-      "buffer_aliases": {
-        "spad_softmax": "vec",
-        "scalar_max": "vec",
-        "scalar_sum": "vec"
-      }
+      "buffer_aliases": {}
     },
 
-    // Minimal micro-op set required for matmul and softmax.
+    // Shared micro-op set required for matmul and Attention primitives.
     // Agents must update compiler, simulator, RTL decoder/control, and tests
     // whenever this list changes.
     "instructions": [
@@ -157,6 +150,51 @@
     "alignment_bytes": 16
   },
 
+  "performance_contract": {
+    // Performance-first architectural baseline. These are intentionally wide
+    // parallel resources, not unlimited-bandwidth simulation assumptions.
+    // RTL and PPA must preserve these transaction latencies until this spec is
+    // explicitly revised after mapped timing/area/power evidence.
+    "policy": "performance_first_declared_parallel_resources",
+    "physical_timing_status": "unverified_until_mapped_sta",
+    "downgrade_rule": "revise_spec_then_rebaseline_performance",
+    "accumulator": {
+      "implementation_assumption": "banked_register_file",
+      "elements": 64,
+      "element_bits": 32,
+      "clear_elements_per_cycle": 64,
+      "commit_elements_per_cycle": 64,
+      "readout_elements_per_cycle": 64,
+      "clear_cycles": 1,
+      "commit_cycles": 1,
+      "readout_cycles": 1,
+      "commit_add_lanes": 64,
+      "read_bus_bits": 2048,
+      "write_bus_bits": 2048
+    },
+    "attention_row_storage": {
+      "implementation_assumption": "eight_bank_register_file",
+      "elements_per_row": 8,
+      "element_bits": 32,
+      "read_elements_per_cycle": 8,
+      "write_elements_per_cycle": 8,
+      "row_read_cycles": 1,
+      "row_write_cycles": 1,
+      "read_bus_bits": 256,
+      "write_bus_bits": 256
+    },
+    "matrix_operand_feed": {
+      "implementation_assumption": "banked_operand_register_file",
+      "a_elements_per_cycle": 8,
+      "a_element_bits": 16,
+      "b_elements_per_cycle": 8,
+      "b_element_bits": 8,
+      "feed_cycles_per_k_slice": 1,
+      "a_read_bus_bits": 128,
+      "b_read_bus_bits": 64
+    }
+  },
+
   "dma": {
     // One DMA channel keeps Phase 0 scheduling serial and easy to debug.
     "channels": 1,
@@ -181,10 +219,41 @@
     "launch_registers": ["program_base", "start", "done", "error"]
   },
 
+  "trace_contract": {
+    // Stable architectural event IDs. PPA consumes these IDs and must not
+    // interpret private RTL FSM encodings.
+    "command_events": {
+      "NONE": 0,
+      "DESC_DECODE": 1,
+      "PROGRAM_MOVE": 2,
+      "INPUT0_MOVE": 3,
+      "INPUT1_MOVE": 4,
+      "CHUNK_LAUNCH": 5,
+      "COMPUTE_WAIT": 6,
+      "OUTPUT_MOVE": 7,
+      "JOB_RETIRE": 8,
+      "ACC_CLEAR": 9,
+      "ACC_DISABLE": 10,
+      "PREFETCH_BANK_SELECT": 11
+    },
+    "scheduler_wait_reasons": {
+      "NONE": 0,
+      "MATRIX_RESPONSE": 1,
+      "PRIMITIVE_ACCEPT": 2,
+      "PRIMITIVE_RESPONSE": 3
+    },
+    "compute_control_events": {
+      "NONE": 0,
+      "PRIMITIVE_ACCEPT": 1,
+      "PRIMITIVE_RESPONSE": 2,
+      "ENGINE_START_ADAPTER": 3
+    }
+  },
+
   "rtl": {
     // Current RTL implementation target. This is deliberately smaller than the
     // future generated RTL system: one module, simple host write/read bus,
-    // 8x8 matmul, and 8-element softmax approximation.
+    // 8x8 matmul and shared Attention primitive execution.
     "top_module": "npu_v0_compute_cluster",
     "matmul_tile": [8, 8, 8],
     "matmul_array_control_cycles": 0,
@@ -195,8 +264,6 @@
       "a": {"base_word": 0, "words": 64},
       "b": {"base_word": 256, "words": 64},
       "c": {"base_word": 512, "words": 64},
-      "x": {"base_word": 768, "words": 8},
-      "y": {"base_word": 896, "words": 8},
       "program": {"base_word": 1024, "words": 128},
       "control": {"base_word": 1280, "words": 1}
     },

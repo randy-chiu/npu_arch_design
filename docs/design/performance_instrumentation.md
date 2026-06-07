@@ -153,11 +153,22 @@ final chunk:     8-cycle Matrix -> 1-cycle accumulator commit/add
                                 -> 1-cycle accumulator-to-C-window copy
 ```
 
-The accumulator commit and accumulator-to-C-window copy are currently
-full-tile-wide RTL events. Their one-cycle durations describe the implemented
-functional timing, not a reviewed physical SRAM/register-file bandwidth.
-Reports expose both in the `Accumulator file` lane rather than duplicating the
-same read/copy operation in a second Local-storage lane.
+The accumulator commit and accumulator-to-C-window copy are full-tile-wide RTL
+events backed by the performance-first contract in `arch/configs/npu_v0.jsonc`.
+The baseline deliberately declares 64 int32 commit/add lanes and 2048-bit
+read/write paths, so both operations are architectural one-cycle transactions.
+Mapped timing remains unverified. Reports expose both in the `Accumulator
+file` lane and reject transaction durations or overlaps that violate the
+declared contract.
+
+The strict cycle-trace validator also checks:
+
+- every Matrix-active transaction lasts exactly one declared operand-feed
+  cycle per K slice;
+- primitive accept and response transactions match the declared Attention-row
+  read and write latency;
+- accumulator clear, commit, and readout transactions are mutually exclusive
+  and match their declared latency.
 
 Data-mover phase spans must come from state-qualified measured counters. The
 report must not reconstruct initial-load length by subtracting aggregate
@@ -401,7 +412,6 @@ single full-`fc1`-tile external fixture is present:
 
 ```text
 operator_smoke_matmul: 1 job
-operator_smoke_softmax: 1 job
 digits_linear_classifier: 16 jobs
 real_mnist_cnn_fc1_tile0: 1 job
 real_mnist_cnn_fc1_k_stream_smoke: 1 job
@@ -414,7 +424,6 @@ the active generated manifest describes 68 jobs / 7 workloads:
 
 ```text
 operator_smoke_matmul: 1 job
-operator_smoke_softmax: 1 job
 digits_linear_classifier: 16 jobs
 real_mnist_cnn_fc1_tile0: 1 job
 real_mnist_cnn_fc1_k_stream_smoke: 1 job
@@ -486,28 +495,16 @@ validation reference boundary are specified in `docs/design/perf_counter_csr_pla
 
 ### 6.1 Command semantic-event boundary
 
-The per-cycle SoC trace currently records the real numeric command-processor
-FSM state. Therefore command span timing is measured. The report currently
-maps those numeric states to human-readable actions in
-`sw/tools/perf/report.py`, so the action names are implementation-coupled rather
-than a stable architectural trace interface.
+The per-cycle SoC trace records stable semantic command, Scheduler-wait, and
+Compute-cluster-control event IDs defined by `arch/configs/npu_v0.jsonc`.
+RTL emits those IDs with row/lane/chunk/bank arguments. The PPA report consumes
+the generated architecture event map and must not translate private FSM state
+numbers. Workload-specific synthetic command sequences are not allowed.
 
-The required replacement is a semantic command event emitted by the command
-processor, with arguments such as chunk and bank identifiers. The PPA report
-must consume that event instead of translating an internal FSM number.
-Workload-specific synthetic command sequences are not allowed.
+Primitive execution timelines follow the same rule. Scale/mask and Attention
+Softmax run through the common Uop Scheduler. Their PPA timelines must:
 
-Until that event contract is implemented:
-
-- command span cycles are measured RTL evidence;
-- command action labels are reviewed report-side interpretations;
-- adding or renumbering command states requires an explicit mapping review.
-
-Primitive execution timelines must follow the same rule. Scale/mask and
-attention softmax currently run through a compute-cluster micro-sequencer,
-bypassing the common uop scheduler. Their PPA timelines must therefore:
-
-- show the uop scheduler as bypassed, not silently empty or falsely active;
+- show typed primitive-accept/primitive-response waits;
 - use measured vector/reduction/SFU active events and operation arguments;
 - show compute-cluster-control prepare/start/wait/result-handoff
   cycles that are not execution-engine active cycles;
@@ -535,16 +532,10 @@ control FSM physically implemented inside `npu_v0_compute_cluster`. It is shown
 as a child lane only to account for compute-cluster-active cycles during which
 Matrix/Vector/Reduction/SFU are not active.
 
-For the current fixed `8x8` score-scale operation:
-
-```text
-8 rows * (
-  1 cycle prepare Vector inputs/configuration
-  + 1 cycle issue Vector start
-  + 1 cycle wait/result handoff/row advance
-) + 1 final completion-control cycle
-= 25 Compute cluster control cycles
-```
+Compute-cluster control cycles are semantic `PRIMITIVE_ACCEPT` and
+`PRIMITIVE_RESPONSE` events, plus the measured `ENGINE_START_ADAPTER` cycle
+required by current internal start/done engines. Engine-active cycles are not
+also labeled as control work.
 
 The Vector engine itself is active for only one cycle per row, or eight cycles
 total. This `25 control / 8 execution` ratio is measured behavior but poor
@@ -650,19 +641,13 @@ input1 和 output；descriptor read 不计入 data mover work。
 - The TB-versus-CSR equality checker reads internal snapshot storage only as a
   verification reference; firmware and report consume MMIO-visible values.
 - No global multi-job timeline yet.
-- The trace currently includes the terminal `DESC_DONE` observation at
-  `cycle == total_cycles`, outside the `[0,total_cycles)` job interval. Reports
-  must not present that terminal observation as an additional in-range work
-  cycle; the measurement-boundary contract still needs correction at source.
-- Command labels still interpret raw FSM numbers instead of stable semantic
-  command events.
-- Compute-cluster control spans are currently identified as residual
-  `core_active && no_engine_active`; named control-state events are still
-  required to distinguish prepare, issue, wait, handoff, and completion.
-- The first strict per-job validator now rejects out-of-range spans,
-  same-lane overlap, cycle-length mismatch, and uncovered Attention
-  compute-cluster cycles. It does not yet validate every cross-module
-  dependency or overlap rule.
+- The strict per-job validator rejects out-of-range spans, same-lane overlap,
+  cycle-length mismatch, Scheduler active/wait contradictions, typed-wait
+  mismatches, and uncovered Attention Compute-cluster cycles. It does not yet
+  validate every cross-module dependency or overlap rule.
+- Primitive engine adapters still expose internal start/done latency. This is
+  reported as `ENGINE_START_ADAPTER`; replacing it requires a separate measured
+  native-engine valid-ready change.
 - Legacy phase-reconstructed logs can contain internally inconsistent summary
   values that produce out-of-range spans. They are now marked
   `legacy_not_accepted_as_architectural_evidence`; only architectural

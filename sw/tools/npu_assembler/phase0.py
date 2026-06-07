@@ -36,14 +36,6 @@ def encode_program(program: list[dict[str, Any]], arch: dict[str, Any]) -> list[
             )
         elif op == "MATMUL":
             encoded.append(encode_uop(arch, op))
-        elif op in {"VREDMAX", "VEXP", "VREDSUM"}:
-            encoded.append(
-                encode_uop(arch, op, _buffer_id(arch, inst["src"]), _buffer_id(arch, inst["dst"]))
-            )
-        elif op in {"VSUB", "VDIV"}:
-            encoded.append(
-                encode_uop(arch, op, _buffer_id(arch, inst["src"]), _buffer_id(arch, inst["dst"]))
-            )
         elif op == "HALT":
             encoded.append(encode_uop(arch, op))
         else:

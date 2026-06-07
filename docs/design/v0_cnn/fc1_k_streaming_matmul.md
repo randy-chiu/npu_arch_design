@@ -234,9 +234,7 @@ historical; they are not external DRAM.
 | `acc_buf` | 64 entries = `8x8` | int32 | Resident accumulator and output staging / 常驻累加器和输出暂存 |
 | `dram_c` | 64 entries = `8x8` | int32 | Host-readable C output window / host 可读 C 输出窗口 |
 | `instr_mem` | 16 entries | uint32 | Micro-op program memory / micro-op 程序存储 |
-| `dram_x` | 8 entries | int8 | Softmax input window / softmax 输入窗口 |
 | `vec_buf` | 8 entries | int16 | Softmax vector staging / softmax vector 暂存 |
-| `dram_y` | 8 entries | uint8 | Softmax output window / softmax 输出窗口 |
 
 For K-streaming, the key point is that `acc_buf[8x8]` stays resident while
 `dram_a/dram_b/spad_a/spad_b` are overwritten with the next K chunk.

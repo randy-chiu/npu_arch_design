@@ -17,6 +17,48 @@ class PerfReportTests(unittest.TestCase):
         )
         self.assertEqual(model["matmul_tile"], [8, 8, 8])
         self.assertEqual(model["data_mover_words_per_cycle"], 4)
+        self.assertEqual(
+            model["performance_contract"]["accumulator"]["commit_add_lanes"],
+            64,
+        )
+        self.assertEqual(
+            model["performance_contract"]["attention_row_storage"]["read_bus_bits"],
+            256,
+        )
+
+    def test_accumulator_transaction_must_match_performance_contract(self):
+        defaults = {
+            "cmd_event": 6, "cmd_active": 0, "cmd_wait": 1, "stream_chunk": 0,
+            "dm_program": 0, "dm_input_a": 0, "dm_input_b": 0, "dm_prefetch_a": 0,
+            "dm_prefetch_b": 0, "dm_output": 0, "dm_target_bank": 0,
+            "core_active": 1, "core_wait_data": 0, "uop_active": 0, "uop_wait": 0,
+            "sched_wait_reason": 0, "uop_load": 0, "uop_tensor": 0, "uop_buffer": 0,
+            "uop_exec": 0, "uop_opcode": 0, "uop_store": 0, "output_store_enable": 1,
+            "matrix_issue": 0, "matrix_active": 0, "compute_ctrl_event": 0,
+            "acc_clear": 0, "acc_commit": 0, "acc_readout": 0,
+        }
+        events = [
+            {"job_id": 1, "cycle": 0, **defaults, "acc_commit": 1},
+            {"job_id": 1, "cycle": 1, **defaults, "acc_commit": 1},
+            {"job_id": 1, "cycle": 2, **defaults, "core_active": 0},
+        ]
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "trace.log"
+            lines = ["PERF_TRACE " + json.dumps(event) for event in events]
+            lines.append(
+                'PERF_JOB {"source":"architectural_perf_csr_snapshot","job_id":1,"id":1,'
+                '"name":"matmul","total_cycles":3,"core":{"total":2,"matmul":0},'
+                '"data_mover":{"active_cycles":0,"read_words":0,"write_words":0},"sram":{}}'
+            )
+            log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "acc_commit violates performance contract"):
+                parse_perf_log(
+                    log_path,
+                    model=load_measurement_model(
+                        Path("arch/configs/npu_v0.jsonc"),
+                        Path("arch/configs/soc_v0.jsonc"),
+                    ),
+                )
 
     def test_csr_records_mark_architectural_report_provenance(self):
         with TemporaryDirectory() as tmp:
@@ -149,11 +191,11 @@ class PerfReportTests(unittest.TestCase):
 
     def test_k_stream_cycle_trace_places_external_and_local_loads_in_order(self):
         defaults = {
-            "cmd_state": 6, "cmd_active": 0, "cmd_wait": 1, "stream_chunk": 0,
+            "cmd_event": 6, "cmd_active": 0, "cmd_wait": 1, "stream_chunk": 0,
             "dm_program": 0, "dm_input_a": 0,
             "dm_input_b": 0, "dm_prefetch_a": 0, "dm_prefetch_b": 0, "dm_output": 0,
             "dm_target_bank": 0, "core_active": 0, "core_wait_data": 0, "uop_active": 0,
-            "uop_wait": 0, "uop_load": 0, "uop_tensor": 0, "uop_store": 0,
+            "uop_wait": 0, "sched_wait_reason": 0, "uop_load": 0, "uop_tensor": 0, "uop_store": 0,
             "output_store_enable": 1, "matrix_issue": 0, "matrix_active": 0,
             "acc_clear": 0, "acc_commit": 0, "acc_readout": 0,
         }
@@ -167,7 +209,7 @@ class PerfReportTests(unittest.TestCase):
             (5, {"dm_prefetch_a": 1, "dm_target_bank": 1, "uop_active": 1,
                  "matrix_issue": 1}),
             (6, {"dm_prefetch_b": 1, "dm_target_bank": 1, "core_active": 1,
-                 "uop_wait": 1, "matrix_active": 1}),
+                 "uop_wait": 1, "sched_wait_reason": 1, "matrix_active": 1}),
         ]:
             events.append({"job_id": 1, "cycle": cycle, **defaults, **changes})
 
@@ -198,10 +240,11 @@ class PerfReportTests(unittest.TestCase):
 
     def test_attention_softmax_trace_describes_scheduler_and_primitive_work(self):
         defaults = {
-            "cmd_state": 6, "cmd_active": 0, "cmd_wait": 1, "stream_chunk": 0,
+            "cmd_event": 6, "cmd_active": 0, "cmd_wait": 1, "stream_chunk": 0,
             "dm_program": 0, "dm_input_a": 0, "dm_input_b": 0, "dm_prefetch_a": 0,
             "dm_prefetch_b": 0, "dm_output": 0, "dm_target_bank": 0,
             "core_active": 1, "core_wait_data": 0, "uop_active": 0, "uop_wait": 0,
+            "sched_wait_reason": 0, "compute_ctrl_event": 0,
             "uop_load": 0, "uop_tensor": 0, "uop_store": 0, "output_store_enable": 1,
             "matrix_issue": 0, "matrix_active": 0, "acc_clear": 0, "acc_commit": 0,
             "acc_readout": 0, "vector_active": 0, "vector_op": 0,
@@ -215,7 +258,7 @@ class PerfReportTests(unittest.TestCase):
             {"job_id": 1, "cycle": 2, **defaults, "sfu_active": 1, "sfu_op": 0, "primitive_lane": 3},
             {"job_id": 1, "cycle": 3, **defaults, "reduction_active": 1, "reduction_op": 1},
             {"job_id": 1, "cycle": 4, **defaults, "sfu_active": 1, "sfu_op": 1},
-            {"job_id": 1, "cycle": 5, **defaults},
+            {"job_id": 1, "cycle": 5, **defaults, "compute_ctrl_event": 3},
         ]
         with TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "trace.log"
@@ -233,7 +276,7 @@ class PerfReportTests(unittest.TestCase):
             lanes["Uop scheduler"]["spans"][0]["label"],
             "Fetch/decode/issue reduction max row 0",
         )
-        self.assertIn("Compute-cluster control", lanes["Compute cluster control"]["spans"][0]["label"])
+        self.assertIn("start/done adapter", lanes["Compute cluster control"]["spans"][0]["label"])
         self.assertEqual(
             lanes["Reduction engine"]["spans"][0]["label"],
             "Reduction max row 2: find stable-softmax row maximum",
@@ -245,10 +288,11 @@ class PerfReportTests(unittest.TestCase):
 
     def test_attention_scale_trace_shows_scheduler_issue_wait_and_vector_work(self):
         defaults = {
-            "cmd_state": 6, "cmd_active": 0, "cmd_wait": 1, "stream_chunk": 0,
+            "cmd_event": 6, "cmd_active": 0, "cmd_wait": 1, "stream_chunk": 0,
             "dm_program": 0, "dm_input_a": 0, "dm_input_b": 0, "dm_prefetch_a": 0,
             "dm_prefetch_b": 0, "dm_output": 0, "dm_target_bank": 0,
             "core_active": 1, "core_wait_data": 0, "uop_active": 0, "uop_wait": 0,
+            "sched_wait_reason": 0, "compute_ctrl_event": 0,
             "uop_load": 0, "uop_tensor": 3, "uop_exec": 0, "uop_opcode": 9,
             "uop_store": 0, "output_store_enable": 1, "matrix_issue": 0,
             "matrix_active": 0, "acc_clear": 0, "acc_commit": 0, "acc_readout": 0,
@@ -257,10 +301,14 @@ class PerfReportTests(unittest.TestCase):
             "primitive_row": 3, "primitive_lane": 0,
         }
         events = [
-            {"job_id": 1, "cycle": 0, **defaults, "uop_active": 1, "uop_exec": 1},
-            {"job_id": 1, "cycle": 1, **defaults, "uop_wait": 1},
-            {"job_id": 1, "cycle": 2, **defaults, "uop_wait": 1, "vector_active": 1},
-            {"job_id": 1, "cycle": 3, **defaults, "uop_wait": 1},
+            {"job_id": 1, "cycle": 0, **defaults, "uop_active": 1, "uop_exec": 1,
+             "compute_ctrl_event": 1},
+            {"job_id": 1, "cycle": 1, **defaults, "uop_wait": 1,
+             "sched_wait_reason": 3, "compute_ctrl_event": 3},
+            {"job_id": 1, "cycle": 2, **defaults, "uop_wait": 1,
+             "sched_wait_reason": 3, "vector_active": 1},
+            {"job_id": 1, "cycle": 3, **defaults, "uop_active": 1,
+             "compute_ctrl_event": 2},
             {"job_id": 1, "cycle": 4, **defaults, "core_active": 0, "uop_active": 1, "uop_opcode": 15},
             {"job_id": 1, "cycle": 5, **defaults, "core_active": 0},
         ]
@@ -283,7 +331,7 @@ class PerfReportTests(unittest.TestCase):
         )
         self.assertEqual(
             lanes["Uop scheduler"]["spans"][1]["label"],
-            "Wait for issued engine completion",
+            "Wait for issued primitive response",
         )
         self.assertEqual(
             lanes["Vector engine"]["spans"][0]["label"],
@@ -325,9 +373,9 @@ class PerfReportTests(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
         self.assertEqual(manifest["generated_by"], "sw/tools/firmware/emit_soc_cpu_smoke_data.py")
-        self.assertEqual(len(manifest["jobs"]), 68)
-        self.assertEqual(manifest["jobs"][20]["workload"], "real_mnist_cnn_fc1_full_k_stream_layer")
-        self.assertEqual(manifest["jobs"][-1]["job_id"], 68)
+        self.assertEqual(len(manifest["jobs"]), 67)
+        self.assertEqual(manifest["jobs"][19]["workload"], "real_mnist_cnn_fc1_full_k_stream_layer")
+        self.assertEqual(manifest["jobs"][-1]["job_id"], 67)
         self.assertEqual(
             manifest["workload_metadata"]["real_mnist_cnn_fc1_full_k_stream_layer"]["metadata"]["k_chunks"],
             1152,
@@ -355,7 +403,7 @@ class PerfReportTests(unittest.TestCase):
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(len(manifest["jobs"]), 74)
+        self.assertEqual(len(manifest["jobs"]), 73)
         self.assertEqual(manifest["manifest_id"], "soc_cpu_smoke_quick_v0")
         self.assertEqual(manifest["jobs"][-6]["workload"], "transformer_prefill_gemm_tiny")
         self.assertEqual(manifest["jobs"][-5]["workload"], "transformer_attention_qk_s8_d8")
@@ -596,9 +644,9 @@ class PerfReportTests(unittest.TestCase):
             report = parse_perf_log(log_path)
 
             self.assertEqual(report["summary"]["jobs"], 18)
-            self.assertEqual(report["summary"]["workloads"], 3)
+            self.assertEqual(report["summary"]["workloads"], 2)
             self.assertEqual(report["summary"]["total_cycles"], 4065)
-            classifier = report["workloads"][2]
+            classifier = report["workloads"][1]
             self.assertEqual(classifier["name"], "digits_linear_classifier")
             self.assertEqual(classifier["kind"], "model")
             self.assertEqual(classifier["jobs"], 16)
@@ -623,8 +671,8 @@ class PerfReportTests(unittest.TestCase):
             report = parse_perf_log(log_path)
 
             self.assertEqual(report["summary"]["jobs"], 50)
-            self.assertEqual(report["summary"]["workloads"], 4)
-            fc2 = report["workloads"][3]
+            self.assertEqual(report["summary"]["workloads"], 3)
+            fc2 = report["workloads"][2]
             self.assertEqual(fc2["name"], "real_mnist_cnn_fc2")
             self.assertEqual(fc2["kind"], "model_layer")
             self.assertEqual(fc2["jobs"], 32)
@@ -650,9 +698,9 @@ class PerfReportTests(unittest.TestCase):
             report = parse_perf_log(log_path)
 
             self.assertEqual(report["summary"]["jobs"], 51)
-            self.assertEqual(report["summary"]["workloads"], 5)
-            fc1 = report["workloads"][3]
-            fc2 = report["workloads"][4]
+            self.assertEqual(report["summary"]["workloads"], 4)
+            fc1 = report["workloads"][2]
+            fc2 = report["workloads"][3]
             self.assertEqual(fc1["name"], "real_mnist_cnn_fc1_tile0")
             self.assertEqual(fc1["kind"], "model_layer_tile")
             self.assertEqual(fc1["jobs"], 1)
@@ -678,10 +726,10 @@ class PerfReportTests(unittest.TestCase):
             report = parse_perf_log(log_path)
 
             self.assertEqual(report["summary"]["jobs"], 52)
-            self.assertEqual(report["summary"]["workloads"], 6)
-            fc1_tile = report["workloads"][3]
-            fc1_stream = report["workloads"][4]
-            fc2 = report["workloads"][5]
+            self.assertEqual(report["summary"]["workloads"], 5)
+            fc1_tile = report["workloads"][2]
+            fc1_stream = report["workloads"][3]
+            fc2 = report["workloads"][4]
             self.assertEqual(fc1_tile["name"], "real_mnist_cnn_fc1_tile0")
             self.assertEqual(fc1_stream["name"], "real_mnist_cnn_fc1_k_stream_smoke")
             self.assertEqual(fc1_stream["kind"], "model_layer_tile")
@@ -724,11 +772,11 @@ class PerfReportTests(unittest.TestCase):
             report = parse_perf_log(log_path)
 
             self.assertEqual(report["summary"]["jobs"], 68)
-            self.assertEqual(report["summary"]["workloads"], 7)
-            fc1_tile = report["workloads"][3]
-            fc1_smoke = report["workloads"][4]
-            fc1_full = report["workloads"][5]
-            fc2 = report["workloads"][6]
+            self.assertEqual(report["summary"]["workloads"], 6)
+            fc1_tile = report["workloads"][2]
+            fc1_smoke = report["workloads"][3]
+            fc1_full = report["workloads"][4]
+            fc2 = report["workloads"][5]
             self.assertEqual(fc1_tile["name"], "real_mnist_cnn_fc1_tile0")
             self.assertEqual(fc1_smoke["name"], "real_mnist_cnn_fc1_k_stream_smoke")
             self.assertEqual(fc1_full["name"], "real_mnist_cnn_fc1_full_k_stream_layer")

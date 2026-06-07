@@ -99,8 +99,6 @@ def main() -> None:
         "a": npu_wrapper_base + wrapper_offsets["a_base"],
         "b": npu_wrapper_base + wrapper_offsets["b_base"],
         "c": npu_wrapper_base + wrapper_offsets["c_base"],
-        "x": npu_wrapper_base + wrapper_offsets["x_base"],
-        "y": npu_wrapper_base + wrapper_offsets["y_base"],
         "program": npu_wrapper_base + wrapper_offsets["program_base"],
     }
     program = Program()
@@ -113,14 +111,6 @@ def main() -> None:
     _run_npu(program, npu_wrapper["ctrl"], npu_wrapper["status"], "wait_matmul")
     program.comment("Check Matrix C against generated expected values.")
     _check_words(program, npu_wrapper["c"], _read_hex(fixtures / "matmul_expected_c.hex"), "fail")
-
-    program.comment("Load softmax input and program into the NPU wrapper windows.")
-    _write_words(program, npu_wrapper["x"], _read_hex(fixtures / "softmax_x.hex"))
-    _write_words(program, npu_wrapper["program"], _read_hex(fixtures / "softmax_program.hex"))
-    program.comment("Start softmax and wait for STATUS.done.")
-    _run_npu(program, npu_wrapper["ctrl"], npu_wrapper["status"], "wait_softmax")
-    program.comment("Check Softmax Y against generated expected values.")
-    _check_low_bytes(program, npu_wrapper["y"], _read_hex(fixtures / "softmax_expected_y.hex"), "fail")
 
     program.comment("Report PASS to the simulation-visible test status register.")
     _write_word(program, test_status_base, 0x0000_0001)
@@ -155,11 +145,9 @@ def main() -> None:
                 "generated_by": "sw/tools/firmware/emit_soc_cpu_smoke.py",
                 "workload_metadata": {
                     "operator_smoke_matmul": {"kind": "operator_smoke"},
-                    "operator_smoke_softmax": {"kind": "operator_smoke"},
                 },
                 "jobs": [
                     {"job_id": 1, "workload": "operator_smoke_matmul", "op": "unknown", "role": "smoke"},
-                    {"job_id": 2, "workload": "operator_smoke_softmax", "op": "unknown", "role": "smoke"},
                 ],
             },
             indent=2,

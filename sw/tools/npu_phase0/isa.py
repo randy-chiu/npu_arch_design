@@ -37,8 +37,6 @@ def _validate_instruction(pc: int, inst: dict[str, Any], arch: dict[str, Any]) -
             tile_k = arch["compute"]["k_step"]
             if shape["m"] % tile_m or shape["n"] % tile_n or shape["k"] % tile_k:
                 raise ISAError(f"pc {pc}: MATMUL shape must be a multiple of tile size")
-    elif op in {"VREDMAX", "VSUB", "VEXP", "VREDSUM", "VDIV"}:
-        _require_fields(pc, inst, ["src", "dst"])
     elif op == "HALT":
         return
 
@@ -54,4 +52,3 @@ def _require_shape(pc: int, shape: dict[str, Any], fields: list[str]) -> None:
         value = shape.get(field)
         if not isinstance(value, int) or value <= 0:
             raise ISAError(f"pc {pc}: shape.{field} must be a positive integer")
-

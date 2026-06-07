@@ -224,10 +224,10 @@ completion handling are scheduler active work. Waiting for an issued engine is
 scheduler wait time. These cycles must not be attributed to Matrix engine
 datapath activity.
 
-The current fixed `op=1` attention-softmax and `op=3` scale paths still use a
-bring-up sequencer colocated with the compute-cluster integration module. They
-must migrate to the common scheduler before being treated as the final
-primitive scheduling architecture.
+The `op=1` attention-softmax and `op=3` scale paths execute Compiler-emitted
+primitive programs through the common Uop Scheduler. The compute-cluster
+integration module only routes issued primitives to engines and returns their
+completion.
 
 `npu_v0_compute_cluster` ports:
 
@@ -283,18 +283,12 @@ are not yet a general primitive scheduler or grouped attention command list.
 | `dram_b` | signed 8 | 64 | matmul B preload window |
 | `dram_b_bank1` | signed 8 | 64 | alternate host preload bank for B staging |
 | `dram_c` | signed 32 | 64 | matmul C output window |
-| `dram_x` | signed 8 | 8 | softmax X preload window |
-| `dram_y` | unsigned 32 | 8 | legacy softmax Y output window |
-
 Attention softmax v1 reuses the 64-word C window because scaled scores are
-int32 and contain eight rows, while the legacy X window is only eight signed
-bytes. It processes each C row through the shared vector/reduction/SFU sequence
-and overwrites that dead score row with Q0.15 probabilities. The wrapper then
-stores C to the runtime probability buffer. This preserves the legacy softmax
-X/Y behavior and avoids adding another tile storage module.
-| `instr_mem` | 32 | 16 | encoded uop program |
+int32 and contain eight rows. It processes each C row through the shared
+vector/reduction/SFU sequence and overwrites that dead score row with Q0.15
+probabilities. The wrapper then stores C to the runtime probability buffer.
+| `instr_mem` | 32 | 128 | encoded uop program |
 | `accumulator_file` | signed 32 | 2 banks x 64 | matmul accumulator/output staging; v0 currently uses bank 0 |
-| `vec_buf` | signed 16 | 8 | softmax vector staging |
 
 Names like `dram_a` are historical. These are internal core arrays in the
 current RTL, not external DRAM.
@@ -322,9 +316,36 @@ The current RTL implements each accumulator commit/add as one full-tile-wide
 clocked operation over 64 int32 elements. It reruns the same uop program for
 every K chunk, but the Command processor suppresses `STORE C, ACC` execution
 for non-final chunks; only the final resident sum is copied into the C output
-window before external writeback. The commit/add and final copy are valid
-current RTL cycle events but do not yet model realistic
-accumulator/output-window port width or banking cost.
+window before external writeback.
+
+### Performance-first local-storage contract
+
+The one-cycle operations above are now intentional architecture choices rather
+than unspecified functional-model behavior. Canonical values are defined in
+`arch/configs/npu_v0.jsonc` under `performance_contract`.
+
+| Path | Declared resource | Architectural latency |
+| --- | --- | ---: |
+| accumulator clear | clear 64 x int32 lanes in parallel | 1 cycle |
+| Matrix-result commit/add | 64 int32 write lanes and 64 int32 add lanes | 1 cycle |
+| accumulator readout to C window | 2048-bit read and write paths | 1 cycle |
+| Attention row read/write | eight 32-bit banks, 256-bit row paths | 1 cycle each |
+| Matrix operand feed per K slice | eight A elements and eight B elements per cycle | 1 cycle per K slice |
+
+This baseline prioritizes performance and assumes register-file or explicitly
+banked-register implementations capable of the declared parallel access. The
+expected costs are high storage-port count, wide routing, many add lanes,
+clock load, area, and dynamic power. Mapped timing is not yet proven.
+
+RTL must fail elaboration when its tile/row dimensions no longer match this
+contract. PPA must reject a measured transaction whose duration or overlap
+violates the declared contract. A future implementation may reduce width only
+after changing the canonical spec and re-establishing the performance
+baseline; it must not silently serialize these transactions.
+
+性能优先基线明确承诺宽并行硬件资源，而不是假设存储具有免费无限带宽。后续若
+综合结果表明面积、功耗或时序无法接受，必须先修改 spec 中的并行宽度和 latency，
+再修改 RTL 并重新建立 PPA 基线。
 
 ## 5. Host Window Map
 
@@ -333,8 +354,6 @@ accumulator/output-window port width or banking cost.
 | `0x000` - `0x03f` | write | `dram_a` |
 | `0x100` - `0x13f` | write | `dram_b` |
 | `0x200` - `0x23f` | read/write while idle | `dram_c`; write is used by int32 scale/mask descriptor input |
-| `0x300` - `0x307` | write | `dram_x` |
-| `0x380` - `0x387` | read | `dram_y` |
 | `0x400` - `0x40f` | write | `instr_mem` |
 | `0x500` | write | matmul accumulate control: bit 0 enable, bit 1 clear pulse |
 
@@ -358,23 +377,18 @@ dispatches the uop. LOAD/STORE commands operate on compute-cluster local
 storage through explicit scheduler commands. MATMUL is issued to Matrix engine
 and the scheduler waits for its completion.
 
-Supported uops:
+Supported `op=0` uops:
 
 | Uop | Current behavior |
 | --- | --- |
 | `LOAD A/B` | bind the selected MatMul operand bank; no duplicate full-tile copy |
-| `LOAD X` | copy the preloaded X window into the softmax vector buffer |
 | `MATMUL` | start A1 matmul array |
-| `STORE` | copy accumulator/vector buffer into output window |
-| `VREDMAX` | reduce max over `vec_buf` |
-| `VSUB` | subtract scalar max |
-| `VEXP` | approximate exp through small LUT |
-| `VREDSUM` | reduce sum over low 8-bit vector values |
-| `VDIV` | normalize to Q0.8-like output |
+| `STORE C` | copy accumulator buffer into output window |
 | `HALT` | finish program |
 
-Most non-matmul uops are implemented as single-cycle RTL tasks. This is useful
-for functional bring-up but is not a realistic vector pipeline timing model.
+The obsolete `op=0` whole-vector Softmax tasks and X/Y windows were removed.
+Softmax primitives remain in the shared ISA because `op=1` Attention Softmax
+uses them through real vector, reduction, and SFU engines.
 
 For `op=1`, the common Uop Scheduler executes the Compiler-expanded attention
 row-softmax primitive program:
@@ -513,21 +527,14 @@ Mixed PV verification requirements:
 
 ## 7. Softmax Path
 
-Legacy `op=0` softmax uop program:
+Only the common-Scheduler Attention `op=1` Softmax path remains. The old
+Phase-0 `op=0` Softmax was removed because it duplicated the operation with
+single-cycle whole-vector tasks, had no model dependency, and produced
+non-representative timing. `op=0` remains the normal int8 MatMul program mode
+used by MNIST/CNN.
 
-```text
-LOAD X -> VREDMAX -> VSUB -> VEXP -> VREDSUM -> VDIV -> STORE Y -> HALT
-```
-
-The RTL implements each vector operation as an immediate task over the whole
-8-element vector. This means softmax timing is not yet representative of a real
-multi-cycle vector/SFU pipeline.
-
-Attention `op=1` softmax is a newer bring-up path. It sequences the standalone
-primitive modules from the core FSM and writes Q0.15-style outputs to `dram_y`.
-It is more representative of the intended decomposition than the legacy uop
-tasks, but its primitive engines still use start/done pulses and simplified SFU
-EXP/RECIP behavior.
+Attention Softmax writes Q0.15-style outputs back to `dram_c`. Its primitive
+engines still use start/done pulses and simplified SFU EXP/RECIP behavior.
 
 A3 should replace this with:
 

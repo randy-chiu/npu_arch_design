@@ -18,6 +18,21 @@ measurements are valid PPA evidence?
 
 ## Current Attention Validation Summary
 
+### Legacy Phase-0 Softmax retirement
+
+The old `op=0` Softmax path duplicated Attention Softmax with immediate
+whole-vector RTL tasks and separate X/Y windows. It did not represent the
+vector/reduction/SFU pipeline and no model depended on it. That path has been
+removed while retaining `op=0` MatMul for MNIST/CNN and the shared Softmax
+primitive opcodes used by the common Scheduler.
+
+Acceptance:
+
+- no old whole-vector Softmax tasks, X/Y fixture, firmware job, or descriptor
+  op type remains;
+- Attention Softmax numerical and PPA regressions pass;
+- digits and real-MNIST CNN CPU-to-NPU RTL regressions pass.
+
 The current SoC path has passed stage-level end-to-end validation for the basic
 attention building blocks:
 
@@ -51,51 +66,10 @@ external-memory boundaries between the already connected stages.
 
 ## Command-Processor Trace Contract
 
-### Current behavior
+### Implemented semantic-event design
 
-The current PPA command-processor timeline is measured, but its text labels are
-not yet a generic architectural trace contract.
-
-The SoC testbench records the real command-processor state and arguments on
-every active cycle:
-
-```text
-cmd_state, stream_chunk, target_bank, movement phase, uop event,
-matrix event, accumulator event
-```
-
-Consequently, the displayed ordering and duration of actions such as
-accumulator clear and chunk launch come from the actual RTL execution. They are
-not a synthetic sequence inserted only for the Transformer report.
-
-However, `sw/tools/perf/report.py` currently converts raw numeric
-`cmd_state` values into labels such as:
-
-```text
-Enable and clear accumulator
-Launch chunk <stream_chunk>; latch selected compute bank
-Select alternate prefetch/next-compute bank
-```
-
-That numeric-state-to-label table is hardcoded in the report. The descriptor
-provides addresses, lengths, mode, and chunk count; the fixed RTL
-command-processor state machine uses those fields to decide the sequence. The
-command processor does not currently parse the descriptor into a generic,
-recorded list of semantic operations.
-
-This means:
-
-- a new job that reuses the same command-processor state machine is displayed
-  correctly without a workload-specific PPA sequence;
-- changing state encoding or adding a different command sequence can silently
-  produce missing or incorrect labels until the report mapping is updated;
-- the raw internal FSM encoding has incorrectly become part of the PPA
-  interface.
-
-### Required semantic-event design
-
-Before adding more command sequences, replace the raw-state dependency with a
-stable semantic command-event contract:
+P0 replaced the report dependency on private `cmd_state` values with stable
+architectural event IDs generated from `arch/configs/npu_v0.jsonc`:
 
 ```text
 event_id: DESC_DECODE | PROGRAM_MOVE | INPUT_MOVE | ACC_CLEAR |
@@ -104,11 +78,11 @@ arguments: chunk_id, source_bank, destination_bank, operator_id
 cycle, active, wait_reason
 ```
 
-The RTL command processor emits the event that it is actually performing. The
-testbench records the event ID and arguments. PPA renders those semantic events
-and must not infer them from an internal state number. The event definition
-must have one generated source shared by SystemVerilog and Python, or an
-equivalent contract test that prevents the two definitions from drifting.
+The RTL command processor, Scheduler, and Compute cluster emit the events they
+are actually performing. The testbench records them and PPA renders them
+without reading private FSM encodings. Strict report validation rejects
+Scheduler active/wait contradictions, typed-wait mismatches, out-of-range
+spans, and Attention Compute-cluster parent/child cycle mismatches.
 
 Acceptance gates:
 
@@ -117,8 +91,8 @@ Acceptance gates:
 - a new architectural action requires an explicit event definition and test;
 - every displayed command action can be traced to a measured RTL event.
 
-This trace-contract work is a prerequisite for claiming that command-list,
-fusion, or generalized-shape timelines are reliable.
+This contract is now the baseline prerequisite for later command-list, fusion,
+and generalized-shape timelines.
 
 ## Industry Comparison And Next-Phase Direction
 
@@ -147,16 +121,48 @@ and its acceptance gate.
 | --- | --- | --- | --- |
 | P0 | PPA timelines can contain raw-FSM labels, residual control buckets, out-of-range terminal events, irrelevant empty lanes, and missing conservation checks | stable semantic command/compute-control/engine/wait events, one job interval contract, timeline conservation validator, and report contract tests | every displayed span is measured and in range; compute-cluster child spans reconcile with parent activity; FSM renumbering cannot alter report meaning |
 | P1 | Expanded Softmax and Scale/Mask now use the common Scheduler, but the in-order start/done integration and large expanded program expose control and movement overhead | add typed wait reasons and valid-ready commands; measure expanded program against a generic loop candidate; reduce routing handoff cycles | both jobs show real Scheduler/engine spans, no operator-specific Compute-cluster sequence FSM, functional outputs unchanged, and before/after control/movement costs measured |
-| P2 | Current attention is only functionally complete for unmasked fixed `S=8,D=8`; it cannot represent real causal prefill or tails | causal/padding/tail mask contract, generalized shape/tile lowering, buffer-driven descriptor construction | multiple `S`, `D`, head, and tail cases match the golden model without stage-specific firmware switches |
-| P3 | Separate descriptor launches and SRAM-visible intermediate boundaries add control and movement overhead | grouped command list, dependency tokens, on-chip score/probability tile residency, and optional matrix-to-vector/reduction/SFU streaming | full-attention group cycles include a stated runtime policy and demonstrate reduced launch/movement cycles against the unfused path |
-| P4 | Current ping-pong behavior lacks a physical scratchpad bandwidth/conflict contract | banked scratchpad model, explicit ports, allocator rules, double buffering, bank-conflict and wait-reason counters | timeline explains every compute idle interval using measured data, dependency, conflict, or backpressure reasons |
-| P5 | Softmax remains a bring-up numerical path and limits correctness claims | target EXP/RECIP implementation, reviewed scale/requant widths, saturation and error bounds | masked attention output meets documented tolerance over directed and randomized cases |
-| P6 | Decode behavior and KV traffic are not executable architecture evidence | decode workload suite first, then KV-cache streamer and GEMV/skinny-GEMM changes only where measured evidence justifies them | tokens/s, bytes/token, utilization, and energy/token compare baseline and proposed decode paths |
-| P7 | L0 performance and modeled coefficients cannot validate final PPA tradeoffs | per-engine event-based power model followed by mapped area/timing and activity-driven power | architecture decisions cite measured performance plus clearly identified L1/L2 area and power provenance |
+| P2 | Some current one-cycle storage operations were visible in RTL/PPA but their required parallel hardware was not an explicit architecture contract | performance-first local-storage contract declaring accumulator, Attention-row, and Matrix-feed lanes/buses/latencies; RTL elaboration checks and PPA transaction conservation | every one-cycle operation names the required parallel resource; RTL dimensions match the contract; PPA rejects duration and overlap violations |
+| P3 | Current attention is only functionally complete for unmasked fixed `S=8,D=8`; it cannot represent real causal prefill or tails | causal/padding/tail mask contract, generalized shape/tile lowering, buffer-driven descriptor construction | multiple `S`, `D`, head, and tail cases match the golden model without stage-specific firmware switches |
+| P4 | Separate descriptor launches and SRAM-visible intermediate boundaries add control and movement overhead | grouped command list, dependency tokens, on-chip score/probability tile residency, and optional matrix-to-vector/reduction/SFU streaming | full-attention group cycles include a stated runtime policy and demonstrate reduced launch/movement cycles against the unfused path |
+| P5 | Future storage sharing and widening can introduce unreported port conflicts | explicit bank ownership, allocator rules, double buffering, bank-conflict and wait-reason counters | timeline explains every compute idle interval using measured data, dependency, conflict, or backpressure reasons |
+| P6 | Softmax remains a bring-up numerical path and limits correctness claims | target EXP/RECIP implementation, reviewed scale/requant widths, saturation and error bounds | masked attention output meets documented tolerance over directed and randomized cases |
+| P7 | Decode behavior and KV traffic are not executable architecture evidence | decode workload suite first, then KV-cache streamer and GEMV/skinny-GEMM changes only where measured evidence justifies them | tokens/s, bytes/token, utilization, and energy/token compare baseline and proposed decode paths |
+| P8 | L0 performance and modeled coefficients cannot validate final PPA tradeoffs | per-engine event-based power model followed by mapped area/timing and activity-driven power | architecture decisions cite measured performance plus clearly identified L1/L2 area and power provenance |
 
-Recommended execution order is P0 through P7. In particular, P3 fusion must
+Recommended execution order is P0 through P8. In particular, P4 fusion must
 retain an unfused reference path so its benefit and additional control/storage
 cost can be measured rather than assumed.
+
+### P2 Performance-First Physical Resource Contract
+
+Problem being solved:
+
+- functional RTL can create wide same-cycle array operations without making
+  their required hardware resources explicit;
+- PPA correctly reports those RTL cycles, but an architecture reviewer cannot
+  tell whether the cycle is a deliberate performance choice or an accidental
+  unlimited-bandwidth assumption;
+- later storage refactors could silently serialize or overlap transactions and
+  invalidate the established performance baseline.
+
+Accepted policy:
+
+- prioritize performance for the current baseline;
+- explicitly declare 64-lane accumulator clear/commit/readout, eight-lane
+  Attention row access, and eight-A/eight-B Matrix slice feed;
+- accept the expected wide-routing, storage-port, area, power, and timing cost;
+- keep one-cycle latency unless mapped timing, area, or power evidence
+  justifies changing the spec;
+- any width reduction requires spec-first change and a new measured baseline.
+
+Implementation and verification:
+
+1. generate RTL constants from the canonical performance contract;
+2. fail RTL elaboration when tile/row dimensions do not match the contract;
+3. record the active contract and unverified mapped-timing status in perf/PPA;
+4. reject accumulator clear/commit/readout events that overlap or last longer
+   than their declared transaction latency;
+5. retain Transformer and CNN full regressions as compatibility gates.
 
 ### P1 Common Primitive Scheduler Integration
 
@@ -227,11 +233,21 @@ Current P1 progress:
 - Clamp bounds, normalization shift, and Score Scale multiplier/shift are
   generated from canonical architecture config rather than retyped RTL
   literals.
-- Measured expanded Softmax is `637` total cycles: program movement is `29`
-  cycles, Scheduler is `114` active plus `448` engine-wait cycles, and measured
-  engine activity is Vector `24`, Reduction `16`, and SFU `72` cycles.
-- Next optimization work is typed wait reasons, lower routing/handoff latency,
-  and measured expanded-versus-loop PPA comparison.
+- Scheduler-to-Compute-cluster primitive issue now uses a held one-in-flight
+  valid-ready command and response contract with typed Matrix-response,
+  primitive-accept, and primitive-response wait reasons.
+- The extra route-start state is removed. Current engines still use an internal
+  registered start/done adapter; its real one-cycle latency is reported as
+  `ENGINE_START_ADAPTER`, not hidden in an inferred control bucket.
+- Scale/Mask improved from `92` to `84` total cycles. Scheduler changed from
+  `10 active + 32 wait` to `18 active + 16 wait`; Compute-cluster child
+  activity reconciles as `24 control + 8 Vector = 32` cycles.
+- Expanded Softmax improved from `637` to `525` total cycles. Scheduler changed
+  from `114 active + 448 wait` to `226 active + 224 wait`; Compute-cluster
+  child activity reconciles as `336 control + 24 Vector + 16 Reduction + 72
+  SFU = 448` cycles.
+- The generic counted-loop candidate remains a measured-design decision, not
+  an implemented hardware loop.
 
 Compiler-expanded Softmax capacity result:
 
@@ -242,30 +258,31 @@ Compiler-expanded Softmax capacity result:
 | Fits selected `128`-word instruction memory | yes | yes |
 | Practical power-of-two instruction-memory capacity | `128` words | candidate could use `16` words |
 | Theoretical program transfer lower bound at current `4 words/cycle` mover width | `ceil(113/4) = 29` cycles | `ceil(16/4) = 4` cycles |
-| Additional per-row loop-control cycles | none | approximately `8` cycles for fixed `S=8` |
+| Additional per-row loop-control cycles | none | modeled `8` cycles for fixed `S=8` |
 | Additional hardware | larger instruction memory/addressing | generic loop counter/branch control |
+| Fixed-case total-cycle comparison | measured `525` cycles | modeled `525 - (29 - 4) + 8 = 508` cycles |
 
-This table is an architecture estimate, not an accepted loop decision. The
-expanded program is now generated by the Compiler and is the functional source
-for future execution. Before accepting a loop ISA, PPA must compare measured
-expanded execution with sufficient instruction memory against a generic loop
-candidate, including instruction-memory area and loop-control area.
+The candidate saves a modeled `17` cycles, or about `3.2%`, for fixed `S=8`,
+before accounting for loop-control area/timing cost. P1 therefore retains the
+Compiler-expanded program as the accepted implementation and does not add a
+hardware loop. The loop decision can be reopened for larger generalized shapes
+with measured area and timing evidence.
 
-Immediate P0 instrumentation correction:
+Completed P0 instrumentation correction:
 
-- Attention Softmax PPA must show the measured 113-word program movement,
+- Attention Softmax PPA shows the measured 113-word program movement,
   Scheduler primitive issue/wait spans, and engine row/lane work.
-- Scale/Mask PPA must show its measured primitive-uop program movement, eight
+- Scale/Mask PPA shows its measured primitive-uop program movement, eight
   Scheduler issue/wait pairs, eight Vector operations, and remaining
   Compute-cluster routing/handoff cycles.
-- Their Vector, Reduction, and SFU spans must come from measured primitive
+- Their Vector, Reduction, and SFU spans come from measured primitive
   active/op/row/lane events. Ratio-derived occupancy blocks are not acceptable.
 - The current eight-row softmax serializes eight scalar EXP operations per row;
   this is expected to dominate the measured compute latency and is a concrete
   optimization target, not an unexplained report artifact.
-- Rename residual `Primitive sequencer` attribution to `Compute cluster
-  control`: it is internal FSM overhead, not a standalone hardware module.
-- Add a timeline validator that rejects out-of-range spans, unexplained
+- Residual control attribution is named `Compute cluster control`, with
+  semantic accept/adapter/response events.
+- The timeline validator rejects out-of-range spans, unexplained
   compute-active cycles, active/wait contradictions, and lane/counter
   mismatches before a PPA report is accepted.
 - Add a PPA review checklist to every architecture work package: expected
@@ -286,8 +303,8 @@ Measured stage PPA exists for:
 | Stage | Current PPA evidence | Main gap |
 | --- | --- | --- |
 | QK | measured cycles, data mover words, useful MACs, matrix utilization, L0 modeled energy; output feeds scale input | larger `D_k`/tile support remains |
-| Scale/mask | measured primitive-uop program movement, eight Scheduler issue/wait pairs, eight fixed-point Vector scale operations, and routing/handoff cycles for unmasked `8x8 int32`; output feeds tile softmax | no causal/padding/tail mask; per-row routing/start/response handoff remains three cycles |
-| Softmax | measured 113-word program movement, Scheduler issue/wait spans, and per-engine row/lane timeline events, L0 modeled energy | expanded program and serialized routing/wait overhead dominate; per-engine energy counters remain incomplete |
+| Scale/mask | measured primitive-uop program movement, typed Scheduler issue/wait pairs, eight fixed-point Vector scale operations, and semantic accept/adapter/response cycles for unmasked `8x8 int32`; output feeds tile softmax | no causal/padding/tail mask; internal start/done adapter remains |
+| Softmax | measured 113-word program movement, typed Scheduler issue/wait spans, semantic control events, and per-engine row/lane timeline events, L0 modeled energy | expanded program and serialized one-in-flight execution dominate; per-engine energy counters remain incomplete |
 | PV | measured cycles through shared mixed matrix mode, useful MACs, matrix utilization, L0 modeled energy | mixed `u16 x s8` area/energy still uses generic MAC model coefficients |
 | Full attention parent | buffer-chained measured QK/scale-mask/eight-row-softmax/PV stages through generated runtime table | no command-list/full-descriptor snapshot, runtime overhead not measured |
 
@@ -334,8 +351,10 @@ The following foundations are complete and are not competing next-step plans:
 - PPA distinguishes measured events from modeled area/energy evidence.
 
 All new implementation priority and acceptance gates are defined only by
-`Recommended Next-Phase Plan`. The active package is P1, beginning with
-Scale/Mask migration to the common Uop Scheduler and then Softmax migration.
+`Recommended Next-Phase Plan`. Scale/Mask and Softmax migration to the common
+Uop Scheduler is complete. The active package is now P0 semantic-event and
+timeline-conservation work, followed by the remaining P1 valid-ready,
+typed-wait, and routing-handoff optimization.
 
 ### Complete Attention Subnetwork Gap
 

@@ -46,9 +46,6 @@ DATASETS = (
     ("matmul_b", "matmul_b.hex"),
     ("matmul_expected_c", "matmul_expected_c.hex"),
     ("matmul_program", "matmul_program.hex"),
-    ("softmax_x", "softmax_x.hex"),
-    ("softmax_expected_y", "softmax_expected_y.hex"),
-    ("softmax_program", "softmax_program.hex"),
     ("attention_scale_mask_program", "attention_scale_mask_program.hex"),
     ("attention_softmax_program", "attention_softmax_program.hex"),
 )
@@ -389,7 +386,6 @@ def _write_workload_manifest(
         "workload_profile": workload_profile,
         "workload_metadata": {
             "operator_smoke_matmul": {"kind": "operator_smoke"},
-            "operator_smoke_softmax": {"kind": "operator_smoke"},
             "digits_linear_classifier": {
                 "kind": "model",
                 "metadata": {
@@ -454,7 +450,6 @@ def _build_workload_jobs(
             jobs.append(item)
 
     add("operator_smoke_matmul", "matmul", "smoke", 1)
-    add("operator_smoke_softmax", "softmax", "smoke", 1)
     add("digits_linear_classifier", "matmul", "regression", digits_jobs, tiled=True)
     add("real_mnist_cnn_fc1_tile0", "matmul", "regression", fc1_tile_jobs, tiled=True)
     add("real_mnist_cnn_fc1_k_stream_smoke", "matmul_k_stream", "regression", fc1_k_stream_jobs, tiled=True)
@@ -480,14 +475,12 @@ def _append_transformer_micro_data(lines: list[str]) -> dict:
             _append_2d_array(lines, f"{workload['name']}_a", workload["a_stream"], bits=int(workload.get("a_bits", 8)))
             _append_2d_array(lines, f"{workload['name']}_b", workload["b_stream"], bits=8)
             _append_flat_array(lines, f"{workload['name']}_expected_c", workload["expected_c"], bits=32)
-        elif workload["op"] in ("softmax", "attention_softmax_v1"):
+        elif workload["op"] == "attention_softmax_v1":
             lines.append(f"#define {macro}_X_WORDS {workload['x_words']}u")
             lines.append(f"#define {macro}_Y_WORDS {workload['y_words']}u")
             lines.append("")
-            input_bits = 32 if workload["op"] == "attention_softmax_v1" else 8
-            _append_flat_array(lines, f"{workload['name']}_x", workload["x"], bits=input_bits)
-            expected_bits = 32 if workload["op"] == "attention_softmax_v1" else 8
-            _append_flat_array(lines, f"{workload['name']}_expected_y", workload["expected_y"], bits=expected_bits)
+            _append_flat_array(lines, f"{workload['name']}_x", workload["x"], bits=32)
+            _append_flat_array(lines, f"{workload['name']}_expected_y", workload["expected_y"], bits=32)
         elif workload["op"] == "attention_scale_mask_v1":
             lines.append(f"#define {macro}_SCORE_WORDS {workload['score_words']}u")
             lines.append("")

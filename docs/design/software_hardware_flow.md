@@ -58,7 +58,7 @@ Key files:
 | --- | --- |
 | `sw/soc_cpu/boot/start.S` | reset entry, stack setup, call `main` |
 | `sw/soc_cpu/runtime/npu_driver.c` | MMIO helpers, start/status polling, test status writes |
-| `sw/soc_cpu/apps/soc_cpu_smoke/main.c` | current matmul then softmax smoke app |
+| `sw/soc_cpu/apps/soc_cpu_smoke/main.c` | current MatMul/CNN/Transformer descriptor regression app |
 
 Driver functions:
 
@@ -99,16 +99,9 @@ input1_addr  = matmul_b_sram
 output_addr  = matmul_c_sram
 ```
 
-Softmax descriptor fields:
-
-```text
-op_type      = SOC_NPU_JOB_OP_SOFTMAX
-job_id       = generated JOB_ID_* value
-program_addr = softmax_program_sram
-input0_addr  = softmax_x_sram
-input1_addr  = 0
-output_addr  = softmax_y_sram
-```
+The obsolete Phase-0 Softmax descriptor and X/Y windows were removed.
+Attention Softmax uses `SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1` and the C tile
+window through the normal descriptor/SRAM path.
 
 ## 6. ABI Details
 

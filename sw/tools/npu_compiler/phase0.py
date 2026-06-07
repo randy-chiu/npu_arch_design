@@ -45,21 +45,6 @@ def compile_graph(
             )
             tensors[out] = {"shape": [shape["m"], shape["n"]], "dtype": "int32"}
             live_buffer += 1
-        elif op_type == "softmax":
-            src = op["x"]
-            out = op["out"]
-            program.extend(
-                _instantiate_operator(
-                    operators,
-                    "softmax",
-                    {
-                        "x": src,
-                        "out": out,
-                    },
-                )
-            )
-            tensors[out] = {"shape": tensors[src]["shape"], "dtype": "fp32"}
-            live_buffer += 1
         else:
             raise ValueError(f"unsupported op type: {op_type}")
 

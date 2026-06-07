@@ -39,7 +39,6 @@ module npu_v0_tb;
         rst_n = 1'b1;
 
         run_matmul_fixture_test();
-        run_softmax_fixture_test();
         run_mixed_u16s8_q15_matmul_test();
         run_attention_scale_mask_test();
         run_core_host_lane_smoke();
@@ -180,25 +179,6 @@ module npu_v0_tb;
             for (i = 0; i < RTL_MATMUL_ELEMS; i = i + 1) begin
                 if (dut.dram_c[i] !== 32'd8) begin
                     $display("FAIL mixed u16s8 matmul[%0d] actual=%0d expected=8", i, dut.dram_c[i]);
-                    $fatal(1);
-                end
-            end
-        end
-    endtask
-
-    task automatic run_softmax_fixture_test;
-        integer i;
-        logic [7:0] expected_y [0:SOFTMAX_OUTPUT_COUNT-1];
-        begin
-            $readmemh(SOFTMAX_X_HEX, dut.dram_x);
-            $readmemh(SOFTMAX_PROGRAM_HEX, dut.instr_mem);
-            $readmemh(SOFTMAX_EXPECTED_Y_HEX, expected_y);
-
-            launch_and_wait();
-
-            for (i = 0; i < SOFTMAX_OUTPUT_COUNT; i = i + 1) begin
-                if (dut.dram_y[i] !== expected_y[i]) begin
-                    $display("FAIL softmax[%0d] actual=%0d expected=%0d", i, dut.dram_y[i], expected_y[i]);
                     $fatal(1);
                 end
             end

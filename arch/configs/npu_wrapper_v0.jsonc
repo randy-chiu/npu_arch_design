@@ -168,16 +168,6 @@
       "size_bytes": 256,
       "description": "Matrix C output window"
     },
-    "x_base": {
-      "offset": 1024,
-      "size_bytes": 128,
-      "description": "Softmax X input window"
-    },
-    "y_base": {
-      "offset": 1152,
-      "size_bytes": 128,
-      "description": "Softmax Y output window"
-    },
     "program_base": {
       "offset": 2048,
       "size_bytes": 512,

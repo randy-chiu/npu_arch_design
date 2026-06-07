@@ -17,6 +17,23 @@ DEFAULT_MODEL = {
     "matmul_array_control_cycles": 4,
     "data_mover_words_per_cycle": 4,
     "data_mover_setup_cycles_per_segment": 1,
+    "trace_contract": {
+        "command_events": {
+            "NONE": 0, "DESC_DECODE": 1, "PROGRAM_MOVE": 2, "INPUT0_MOVE": 3,
+            "INPUT1_MOVE": 4, "CHUNK_LAUNCH": 5, "COMPUTE_WAIT": 6,
+            "OUTPUT_MOVE": 7, "JOB_RETIRE": 8, "ACC_CLEAR": 9,
+            "ACC_DISABLE": 10, "PREFETCH_BANK_SELECT": 11,
+        },
+        "scheduler_wait_reasons": {
+            "NONE": 0, "MATRIX_RESPONSE": 1, "PRIMITIVE_ACCEPT": 2,
+            "PRIMITIVE_RESPONSE": 3,
+        },
+        "compute_control_events": {
+            "NONE": 0, "PRIMITIVE_ACCEPT": 1, "PRIMITIVE_RESPONSE": 2,
+            "ENGINE_START_ADAPTER": 3,
+        },
+    },
+    "performance_contract": {},
 }
 
 TIMELINE_HIERARCHY = {
@@ -49,6 +66,8 @@ def load_measurement_model(arch_path: Path, soc_path: Path) -> dict:
         "data_mover_setup_cycles_per_segment": int(
             soc["npu_data_mover"]["model_setup_cycles_per_segment"]
         ),
+        "trace_contract": arch.get("trace_contract", {}),
+        "performance_contract": arch.get("performance_contract", {}),
     }
 
 
@@ -270,6 +289,89 @@ def _validate_timeline(job: dict, strict: bool) -> list[str]:
                 )
             previous_end = end
 
+    trace = job.get("cycle_trace", [])
+    performance_contract = job.get("_performance_contract", {})
+    trace_contract = job.get("_trace_contract", {})
+    for event in trace:
+        cycle = int(event["cycle"])
+        wait_reason = int(event.get("sched_wait_reason", 0))
+        if bool(event.get("uop_wait")) != (wait_reason != 0):
+            reject(
+                f"scheduler wait reason mismatch job={_job_id(job)} cycle={cycle}"
+            )
+        if event.get("uop_active") and event.get("uop_wait"):
+            reject(
+                f"scheduler active/wait overlap job={_job_id(job)} cycle={cycle}"
+            )
+        if event.get("cmd_active") and event.get("cmd_wait"):
+            reject(
+                f"command active/wait overlap job={_job_id(job)} cycle={cycle}"
+            )
+        accumulator_events = [
+            name for name in ("acc_clear", "acc_commit", "acc_readout") if event.get(name)
+        ]
+        if len(accumulator_events) > 1:
+            reject(
+                f"accumulator transaction overlap job={_job_id(job)} cycle={cycle} "
+                f"events={accumulator_events}"
+            )
+
+    accumulator_contract = performance_contract.get("accumulator", {})
+    for field, cycles_key in (
+        ("acc_clear", "clear_cycles"),
+        ("acc_commit", "commit_cycles"),
+        ("acc_readout", "readout_cycles"),
+    ):
+        expected_cycles = accumulator_contract.get(cycles_key)
+        if expected_cycles is None:
+            continue
+        for span in _event_spans(
+            trace, lambda event, field=field: field if event.get(field) else None
+        ):
+            if int(span["cycles"]) != int(expected_cycles):
+                reject(
+                    f"{field} violates performance contract job={_job_id(job)} "
+                    f"measured={span['cycles']} expected={expected_cycles}"
+                )
+
+    matrix_contract = performance_contract.get("matrix_operand_feed", {})
+    expected_matrix_cycles = (
+        int(matrix_contract.get("feed_cycles_per_k_slice", 0))
+        * int(job.get("_matmul_k", 0))
+    )
+    if expected_matrix_cycles:
+        for span in _event_spans(
+            trace, lambda event: "matrix_active" if event.get("matrix_active") else None
+        ):
+            if int(span["cycles"]) != expected_matrix_cycles:
+                reject(
+                    f"matrix operand-feed transaction violates performance contract "
+                    f"job={_job_id(job)} measured={span['cycles']} "
+                    f"expected={expected_matrix_cycles}"
+                )
+
+    attention_contract = performance_contract.get("attention_row_storage", {})
+    compute_events = trace_contract.get("compute_control_events", {})
+    for event_name, cycles_key in (
+        ("PRIMITIVE_ACCEPT", "row_read_cycles"),
+        ("PRIMITIVE_RESPONSE", "row_write_cycles"),
+    ):
+        event_id = compute_events.get(event_name)
+        expected_cycles = attention_contract.get(cycles_key)
+        if event_id is None or expected_cycles is None:
+            continue
+        for span in _event_spans(
+            trace,
+            lambda event, event_id=event_id, event_name=event_name: (
+                event_name if int(event.get("compute_ctrl_event", 0)) == int(event_id) else None
+            ),
+        ):
+            if int(span["cycles"]) != int(expected_cycles):
+                reject(
+                    f"{event_name} violates Attention row performance contract "
+                    f"job={_job_id(job)} measured={span['cycles']} expected={expected_cycles}"
+                )
+
     if job.get("name") in ("attention_scale_mask_v1", "attention_softmax_v1"):
         parent_cycles = {
             cycle
@@ -325,24 +427,34 @@ def _event_spans(trace: list[dict], label_for_event, kind: str = "work") -> list
 def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
     trace = job["cycle_trace"]
     job_name = job.get("name")
+    trace_contract = job.get("_trace_contract", {})
+
+    def semantic_name(group, value):
+        return next(
+            (
+                name
+                for name, event_id in trace_contract.get(group, {}).items()
+                if int(event_id) == int(value)
+            ),
+            None,
+        )
 
     def command_label(event):
-        state = int(event["cmd_state"])
         chunk = int(event["stream_chunk"])
         labels = {
-            1: "Read/decode job descriptor",
-            2: "Wait for uop-program movement",
-            3: "Wait for external A movement",
-            4: "Wait for external B movement",
-            5: f"Launch chunk {chunk}; latch selected compute bank",
-            6: "Wait for compute/prefetch completion",
-            7: "Wait for output movement",
-            8: "Retire job / publish done",
-            9: "Enable and clear accumulator",
-            10: "Disable accumulator",
-            11: "Select alternate prefetch/next-compute bank",
+            "DESC_DECODE": "Read/decode job descriptor",
+            "PROGRAM_MOVE": "Wait for uop-program movement",
+            "INPUT0_MOVE": "Wait for external A movement",
+            "INPUT1_MOVE": "Wait for external B movement",
+            "CHUNK_LAUNCH": f"Launch chunk {chunk}; latch selected compute bank",
+            "COMPUTE_WAIT": "Wait for compute/prefetch completion",
+            "OUTPUT_MOVE": "Wait for output movement",
+            "JOB_RETIRE": "Retire job / publish done",
+            "ACC_CLEAR": "Enable and clear accumulator",
+            "ACC_DISABLE": "Disable accumulator",
+            "PREFETCH_BANK_SELECT": "Select alternate prefetch/next-compute bank",
         }
-        return labels.get(state)
+        return labels.get(semantic_name("command_events", event.get("cmd_event", 0)))
 
     def mover_label(event):
         bank = int(event["dm_target_bank"])
@@ -400,7 +512,15 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
                 else "Decode/skip non-final accumulator STORE"
             )
         if event["uop_wait"]:
-            return "Wait for issued engine completion"
+            wait_labels = {
+                "MATRIX_RESPONSE": "Wait for Matrix response",
+                "PRIMITIVE_ACCEPT": "Wait for Compute cluster command acceptance",
+                "PRIMITIVE_RESPONSE": "Wait for issued primitive response",
+            }
+            return wait_labels.get(
+                semantic_name("scheduler_wait_reasons", event.get("sched_wait_reason", 0)),
+                "Wait for typed Scheduler dependency",
+            )
         if event["uop_active"]:
             return "HALT/completion control"
         return None
@@ -454,34 +574,25 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
                 lane=int(event.get("primitive_lane", 0)),
             )
 
-        def control_row(event):
-            return int(event.get("uop_tensor", 0)) if event.get("uop_exec") else int(
-                event.get("primitive_row", 0)
+        def control_label(event):
+            event_name = semantic_name(
+                "compute_control_events", event.get("compute_ctrl_event", 0)
             )
-
-        def control_lane(event):
-            return int(event.get("uop_buffer", 0)) if event.get("uop_exec") else int(
-                event.get("primitive_lane", 0)
-            )
+            row = int(event.get("primitive_row", 0))
+            lane = int(event.get("primitive_lane", 0))
+            if event_name == "PRIMITIVE_ACCEPT":
+                return f"Accept/route/start primitive row {row}, lane {lane}"
+            if event_name == "PRIMITIVE_RESPONSE":
+                return f"Capture/retire primitive response row {row}, lane {lane}"
+            if event_name == "ENGINE_START_ADAPTER":
+                return f"Internal start/done adapter latency row {row}, lane {lane}"
+            return None
 
         module_lanes.extend(
             [
                 {
                     "module": "Compute cluster control",
-                    "spans": _event_spans(
-                        trace,
-                        lambda event: (
-                            "Compute-cluster control row "
-                            f"{control_row(event)}, lane "
-                            f"{control_lane(event)}: prepare/start/wait/result handoff"
-                            if event["core_active"]
-                            and not event.get("vector_active")
-                            and not event.get("reduction_active")
-                            and not event.get("sfu_active")
-                            and not event.get("matrix_active")
-                            else None
-                        ),
-                    ),
+                    "spans": _event_spans(trace, control_label),
                 },
                 {
                     "module": "Vector engine",
@@ -748,8 +859,14 @@ def parse_perf_log(path: Path, manifest_path: Path | None = None, model: dict = 
         ]
         if job_trace and len(job_trace) >= max(1, int(job.get("total_cycles", 0)) - 1):
             job["cycle_trace"] = job_trace
+            job["_trace_contract"] = model.get("trace_contract", {})
+            job["_performance_contract"] = model.get("performance_contract", {})
+            job["_matmul_k"] = int(model.get("matmul_tile", [0, 0, 0])[2])
         job = add_timeline(add_movement_estimates(add_estimates(job, model), model))
         job.pop("cycle_trace", None)
+        job.pop("_trace_contract", None)
+        job.pop("_performance_contract", None)
+        job.pop("_matmul_k", None)
         jobs.append(job)
     if not jobs:
         raise ValueError(f"no {PERF_PREFIX.strip()} records found in {path}")
@@ -775,6 +892,7 @@ def parse_perf_log(path: Path, manifest_path: Path | None = None, model: dict = 
         "schema": "npu_perf_report_v0",
         "source_log": str(path),
         "source": {"performance": performance_source},
+        "performance_contract": model.get("performance_contract", {}),
         "workload_manifest": (
             {
                 "schema": workload_manifest["schema"],
@@ -1013,10 +1131,11 @@ def infer_workloads(jobs: list[dict]) -> list[dict]:
 
     if len(jobs) >= 1:
         workloads.append(_workload_summary("operator_smoke_matmul", jobs[0:1], "operator_smoke"))
-    if len(jobs) >= 2:
-        workloads.append(_workload_summary("operator_smoke_softmax", jobs[1:2], "operator_smoke"))
-
-    cursor = 2
+    cursor = 1
+    if cursor < len(jobs) and jobs[cursor].get("name") == "softmax":
+        # Historical log replay only: the obsolete Phase-0 Softmax job is not
+        # promoted into a current workload.
+        cursor += 1
     classifier_tile_count = 16
     if cursor + classifier_tile_count <= len(jobs):
         candidate = jobs[cursor : cursor + classifier_tile_count]

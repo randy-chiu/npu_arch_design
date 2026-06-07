@@ -132,6 +132,7 @@ module npu_v0_core_system #(
     logic        core_perf_done_active;
     logic        core_perf_uop_sched_active;
     logic        core_perf_uop_sched_wait;
+    logic [3:0]  core_perf_uop_sched_wait_reason;
     logic        core_perf_matrix_active;
     logic        core_perf_local_active;
     logic        job_is_k_stream;
@@ -170,6 +171,7 @@ module npu_v0_core_system #(
     logic        perf_complete_event;
     logic        perf_cmd_active_event;
     logic        perf_cmd_wait_event;
+    logic [3:0]  perf_cmd_event;
     logic        perf_dm_compute_overlap_event;
     logic        perf_core_wait_data_event;
     logic [31:0] perf_sram_read_increment;
@@ -195,6 +197,24 @@ module npu_v0_core_system #(
     assign perf_core_wait_data_event =
         job_is_k_stream && k_stream_has_next && desc_state == DESC_WAIT_CORE &&
         mover_perf_active && (core_done_seen || npu_done);
+
+    always_comb begin
+        perf_cmd_event = TRACE_CMD_NONE;
+        case (desc_state)
+            DESC_READ: perf_cmd_event = TRACE_CMD_DESC_DECODE;
+            DESC_FETCH_PROGRAM: perf_cmd_event = TRACE_CMD_PROGRAM_MOVE;
+            DESC_FETCH_INPUT0: perf_cmd_event = TRACE_CMD_INPUT0_MOVE;
+            DESC_FETCH_INPUT1: perf_cmd_event = TRACE_CMD_INPUT1_MOVE;
+            DESC_START_CORE: perf_cmd_event = TRACE_CMD_CHUNK_LAUNCH;
+            DESC_WAIT_CORE: perf_cmd_event = TRACE_CMD_COMPUTE_WAIT;
+            DESC_WRITE_OUTPUT: perf_cmd_event = TRACE_CMD_OUTPUT_MOVE;
+            DESC_DONE: perf_cmd_event = TRACE_CMD_JOB_RETIRE;
+            DESC_CONFIG_ACC: perf_cmd_event = TRACE_CMD_ACC_CLEAR;
+            DESC_DISABLE_ACC: perf_cmd_event = TRACE_CMD_ACC_DISABLE;
+            DESC_CONFIG_NEXT_BANK: perf_cmd_event = TRACE_CMD_PREFETCH_BANK_SELECT;
+            default: perf_cmd_event = TRACE_CMD_NONE;
+        endcase
+    end
 
     assign cmd_ready = (desc_state == DESC_IDLE) && !busy;
     assign core_busy = busy;
@@ -274,6 +294,7 @@ module npu_v0_core_system #(
         .perf_done_active(core_perf_done_active),
         .perf_uop_sched_active(core_perf_uop_sched_active),
         .perf_uop_sched_wait(core_perf_uop_sched_wait),
+        .perf_uop_sched_wait_reason(core_perf_uop_sched_wait_reason),
         .perf_matrix_active(core_perf_matrix_active),
         .perf_local_active(core_perf_local_active),
         .host_we(npu_host_we),
@@ -321,10 +342,6 @@ module npu_v0_core_system #(
             legacy_host_addr = RTL_HOST_B_BASE + ((legacy_addr - NPU_OPSCHED_B_BASE) >> 2);
         end else if (legacy_addr >= NPU_OPSCHED_C_BASE && legacy_addr < NPU_OPSCHED_C_BASE + NPU_OPSCHED_C_BASE_SIZE_BYTES) begin
             legacy_host_addr = RTL_HOST_C_BASE + ((legacy_addr - NPU_OPSCHED_C_BASE) >> 2);
-        end else if (legacy_addr >= NPU_OPSCHED_X_BASE && legacy_addr < NPU_OPSCHED_X_BASE + NPU_OPSCHED_X_BASE_SIZE_BYTES) begin
-            legacy_host_addr = RTL_HOST_X_BASE + ((legacy_addr - NPU_OPSCHED_X_BASE) >> 2);
-        end else if (legacy_addr >= NPU_OPSCHED_Y_BASE && legacy_addr < NPU_OPSCHED_Y_BASE + NPU_OPSCHED_Y_BASE_SIZE_BYTES) begin
-            legacy_host_addr = RTL_HOST_Y_BASE + ((legacy_addr - NPU_OPSCHED_Y_BASE) >> 2);
         end else if (legacy_addr >= NPU_OPSCHED_PROGRAM_BASE && legacy_addr < NPU_OPSCHED_PROGRAM_BASE + NPU_OPSCHED_PROGRAM_BASE_SIZE_BYTES) begin
             legacy_host_addr = RTL_HOST_PROGRAM_BASE + ((legacy_addr - NPU_OPSCHED_PROGRAM_BASE) >> 2);
         end
@@ -336,7 +353,6 @@ module npu_v0_core_system #(
             legacy_host_we =
                 (legacy_addr >= NPU_OPSCHED_A_BASE && legacy_addr < NPU_OPSCHED_A_BASE + NPU_OPSCHED_A_BASE_SIZE_BYTES) ||
                 (legacy_addr >= NPU_OPSCHED_B_BASE && legacy_addr < NPU_OPSCHED_B_BASE + NPU_OPSCHED_B_BASE_SIZE_BYTES) ||
-                (legacy_addr >= NPU_OPSCHED_X_BASE && legacy_addr < NPU_OPSCHED_X_BASE + NPU_OPSCHED_X_BASE_SIZE_BYTES) ||
                 (legacy_addr >= NPU_OPSCHED_PROGRAM_BASE && legacy_addr < NPU_OPSCHED_PROGRAM_BASE + NPU_OPSCHED_PROGRAM_BASE_SIZE_BYTES);
         end
     end
@@ -381,9 +397,7 @@ module npu_v0_core_system #(
                     mover_sram_base = job_input0_addr;
                 end
                 mover_words = job_input0_words[7:0];
-                if (job_op_type == SOC_NPU_JOB_OP_SOFTMAX) begin
-                    mover_host_base = RTL_HOST_X_BASE;
-                end else if (job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1 ||
+                if (job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1 ||
                              job_op_type == SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1) begin
                     mover_host_base = RTL_HOST_C_BASE;
                 end else begin
@@ -419,11 +433,7 @@ module npu_v0_core_system #(
                 mover_store = 1'b1;
                 mover_sram_base = job_output_addr;
                 mover_words = job_output_words[7:0];
-                if (job_op_type == SOC_NPU_JOB_OP_SOFTMAX) begin
-                    mover_host_base = RTL_HOST_Y_BASE;
-                end else begin
-                    mover_host_base = RTL_HOST_C_BASE;
-                end
+                mover_host_base = RTL_HOST_C_BASE;
                 sram_req = mover_sram_req;
                 sram_we = mover_sram_we;
                 sram_addr = mover_sram_addr;

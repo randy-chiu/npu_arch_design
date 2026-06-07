@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from npu_compiler.attention import build_attention_plan_from_manifest
-from npu_phase0.rtl_fixture import softmax_q0_8
 from transformer.golden import (
     TILE_K,
     TILE_M,
@@ -70,8 +69,8 @@ def generate_transformer_micro_fixtures(spec_path: Path = TRANSFORMER_SPEC_PATH)
     for index, workload in enumerate(spec["workloads"]):
         if workload["op"] in ("matmul", "matmul_u16s8_q15") and workload["status"] == "planned_current_matmul_extension":
             executable.append(_generate_matmul_workload(workload, precision, seed=index + 1, executable=executable))
-        elif workload["op"] in ("softmax", "attention_softmax_v1") and workload["status"] == "planned_current_softmax_extension":
-            executable.append(_generate_softmax_workload(workload, precision, seed=index + 1, executable=executable))
+        elif workload["op"] == "attention_softmax_v1" and workload["status"] == "planned_current_softmax_extension":
+            executable.append(_generate_softmax_workload(workload, precision, executable=executable))
         elif workload["op"] == "attention_scale_mask_v1" and workload["status"] == "planned_current_scale_mask_extension":
             executable.append(_generate_scale_mask_workload(workload, precision, executable))
         else:
@@ -277,7 +276,6 @@ def _generate_matmul_workload(
 def _generate_softmax_workload(
     workload: dict[str, Any],
     precision: dict[str, str],
-    seed: int,
     executable: list[dict[str, Any]],
 ) -> dict[str, Any]:
     shape = workload["shape"]
@@ -285,40 +283,34 @@ def _generate_softmax_workload(
     if elements != 8:
         raise ValueError(f"{workload['name']}: current softmax RTL path requires exactly 8 elements")
 
-    if workload.get("logical_op") == "attention_row_softmax":
-        scale_mask = next(
-            (
-                item
-                for item in executable
-                if item.get("metadata", {}).get("attention_group") == workload.get("attention_group")
-                and item.get("metadata", {}).get("attention_stage") == "scale_mask"
-            ),
-            None,
-        )
-        if scale_mask is None:
-            raise ValueError(f"{workload['name']}: executable scaled scores must be generated first")
-        row_count = int(shape.get("rows", 1))
-        flat_scores = scale_mask["expected_scores"]
-        rows = [
-            flat_scores[row * elements : (row + 1) * elements]
-            for row in range(row_count)
-        ]
-        expected_y = [
-            value
-            for row in rows
-            for value in softmax_row_primitive_lut_q15(row)["output_q15"]
-        ]
-        x = flat_scores
-        output_dtype = "q0.15_uint16"
-        implementation = "npu_v1_vector_reduction_sfu_sequence"
-        op = "attention_softmax_v1"
-    else:
-        row = _deterministic_softmax_row_i8(elements, seed)
-        expected_y = softmax_q0_8(row)
-        x = row
-        output_dtype = "q0.8_uint8"
-        implementation = "npu_v0_micro_op_softmax_lut"
-        op = "softmax"
+    if workload.get("logical_op") != "attention_row_softmax":
+        raise ValueError(f"{workload['name']}: obsolete Phase-0 softmax is not executable")
+    scale_mask = next(
+        (
+            item
+            for item in executable
+            if item.get("metadata", {}).get("attention_group") == workload.get("attention_group")
+            and item.get("metadata", {}).get("attention_stage") == "scale_mask"
+        ),
+        None,
+    )
+    if scale_mask is None:
+        raise ValueError(f"{workload['name']}: executable scaled scores must be generated first")
+    row_count = int(shape.get("rows", 1))
+    flat_scores = scale_mask["expected_scores"]
+    rows = [
+        flat_scores[row * elements : (row + 1) * elements]
+        for row in range(row_count)
+    ]
+    expected_y = [
+        value
+        for row in rows
+        for value in softmax_row_primitive_lut_q15(row)["output_q15"]
+    ]
+    x = flat_scores
+    output_dtype = "q0.15_uint16"
+    implementation = "npu_v1_vector_reduction_sfu_sequence"
+    op = "attention_softmax_v1"
     metadata = {
         "scenario": workload["scenario"],
         "logical_op": workload.get("logical_op", workload["op"]),
@@ -464,14 +456,6 @@ def _workload_family(workload: dict[str, Any]) -> str:
     if workload["scenario"] == "transformer_decode":
         return "transformer_decode"
     return "transformer_micro"
-
-
-def _deterministic_softmax_row_i8(elements: int, seed: int) -> list[int]:
-    base = [4, 3, 2, 1, 0, -1, -2, -3]
-    if elements != len(base):
-        raise ValueError("current deterministic softmax row is defined for 8 elements")
-    rotate = seed % elements
-    return base[rotate:] + base[:rotate]
 
 
 def _deterministic_probability_proxy_i8(rows: int, cols: int) -> list[list[int]]:

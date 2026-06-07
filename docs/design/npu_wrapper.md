@@ -79,7 +79,7 @@ Key registers:
 | `PERF_JOB_ID` / `PERF_OP_TYPE` | `0x070` - `0x074` | CPU read | completed descriptor identity |
 | `PERF_DATA_MOVER_READ_WORDS` / `PERF_DATA_MOVER_WRITE_WORDS` | `0x078` - `0x07c` | CPU read | completed directional mover traffic |
 
-Legacy A/B/C/X/Y/program windows are retained for older direct-window smoke
+Legacy A/B/C/program windows are retained for older direct-window MatMul smoke
 tests. New firmware should use the descriptor path.
 
 The first perf CSR bank uses internal running accumulators and a completed-job
@@ -102,7 +102,7 @@ Current layout:
 
 | Word | Field | Meaning |
 | ---: | --- | --- |
-| 0 | `op_type` | `SOC_NPU_JOB_OP_MATMUL` or `SOC_NPU_JOB_OP_SOFTMAX` |
+| 0 | `op_type` | one of the op types defined by `soc_v0.jsonc`; obsolete Phase-0 `SOFTMAX` was removed |
 | 1 | `program_addr` | SRAM base address of encoded uops |
 | 2 | `program_words` | uop word count |
 | 3 | `input0_addr` | SRAM base of A or X |
@@ -129,7 +129,7 @@ wrapper active != command processor active
 wrapper active != data mover active
 ```
 
-Legacy A/B/C/X/Y/program windows remain a compatibility path. They use a
+Legacy A/B/C/program windows remain a compatibility path. They use a
 separate internal debug-window request interface and are not part of the
 descriptor command protocol or production scheduler timing.
 
@@ -142,8 +142,6 @@ The NPU core command processor converts descriptor movement into compute-cluster
 | A | `0x000` - `0x03f` | matmul input A |
 | B | `0x100` - `0x13f` | matmul input B |
 | C | `0x200` - `0x23f` | matmul output C |
-| X | `0x300` - `0x307` | softmax input X |
-| Y | `0x380` - `0x387` | softmax output Y |
 | program | `0x400` - `0x40f` | encoded uop `instr_mem` |
 
 The internal map and accumulator/bank control bits are owned by

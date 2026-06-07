@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import math
 from typing import Any
 
 from .golden import matmul
@@ -18,7 +17,6 @@ class MicroOpFunctionalSimulator:
     def reset(self) -> None:
         self.dram: dict[str, Any] = {}
         self.buffers: dict[str, Any] = {}
-        self.scalars: dict[str, Any] = {}
         self.counters = {
             "instructions": 0,
             "dma_transfers": 0,
@@ -48,30 +46,6 @@ class MicroOpFunctionalSimulator:
                 self.buffers[inst["out"]] = matmul(a, b)
                 shape = inst["shape"]
                 self.counters["mac_ops"] += shape["m"] * shape["n"] * shape["k"]
-            elif op == "VREDMAX":
-                self.scalars[inst["dst"]] = [max(row) for row in self.buffers[inst["src"]]]
-                self.counters["vector_ops"] += self._num_elements(self.buffers[inst["src"]])
-            elif op == "VSUB":
-                src = self.buffers[inst["src"]]
-                scalar = self.scalars[inst["scalar"]]
-                self.buffers[inst["dst"]] = [
-                    [float(v) - float(scalar[i]) for v in row] for i, row in enumerate(src)
-                ]
-                self.counters["vector_ops"] += self._num_elements(src)
-            elif op == "VEXP":
-                src = self.buffers[inst["src"]]
-                self.buffers[inst["dst"]] = [[math.exp(float(v)) for v in row] for row in src]
-                self.counters["vector_ops"] += self._num_elements(src)
-            elif op == "VREDSUM":
-                self.scalars[inst["dst"]] = [sum(row) for row in self.buffers[inst["src"]]]
-                self.counters["vector_ops"] += self._num_elements(self.buffers[inst["src"]])
-            elif op == "VDIV":
-                src = self.buffers[inst["src"]]
-                scalar = self.scalars[inst["scalar"]]
-                self.buffers[inst["dst"]] = [
-                    [float(v) / float(scalar[i]) for v in row] for i, row in enumerate(src)
-                ]
-                self.counters["vector_ops"] += self._num_elements(src)
             elif op == "HALT":
                 break
             else:

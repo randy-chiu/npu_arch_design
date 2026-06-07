@@ -249,16 +249,15 @@ Executable bridge acceptance criteria:
 
 #### Problem being solved
 
-The original attention-softmax bring-up descriptor reused the legacy softmax
-X/Y windows. Those windows contain only eight words, and X stores only the low
-signed byte. Consequently it could process only one row and would truncate the
-int32 output produced by scale/mask. Firmware therefore had to stage an
-independent fixture row, and PV could not consume produced probabilities.
+The original attention-softmax bring-up descriptor reused legacy eight-word
+X/Y windows. They could process only one row and truncated the int32 output
+produced by scale/mask. Those windows were removed with the obsolete Phase-0
+Softmax path.
 
 #### Tile-softmax descriptor design
 
-`ATTENTION_SOFTMAX_V1` is distinct from legacy `SOFTMAX`, so its descriptor
-routes a complete `8x8` tile through the existing 64-word core C window:
+`ATTENTION_SOFTMAX_V1` routes a complete `8x8` tile through the existing
+64-word core C window:
 
 ```text
 score_softmax_in SRAM -> core C window
@@ -269,9 +268,9 @@ core C window -> prob_q15 SRAM
 ```
 
 The C window is reused in place because scaled scores are dead after each row
-is normalized. Legacy softmax remains on the eight-word X/Y windows. This
-avoids a new storage module, preserves int32 score width, and allows one
-descriptor to produce the complete probability tile consumed by PV.
+is normalized. This avoids a new storage module, preserves int32 score width,
+and allows one descriptor to produce the complete probability tile consumed
+by PV.
 
 Descriptor:
 
@@ -461,7 +460,8 @@ SoC tests:
 Regression tests:
 
 - MNIST/CNN descriptor jobs are unchanged;
-- legacy matmul/softmax operator smoke remains valid;
+- normal `op=0` MatMul regressions remain valid; obsolete Phase-0 `op=0`
+  Softmax smoke has been removed;
 - descriptor ABI changes fail schema tests unless docs/config/firmware/RTL are
   updated together.
 

@@ -182,12 +182,11 @@ Current primitive RTL is standalone bring-up RTL:
 - There is no `valid/ready` back-pressure.
 - There are no real stall counters.
 
-`hw/npu_core/rtl/primitive_handshake_shims.sv` implements the first reviewed
-valid/ready boundary for vector, reduction, and SFU. Each shim has one command
-in flight and one held response slot. The current SoC softmax path still uses
-the underlying start/done engines directly; scheduler integration is deferred.
-The shims expose local handshake-derived cycle counters and accepted-op events,
-but these are not connected to wrapper CSRs or PPA reports.
+`hw/npu_core/rtl/primitive_handshake_shims.sv` remains the standalone directed
+engine-contract test vehicle. The production Scheduler-to-Compute-cluster path
+now uses the same one-command/one-response valid-ready ownership contract.
+Compute cluster may adapt that architectural channel to current start/done
+engines internally, but start/done is no longer the Scheduler contract.
 
 ## Target interface
 
@@ -325,8 +324,8 @@ cmd_ready must be high for acceptance
 done <- rsp_valid pulse when rsp_ready is tied high
 ```
 
-The old start/done interface should not remain the production scheduler
-contract once valid/ready is implemented.
+The old start/done interface remains only inside current engine adapters and
+standalone engine RTL. It is not the production Scheduler contract.
 
 ## Verification plan
 
