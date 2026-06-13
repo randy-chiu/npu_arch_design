@@ -125,6 +125,7 @@ module primitive_engines_tb;
         .clamp_low(small_vector_clamp_low),
         .clamp_high(small_vector_clamp_high),
         .shift(small_vector_shift),
+        .invalid_value('0),
         .done(small_vector_done),
         .active(small_vector_active),
         .y_flat(small_vector_y_flat)

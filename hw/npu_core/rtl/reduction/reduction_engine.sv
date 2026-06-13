@@ -12,6 +12,7 @@ module reduction_engine #(
     input  logic start,
     input  logic [1:0] op,
     input  logic [LEN_WIDTH-1:0] length,
+    input  logic [MAX_LEN-1:0] valid_mask,
     input  logic signed [(MAX_LEN*DATA_WIDTH)-1:0] x_flat,
     output logic done,
     output logic active,
@@ -35,11 +36,9 @@ module reduction_engine #(
             active <= start;
             if (start) begin
                 accum = '0;
-                if (op == REDUCE_MAX && length != '0) begin
-                    accum = {{(RESULT_WIDTH-DATA_WIDTH){x_flat[DATA_WIDTH-1]}}, x_flat[0 +: DATA_WIDTH]};
-                end
+                if (op == REDUCE_MAX) accum = {1'b1, {(RESULT_WIDTH-1){1'b0}}};
                 for (idx = 0; idx < MAX_LEN; idx = idx + 1) begin
-                    if (idx < length) begin
+                    if (idx < length && valid_mask[idx]) begin
                         x_value = x_flat[(idx * DATA_WIDTH) +: DATA_WIDTH];
                         case (op)
                             REDUCE_MAX: begin

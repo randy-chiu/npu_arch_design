@@ -33,10 +33,48 @@ The reduction engine must define:
 - result dtype;
 - behavior when no lane is valid.
 
-Current RTL can compute `REDUCE_MAX` over `[0, length)` but has no explicit mask
-input. For causal attention, invalid positions must not become zero-valued
-participants in max. They must be excluded or replaced with a reviewed negative
-sentinel before reduction.
+Current RTL computes reductions over lanes satisfying both `[0, length)` and
+the explicit valid-lane mask. Causal invalid positions are therefore excluded
+instead of becoming zero-valued participants.
+
+### Valid-lane reduction contract
+
+Implementation status: valid-lane gating is implemented for the single-tile
+Attention path. Hardware error/status reporting for all-invalid rows remains
+pending. The end-to-end decision and alternatives are owned by
+`attention_sequence_v1.md`.
+
+Each row reduction command receives:
+
+```text
+length
+valid_lane_mask
+```
+
+An element participates only when:
+
+```text
+lane < length and valid_lane_mask[lane] == 1
+```
+
+| Operation | Invalid-lane behavior |
+| --- | --- |
+| `REDUCE_MAX` | exclude lane; do not substitute zero |
+| `REDUCE_SUM` | exclude lane; equivalent arithmetic contribution is zero |
+| `REDUCE_SUMSQ` | exclude lane when mask is enabled |
+
+If no lane participates, the engine returns an architectural error rather than
+a numerical result. Compiler/runtime must reject such rows before issue, but
+hardware retains the check so malformed commands cannot silently produce a
+probability distribution.
+
+The mask is an input qualifier, not a new reduction operation. PPA counts only
+participating elements as `reduction_element_ops` and separately reports
+mask-control cost.
+
+Expected cost is lane-valid gating, all-invalid detection, and mask transport.
+The benefit is correct max/sum behavior and reuse of the same Reduction
+primitive for causal, padding, and tile-tail rows.
 
 ### Row sum
 
@@ -132,7 +170,7 @@ integration is deferred.
 
 Counter exposure order:
 
-1. define row-length, mask, empty-row, and segmented-row behavior;
+1. review and accept row-length, mask, empty-row, and segmented-row behavior;
 2. implement handshake-visible local event sources;
 3. verify event and element counts in primitive directed tests;
 4. aggregate through scheduler/wrapper and expose CSR/report fields.
@@ -157,5 +195,7 @@ still uses start/done.
 - No balanced tree or streaming implementation.
 - No production overflow policy.
 - No explicit attention mask semantics.
+- Valid-lane semantics are documented and accepted as the architecture
+  direction but not implemented.
 - No segmented-row scheduler contract.
 - No measured `reduction_element_ops` counter.

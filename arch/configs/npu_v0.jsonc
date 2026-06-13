@@ -128,6 +128,7 @@
     // constants. They must not be retyped as literals in Compute cluster.
     "score_scale_multiplier": 11585,
     "score_scale_shift": 15,
+    "softmax_neg_inf": -2147483648,
     "softmax_clamp_low": -256,
     "softmax_clamp_high": 0,
     "softmax_normalize_shift": 9,
@@ -264,6 +265,7 @@
       "a": {"base_word": 0, "words": 64},
       "b": {"base_word": 256, "words": 64},
       "c": {"base_word": 512, "words": 64},
+      "mask": {"base_word": 768, "words": 2},
       "program": {"base_word": 1024, "words": 128},
       "control": {"base_word": 1280, "words": 1}
     },

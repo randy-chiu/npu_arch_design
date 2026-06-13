@@ -483,9 +483,11 @@ def _append_transformer_micro_data(lines: list[str]) -> dict:
             _append_flat_array(lines, f"{workload['name']}_expected_y", workload["expected_y"], bits=32)
         elif workload["op"] == "attention_scale_mask_v1":
             lines.append(f"#define {macro}_SCORE_WORDS {workload['score_words']}u")
+            lines.append(f"#define {macro}_MASK_WORDS {len(workload['row_mask_words'])}u")
             lines.append("")
             _append_flat_array(lines, f"{workload['name']}_input_scores", workload["input_scores"], bits=32)
             _append_flat_array(lines, f"{workload['name']}_expected_scores", workload["expected_scores"], bits=32)
+            _append_flat_array(lines, f"{workload['name']}_row_mask_words", workload["row_mask_words"], bits=32)
         else:
             raise ValueError(f"unsupported executable transformer op {workload['op']!r}")
     return transformer_micro
@@ -521,6 +523,11 @@ def _append_transformer_runtime_plan_data(lines: list[str], transformer_micro: d
     if len(plans) != 1:
         raise ValueError("current firmware smoke supports one attention runtime plan")
     plan = plans[0]
+    if plan.get("execution_state") != "executable":
+        raise ValueError(
+            f"firmware cannot emit non-executable attention plan {plan['attention_group']}: "
+            f"{plan.get('execution_state')}"
+        )
     jobs = plan["runtime_jobs"]
     lines.append("#define TRANSFORMER_RUNTIME_STAGE_QK 1u")
     lines.append("#define TRANSFORMER_RUNTIME_STAGE_SCALE_MASK 2u")

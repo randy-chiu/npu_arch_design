@@ -82,6 +82,7 @@ module vector_engine_handshake #(
         .clamp_low(clamp_low),
         .clamp_high(clamp_high),
         .shift(shift),
+        .invalid_value('0),
         .done(engine_done),
         .active(engine_active),
         .y_flat(engine_y_flat)
@@ -183,6 +184,7 @@ module reduction_engine_handshake #(
         .start(engine_start),
         .op(op),
         .length(length),
+        .valid_mask({MAX_LEN{1'b1}}),
         .x_flat(x_flat),
         .done(engine_done),
         .active(engine_active),

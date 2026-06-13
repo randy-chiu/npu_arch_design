@@ -18,6 +18,7 @@ module npu_v0_tb;
         .start(start),
         .op(op),
         .output_store_enable(1'b1),
+        .row_mask_enable(1'b1),
         .done(done),
         .host_we(host_we),
         .host_addr(host_addr),
@@ -187,9 +188,14 @@ module npu_v0_tb;
 
     task automatic run_attention_scale_mask_test;
         integer i;
+        integer row;
+        integer lane;
         logic signed [31:0] input_value;
         logic signed [31:0] expected_value;
+        logic [7:0] expected_mask;
         begin
+            dut.row_mask_words[0] = 32'h0f07_0301;
+            dut.row_mask_words[1] = 32'hff7f_3f1f;
             for (i = 0; i < RTL_MATMUL_ELEMS; i = i + 1) begin
                 input_value = (i - 32) * 97;
                 dut.dram_c[i] = input_value;
@@ -203,13 +209,21 @@ module npu_v0_tb;
             op <= 2'd0;
 
             for (i = 0; i < RTL_MATMUL_ELEMS; i = i + 1) begin
+                row = i / RTL_SOFTMAX_LEN;
+                lane = i % RTL_SOFTMAX_LEN;
+                expected_mask = (row < 4) ?
+                    dut.row_mask_words[0][(row * 8) +: 8] :
+                    dut.row_mask_words[1][((row - 4) * 8) +: 8];
                 input_value = (i - 32) * 97;
-                expected_value = scale_score_d8(input_value);
+                expected_value = expected_mask[lane] ?
+                    scale_score_d8(input_value) : RTL_SOFTMAX_NEG_INF;
                 if (dut.dram_c[i] !== expected_value) begin
                     $display("FAIL scale_mask[%0d] actual=%0d expected=%0d", i, dut.dram_c[i], expected_value);
                     $fatal(1);
                 end
             end
+            dut.row_mask_words[0] = 32'hffff_ffff;
+            dut.row_mask_words[1] = 32'hffff_ffff;
         end
     endtask
 

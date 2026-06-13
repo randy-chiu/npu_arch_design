@@ -517,9 +517,51 @@ Purpose:
 Required upgrades:
 
 - define `SOFTMAX_NEG_INF`;
-- implement compiler-materialized mask, vector mask-select, or reduction valid
-  mask;
+- retain the implemented compact row-mask contract through Scale/Mask,
+  Reduction, and Softmax normalization;
 - add causal, padding, and tile-tail fixtures.
+
+#### Numerical mask contract
+
+Design status: implemented for executable causal `S=8,D=8`.
+
+Masking is a validity operation, not ordinary addition of a finite bias. The
+architectural result must satisfy:
+
+```text
+invalid lane:
+  does not participate in row_max
+  does not participate in row_sum
+  probability_q15 = 0
+```
+
+`SOFTMAX_NEG_INF` is the stored representation used by the selected
+Scale/Mask path for invalid score lanes. Its canonical value is signed int32
+minimum, `-2147483648`, emitted from architecture configuration. It is not
+subtracted as ordinary valid data: the same row mask excludes it from
+Reduction, gates later vector operations, and forces invalid probabilities to
+zero. This avoids depending on sentinel arithmetic or risking signed overflow.
+
+Selection criteria:
+
+1. subtraction from every legal valid-row maximum cannot overflow int32;
+2. the reviewed EXP contract maps the resulting clamped delta to zero, or
+   Softmax explicitly gates the invalid probability to zero;
+3. RTL, golden, fixtures, and compiler-generated constants use one canonical
+   value;
+4. the value is not used as a substitute for Reduction validity gating.
+
+The selected implementation therefore uses both:
+
+- a sentinel in the stored masked-score tile, for traceability and safe
+  downstream vector behavior;
+- `valid_lane_mask` in Reduction/normalization, so invalid lanes are excluded
+  exactly rather than relying only on a finite sentinel approximation.
+
+A row with no valid lane is invalid input in v1. Compiler/runtime reject it and
+hardware reports an error if it reaches execution. Defining an arbitrary
+uniform or zero distribution for such a row is rejected because it can hide a
+shape/mask bug.
 
 Trigger:
 

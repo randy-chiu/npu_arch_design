@@ -136,6 +136,8 @@ module npu_v0_core_system #(
     logic        core_perf_matrix_active;
     logic        core_perf_local_active;
     logic        job_is_k_stream;
+    logic        job_is_attention_mask_consumer;
+    logic        job_has_row_mask;
     logic        k_stream_has_next;
     logic        k_stream_next_bank;
 
@@ -178,6 +180,10 @@ module npu_v0_core_system #(
     logic [31:0] perf_sram_write_increment;
 
     assign job_is_k_stream = (job_op_type == SOC_NPU_JOB_OP_MATMUL_K_STREAM);
+    assign job_is_attention_mask_consumer =
+        job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1 ||
+        job_op_type == SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1;
+    assign job_has_row_mask = job_is_attention_mask_consumer && job_input1_words == 32'd2;
     assign k_stream_has_next =
         job_is_k_stream && (stream_chunk_idx + 16'h0001 < job_k_chunks[15:0]);
     assign k_stream_next_bank = ~stream_chunk_idx[0];
@@ -287,6 +293,7 @@ module npu_v0_core_system #(
             ((job_op_type == SOC_NPU_JOB_OP_MATMUL_U16S8_Q15) ? 2'd2 :
             ((job_op_type == SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1) ? 2'd3 : 2'd0))),
         .output_store_enable(!job_is_k_stream || !k_stream_has_next),
+        .row_mask_enable(job_has_row_mask),
         .done(npu_done),
         .perf_active(core_perf_active),
         .perf_fetch_active(core_perf_fetch_active),
@@ -418,7 +425,7 @@ module npu_v0_core_system #(
                 end else begin
                     mover_sram_base = job_input1_addr;
                 end
-                mover_host_base = RTL_HOST_B_BASE;
+                mover_host_base = job_has_row_mask ? RTL_HOST_MASK_BASE : RTL_HOST_B_BASE;
                 mover_words = job_input1_words[7:0];
                 sram_req = mover_sram_req;
                 sram_we = mover_sram_we;
@@ -851,7 +858,7 @@ module npu_v0_core_system #(
                         transfer_idx <= 8'h0;
                         if (job_op_type == SOC_NPU_JOB_OP_MATMUL ||
                             job_op_type == SOC_NPU_JOB_OP_MATMUL_U16S8_Q15 ||
-                            job_is_k_stream) begin
+                            job_is_k_stream || job_has_row_mask) begin
                             desc_state <= DESC_FETCH_INPUT1;
                         end else begin
                             desc_state <= DESC_START_CORE;

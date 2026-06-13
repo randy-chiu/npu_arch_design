@@ -428,6 +428,10 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
     trace = job["cycle_trace"]
     job_name = job.get("name")
     trace_contract = job.get("_trace_contract", {})
+    has_attention_row_mask = job_name in (
+        "attention_scale_mask_v1",
+        "attention_softmax_v1",
+    )
 
     def semantic_name(group, value):
         return next(
@@ -445,7 +449,11 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
             "DESC_DECODE": "Read/decode job descriptor",
             "PROGRAM_MOVE": "Wait for uop-program movement",
             "INPUT0_MOVE": "Wait for external A movement",
-            "INPUT1_MOVE": "Wait for external B movement",
+            "INPUT1_MOVE": (
+                "Wait for row-mask table movement"
+                if has_attention_row_mask
+                else "Wait for external B movement"
+            ),
             "CHUNK_LAUNCH": f"Launch chunk {chunk}; latch selected compute bank",
             "COMPUTE_WAIT": "Wait for compute/prefetch completion",
             "OUTPUT_MOVE": "Wait for output movement",
@@ -471,7 +479,11 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
                 else f"Chunk 0 A: external SRAM -> preload bank {bank}"
             )
         if event["dm_input_b"]:
-            return f"Chunk 0 B: external SRAM -> preload bank {bank}"
+            return (
+                "Row-mask table: external SRAM -> core-local mask registers"
+                if has_attention_row_mask
+                else f"Chunk 0 B: external SRAM -> preload bank {bank}"
+            )
         if event["dm_prefetch_a"]:
             return f"Chunk 1 A prefetch: external SRAM -> preload bank {bank}"
         if event["dm_prefetch_b"]:
@@ -487,7 +499,7 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
     def scheduler_label(event):
         if event["uop_load"]:
             tensor = "A" if int(event["uop_tensor"]) == 0 else "B"
-            return f"Fetch/decode/issue LOAD {tensor}: bind selected operand bank"
+            return f"Fetch/decode/issue BIND {tensor} operand bank (encoded UOP_LOAD)"
         if event["matrix_issue"]:
             return "Fetch/decode/issue MATMUL"
         if event.get("uop_exec"):
@@ -1831,7 +1843,7 @@ def write_html(report: dict, path: Path) -> None:
       ["desc_read", "Descriptor read"],
       ["fetch_program", "Program fetch"],
       ["fetch_input0", "Input0 fetch"],
-      ["fetch_input1", "Input1 fetch"],
+      ["fetch_input1", "Input1/metadata fetch"],
       ["start_core", "Core launch"],
       ["wait_core", "Core wait"],
       ["write_output", "Output writeback"],
@@ -2000,7 +2012,7 @@ def write_html(report: dict, path: Path) -> None:
         "Descriptor read": "wrapper reads job descriptor words from SRAM",
         "Program fetch": "wrapper reads program words from SRAM and writes core instr_mem through host window",
         "Input0 fetch": "wrapper reads input0 tensor from SRAM and writes core A/X window",
-        "Input1 fetch": "wrapper reads input1 tensor from SRAM and writes core B window",
+        "Input1/metadata fetch": "command processor requests input1 or metadata movement to the operation-selected core-local destination",
         "Core launch": "command processor starts the compute cluster",
         "Core wait": "command processor waits while the compute cluster executes",
         "Output writeback": "wrapper reads core C/Y output window and writes result words to SRAM",

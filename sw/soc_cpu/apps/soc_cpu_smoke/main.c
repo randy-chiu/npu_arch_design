@@ -53,6 +53,7 @@ static uint32_t transformer_attention_qk_s8_d8_b_sram[TRANSFORMER_ATTENTION_QK_S
 static uint32_t transformer_attention_qk_s8_d8_c_sram[TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS];
 
 static uint32_t transformer_attention_scale_mask_s8_d8_scores_sram[TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8_SCORE_WORDS];
+static uint32_t transformer_attention_scale_mask_s8_d8_mask_sram[TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8_MASK_WORDS];
 
 static uint32_t transformer_attention_softmax_s8_y_sram[TRANSFORMER_ATTENTION_SOFTMAX_S8_Y_WORDS];
 
@@ -469,12 +470,15 @@ static int run_transformer_attention_runtime_job(const transformer_runtime_job_t
         job_desc.output_words = TRANSFORMER_ATTENTION_QK_S8_D8_TILE_WORDS;
         job_desc.k_chunks = TRANSFORMER_ATTENTION_QK_S8_D8_CHUNKS;
     } else if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_SCALE_MASK) {
+        copy_words(transformer_attention_scale_mask_s8_d8_mask_sram,
+                   transformer_attention_scale_mask_s8_d8_row_mask_words,
+                   TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8_MASK_WORDS);
         job_desc.program_addr = ptr32(attention_scale_mask_program_sram);
         job_desc.program_words = ATTENTION_SCALE_MASK_PROGRAM_LEN;
         job_desc.input0_addr = ptr32(transformer_attention_qk_s8_d8_c_sram);
         job_desc.input0_words = TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8_SCORE_WORDS;
-        job_desc.input1_addr = 0u;
-        job_desc.input1_words = 0u;
+        job_desc.input1_addr = ptr32(transformer_attention_scale_mask_s8_d8_mask_sram);
+        job_desc.input1_words = TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8_MASK_WORDS;
         job_desc.output_addr = ptr32(transformer_attention_scale_mask_s8_d8_scores_sram);
         job_desc.output_words = TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8_SCORE_WORDS;
         job_desc.k_chunks = 0u;
@@ -483,8 +487,8 @@ static int run_transformer_attention_runtime_job(const transformer_runtime_job_t
         job_desc.program_words = ATTENTION_SOFTMAX_PROGRAM_LEN;
         job_desc.input0_addr = ptr32(transformer_attention_scale_mask_s8_d8_scores_sram);
         job_desc.input0_words = TRANSFORMER_ATTENTION_SOFTMAX_S8_X_WORDS;
-        job_desc.input1_addr = 0u;
-        job_desc.input1_words = 0u;
+        job_desc.input1_addr = ptr32(transformer_attention_scale_mask_s8_d8_mask_sram);
+        job_desc.input1_words = TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8_MASK_WORDS;
         job_desc.output_addr = ptr32(transformer_attention_softmax_s8_y_sram);
         job_desc.output_words = TRANSFORMER_ATTENTION_SOFTMAX_S8_Y_WORDS;
         job_desc.k_chunks = 0u;

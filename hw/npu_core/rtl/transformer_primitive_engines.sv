@@ -54,6 +54,7 @@ module transformer_primitive_engines (
         .clamp_low(vector_clamp_low),
         .clamp_high(vector_clamp_high),
         .shift(vector_shift),
+        .invalid_value('0),
         .done(vector_done),
         .active(vector_active),
         .y_flat(vector_y_flat)
@@ -72,6 +73,7 @@ module transformer_primitive_engines (
         .start(reduction_start),
         .op(reduction_op),
         .length(reduction_length),
+        .valid_mask({CFG_REDUCTION_MAX_LEN{1'b1}}),
         .x_flat(reduction_x_flat),
         .done(reduction_done),
         .active(reduction_active),

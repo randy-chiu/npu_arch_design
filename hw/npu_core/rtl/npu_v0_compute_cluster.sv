@@ -6,6 +6,7 @@ module npu_v0_compute_cluster #(
     input  logic        start,
     input  logic [1:0]  op,          // 0: uop, 1: attention softmax, 2: matrix u16s8 q15, 3: attention scale/mask.
     input  logic        output_store_enable,
+    input  logic        row_mask_enable,
     output logic        done,
     output logic        perf_active,
     output logic        perf_fetch_active,
@@ -57,6 +58,7 @@ module npu_v0_compute_cluster #(
     logic signed [7:0]  dram_b [0:RTL_MATMUL_ELEMS-1];
     logic signed [7:0]  dram_b_bank1 [0:RTL_MATMUL_ELEMS-1];
     logic signed [31:0] dram_c [0:RTL_MATMUL_ELEMS-1];
+    logic [31:0]        row_mask_words [0:RTL_HOST_MASK_WORDS-1];
     logic [31:0]        instr_mem [0:RTL_HOST_PROGRAM_WORDS-1];
 
     logic matmul_done;
@@ -86,11 +88,13 @@ module npu_v0_compute_cluster #(
     logic signed [31:0] primitive_vector_clamp_low;
     logic signed [31:0] primitive_vector_clamp_high;
     logic [4:0] primitive_vector_shift;
+    logic signed [31:0] primitive_vector_invalid_value;
     logic primitive_vector_done;
     logic primitive_vector_active;
     logic primitive_reduction_start;
     logic [1:0] primitive_reduction_op;
     logic signed [(RTL_SOFTMAX_LEN*32)-1:0] primitive_reduction_x_flat;
+    logic [RTL_SOFTMAX_LEN-1:0] primitive_reduction_valid_mask;
     logic signed [63:0] primitive_reduction_result;
     logic primitive_reduction_done;
     logic primitive_reduction_active;
@@ -126,6 +130,20 @@ module npu_v0_compute_cluster #(
     integer host_read_lane_idx;
     logic [11:0] host_lane_addr;
     logic [11:0] host_read_lane_addr;
+
+    function automatic [RTL_SOFTMAX_LEN-1:0] row_valid_mask(input logic [3:0] row);
+        begin
+            if (!row_mask_enable) begin
+                row_valid_mask = {RTL_SOFTMAX_LEN{1'b1}};
+            end else if (row < 4) begin
+                row_valid_mask = row_mask_words[0][(row * 8) +: 8];
+            end else if (row < RTL_SOFTMAX_LEN) begin
+                row_valid_mask = row_mask_words[1][((row - 4) * 8) +: 8];
+            end else begin
+                row_valid_mask = '0;
+            end
+        end
+    endfunction
 
     genvar matmul_flat_idx;
     generate
@@ -255,6 +273,7 @@ module npu_v0_compute_cluster #(
         .clamp_low(primitive_vector_clamp_low),
         .clamp_high(primitive_vector_clamp_high),
         .shift(primitive_vector_shift),
+        .invalid_value(primitive_vector_invalid_value),
         .done(primitive_vector_done),
         .active(primitive_vector_active),
         .y_flat(primitive_vector_y_flat)
@@ -273,6 +292,7 @@ module npu_v0_compute_cluster #(
         .start(primitive_reduction_start),
         .op(primitive_reduction_op),
         .length(RTL_SOFTMAX_LEN_U8),
+        .valid_mask(primitive_reduction_valid_mask),
         .x_flat(primitive_reduction_x_flat),
         .done(primitive_reduction_done),
         .active(primitive_reduction_active),
@@ -321,6 +341,9 @@ module npu_v0_compute_cluster #(
             for (idx = 0; idx < RTL_HOST_PROGRAM_WORDS; idx = idx + 1) begin
                 instr_mem[idx] <= '0;
             end
+            for (idx = 0; idx < RTL_HOST_MASK_WORDS; idx = idx + 1) begin
+                row_mask_words[idx] <= 32'hffff_ffff;
+            end
             matmul_accumulate_enable <= 1'b0;
             host_write_bank <= 1'b0;
             compute_bank_select <= 1'b0;
@@ -336,8 +359,10 @@ module npu_v0_compute_cluster #(
             primitive_vector_clamp_low <= '0;
             primitive_vector_clamp_high <= '0;
             primitive_vector_shift <= '0;
+            primitive_vector_invalid_value <= '0;
             primitive_reduction_op <= '0;
             primitive_reduction_x_flat <= '0;
+            primitive_reduction_valid_mask <= {RTL_SOFTMAX_LEN{1'b1}};
             primitive_sfu_op <= '0;
             primitive_sfu_x <= '0;
             primitive_lane_idx <= '0;
@@ -364,6 +389,10 @@ module npu_v0_compute_cluster #(
                     end else if (host_lane_addr >= RTL_HOST_C_BASE &&
                                  host_lane_addr < RTL_HOST_C_BASE + RTL_HOST_C_WORDS) begin
                         dram_c[host_lane_addr - RTL_HOST_C_BASE] <= host_wdata[(host_lane_idx * 32) +: 32];
+                    end else if (host_lane_addr >= RTL_HOST_MASK_BASE &&
+                                 host_lane_addr < RTL_HOST_MASK_BASE + RTL_HOST_MASK_WORDS) begin
+                        row_mask_words[host_lane_addr - RTL_HOST_MASK_BASE] <=
+                            host_wdata[(host_lane_idx * 32) +: 32];
                     end else if (host_lane_addr >= RTL_HOST_PROGRAM_BASE &&
                                  host_lane_addr < RTL_HOST_PROGRAM_BASE + RTL_HOST_PROGRAM_WORDS) begin
                         instr_mem[host_lane_addr - RTL_HOST_PROGRAM_BASE] <= host_wdata[(host_lane_idx * 32) +: 32];
@@ -417,7 +446,9 @@ module npu_v0_compute_cluster #(
                 local_route_lane <= uop_sched_buffer;
                 primitive_row_idx <= uop_sched_tensor;
                 primitive_lane_idx <= uop_sched_buffer;
-                primitive_vector_valid_mask <= {RTL_SOFTMAX_LEN{1'b1}};
+                primitive_vector_valid_mask <= row_valid_mask(uop_sched_tensor);
+                primitive_vector_invalid_value <= '0;
+                primitive_reduction_valid_mask <= row_valid_mask(uop_sched_tensor);
                 case (uop_sched_opcode)
                     UOP_VREDMAX: begin
                         primitive_reduction_op <= 2'd0;
@@ -460,6 +491,7 @@ module npu_v0_compute_cluster #(
                         primitive_vector_shift <= RTL_SCORE_SCALE_SHIFT;
                         primitive_vector_clamp_low <= 32'sh8000_0000;
                         primitive_vector_clamp_high <= 32'sh7fff_ffff;
+                        primitive_vector_invalid_value <= RTL_SOFTMAX_NEG_INF;
                     end
                     default: begin
                     end

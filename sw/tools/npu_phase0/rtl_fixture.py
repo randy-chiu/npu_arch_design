@@ -134,6 +134,7 @@ def _write_sv_spec_include(path: Path, arch: dict[str, Any]) -> None:
         f"localparam int RTL_PERF_MATRIX_B_ELEMENTS_PER_CYCLE = {matrix_feed['b_elements_per_cycle']};",
         f"localparam logic signed [31:0] RTL_SCORE_SCALE_MULTIPLIER = 32'sd{arch['vector_sfu']['score_scale_multiplier']};",
         f"localparam logic [4:0] RTL_SCORE_SCALE_SHIFT = 5'd{arch['vector_sfu']['score_scale_shift']};",
+        f"localparam logic signed [31:0] RTL_SOFTMAX_NEG_INF = {_sv_signed_decimal(arch['vector_sfu']['softmax_neg_inf'], 32)};",
         f"localparam logic signed [31:0] RTL_SOFTMAX_CLAMP_LOW = {_sv_signed_decimal(arch['vector_sfu']['softmax_clamp_low'], 32)};",
         f"localparam logic signed [31:0] RTL_SOFTMAX_CLAMP_HIGH = {_sv_signed_decimal(arch['vector_sfu']['softmax_clamp_high'], 32)};",
         f"localparam logic [4:0] RTL_SOFTMAX_NORMALIZE_SHIFT = 5'd{arch['vector_sfu']['softmax_normalize_shift']};",

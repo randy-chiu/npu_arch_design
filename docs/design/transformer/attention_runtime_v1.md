@@ -1,6 +1,6 @@
 # Attention Runtime v1
 
-## Scope
+## Scope / 范围
 
 This document defines how CPU firmware and host-side tooling launch a
 compiler-produced Transformer attention plan on the current SoC/NPU wrapper. It
@@ -14,13 +14,21 @@ Runtime includes:
 - NPU wrapper descriptor ABI usage;
 - perf/PPA collection for attention stages and groups.
 
+中文说明：
+
+Runtime只执行Compiler已经生成的计划：分配或引用buffer、填充descriptor、
+按顺序启动任务、等待完成并收集PPA。Runtime不决定Attention数学语义、
+Mask规则或矩阵分块算法。对于大矩阵基础方案，Runtime启动Compiler生成的
+多个M/N输出tile descriptor；每个descriptor内部的K-stream由Command
+Processor执行。
+
 ## Current Runtime State
 
 Implemented today:
 
 - CPU firmware launches descriptor jobs through `soc_npu_job_desc_t`;
 - QK launches through `SOC_NPU_JOB_OP_MATMUL_K_STREAM`;
-- unmasked score scale launches through
+- causal/unmasked score scale launches through
   `SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1`;
 - attention softmax launches through `SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1`;
 - PV launches through `SOC_NPU_JOB_OP_MATMUL_U16S8_Q15`;
@@ -34,16 +42,18 @@ Implemented today:
 Current scale/mask boundary:
 
 ```text
-QK output SRAM -> executable unmasked scale bridge -> scaled-score SRAM
+QK output SRAM + packed row-mask SRAM
+  -> executable Scale/Mask descriptor
+  -> scaled/masked-score SRAM
 ```
 
 The parent full-attention workload can now be reported as
 `software_group_measured_stages` for measured QK/scale-mask/softmax/PV stage
-execution. It is not target full-attention evidence because scaled scores are
-only supported for fixed `S=8,D=8`, masks are unsupported, the SFU remains a
+execution. It is not target full-attention evidence because execution remains
+fixed `S=8,D=8`, tail/multi-tile shapes are unsupported, the SFU remains a
 bring-up approximation, and runtime overhead is not measured.
 
-## Runtime Responsibilities
+## Runtime Responsibilities / Runtime职责
 
 The runtime owns:
 
@@ -59,6 +69,13 @@ The runtime owns:
 The runtime does not own attention mathematical lowering, Q/K/V layout
 decisions, scale policy, mask semantics, or golden values. Those belong to the
 operator, compiler, and numerical specs.
+
+中文说明：
+
+Runtime可以搬运Compiler给出的两个row-mask word，但不能重新计算哪些lane
+有效；可以启动多个矩阵tile descriptor，但不能自行改变tile顺序或跳过
+计算。这样才能保证Compiler计划、RTL执行、golden结果和PPA统计使用同一个
+事实来源。
 
 ## Launch Models
 
@@ -112,14 +129,15 @@ This is a later target.
 ```text
 CPU runtime stages one attention command list
   -> launches one descriptor
-  -> wrapper/scheduler walks primitive commands
+  -> Host Wrapper forwards one launch
+  -> Core Command Processor/Uop Scheduler walks commands
   -> perf scopes attribute QK/softmax/PV internally
 ```
 
 Required before Model B:
 
 - command-list ABI;
-- wrapper primitive scheduler;
+- Core Command Processor/Uop Scheduler command-list execution;
 - intermediate scratchpad or explicit SRAM buffer references;
 - perf scope counters inside one descriptor execution.
 
@@ -233,6 +251,38 @@ The current compiler/runtime marks it:
 execution = descriptor_job
 scale_mask_provenance = measured_npu_vector_bridge
 ```
+
+P3 mask-plan boundary:
+
+Design status: software safety boundary implemented. Architecture direction
+accepts descriptor `input1` as the packed row-mask-table reference; descriptor
+and RTL transport remain pending implementation.
+
+- Compiler plans carry one eight-bit `valid_lane_mask` per query row.
+- Runtime must preserve these masks as typed plan metadata; it must not infer
+  them from fixture values.
+- Until descriptor mask transport and engine lane gating are implemented, any plan
+  with a non-full mask is `planned_not_executable` and must not be launched as
+  the current unmasked Scale/Mask descriptor.
+- Firmware-data emission rejects a `planned_not_executable` AttentionPlan
+  before producing a runtime-job table.
+- This prevents a causal, padding, or tail workload from being silently
+  executed as unmasked attention.
+
+Selected runtime transport:
+
+- regular causal/padding/tail plans carry a packed two-word row-mask table for
+  the current `8x8` tile;
+- Scale/Mask and Softmax jobs set `input1_addr/input1_words` to the same mask
+  table;
+- `input1_words=0` means implicit all-valid execution; `input1_words=2` means
+  the packed table is present; other values are rejected before Scheduler
+  launch;
+- runtime copies metadata but does not evaluate per-score visibility;
+- CPU score-tile materialization remains a measurable fallback, not the target
+  path;
+- dense arbitrary masks are deferred because they require a separate buffer,
+  movement accounting, and descriptor contract.
 
 
 Executable bridge acceptance criteria:
@@ -504,7 +554,8 @@ Trigger: before claiming full attention numerical correctness.
 Deliverables:
 
 - one attention group descriptor points to a command list;
-- wrapper/core scheduler executes QK -> scale/mask -> softmax -> PV;
+- Host Wrapper forwards one launch; Core Command Processor/Uop Scheduler
+  executes QK -> scale/mask -> softmax -> PV;
 - internal perf scopes report stage counters;
 - parent `attention_prefill_s8_d8` becomes measured full attention.
 

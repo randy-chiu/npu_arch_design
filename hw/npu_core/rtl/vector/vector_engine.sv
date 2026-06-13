@@ -20,6 +20,7 @@ module vector_engine #(
     input  logic signed [DATA_WIDTH-1:0] clamp_low,
     input  logic signed [DATA_WIDTH-1:0] clamp_high,
     input  logic [4:0] shift,
+    input  logic signed [DATA_WIDTH-1:0] invalid_value,
     output logic done,
     output logic active,
     output logic signed [(LANES*DATA_WIDTH)-1:0] y_flat
@@ -98,6 +99,8 @@ module vector_engine #(
                             end
                             default: result_value = '0;
                         endcase
+                    end else begin
+                        result_value = invalid_value;
                     end
                     y_flat[(lane * DATA_WIDTH) +: DATA_WIDTH] <= result_value;
                 end

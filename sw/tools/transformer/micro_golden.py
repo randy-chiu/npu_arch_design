@@ -11,6 +11,7 @@ PROB_ONE_Q15 = (1 << SOFTMAX_EXP_Q) - 1
 RECIP_Q = 24
 ATTENTION_NUMERICAL_CONTRACT_V1 = "attention_numerical_v1_q15_prob_q24_recip_lut257"
 ATTENTION_BRINGUP_CONTRACT_V0 = "attention_bringup_v0_shift_scale_sfu9seg"
+SOFTMAX_NEG_INF = -(1 << 31)
 
 
 def classify_matrix_shape(m: int, n: int, k: int) -> str:
@@ -85,7 +86,7 @@ def scale_scores_power_of_two(scores: list[list[int]], shift: int) -> dict[str, 
 def apply_attention_mask(
     scores: list[list[int]],
     mask: list[list[bool]] | None = None,
-    neg_inf: int = -256,
+    neg_inf: int = SOFTMAX_NEG_INF,
 ) -> list[list[int]]:
     if mask is None:
         return [[int(value) for value in row] for row in scores]
@@ -103,6 +104,27 @@ def causal_mask(seq_len: int) -> list[list[bool]]:
     if seq_len <= 0:
         raise ValueError("seq_len must be positive")
     return [[key <= query for key in range(seq_len)] for query in range(seq_len)]
+
+
+def attention_visibility_mask(
+    seq_q: int,
+    seq_k: int,
+    *,
+    causal: bool = False,
+    valid_k: int | None = None,
+) -> list[list[bool]]:
+    """Compose causal, padding, and logical tail visibility rules."""
+
+    if seq_q <= 0 or seq_k <= 0:
+        raise ValueError("seq_q and seq_k must be positive")
+    if valid_k is None:
+        valid_k = seq_k
+    if valid_k < 0 or valid_k > seq_k:
+        raise ValueError("valid_k must be in 0..seq_k")
+    return [
+        [key < valid_k and (not causal or key <= query) for key in range(seq_k)]
+        for query in range(seq_q)
+    ]
 
 
 def softmax_reference_row_q15(row: list[int], input_scale: int = SOFTMAX_INPUT_SCALE) -> list[int]:
@@ -149,21 +171,34 @@ def sfu_rsqrt_rtl_model_q24(value: int) -> int:
     return 0 if root == 0 else (1 << 24) // root
 
 
-def softmax_rtl_model_row_q15(row: list[int]) -> dict[str, list[int] | int]:
+def softmax_rtl_model_row_q15(
+    row: list[int],
+    valid_mask: list[bool] | None = None,
+) -> dict[str, list[int] | int]:
     """RTL-like primitive sequence matched to current bring-up RTL."""
     if not row:
         raise ValueError("softmax row must be non-empty")
-    max_value = max(int(value) for value in row)
-    shifted = [int(value) - max_value for value in row]
-    clamped = [min(max(value, SOFTMAX_CLAMP_MIN), SOFTMAX_CLAMP_MAX) for value in shifted]
+    if valid_mask is None:
+        valid_mask = [True] * len(row)
+    if len(valid_mask) != len(row) or not any(valid_mask):
+        raise ValueError("softmax row valid_mask must contain at least one valid lane")
+    max_value = max(int(value) for value, valid in zip(row, valid_mask) if valid)
+    shifted = [int(value) - max_value if valid else 0 for value, valid in zip(row, valid_mask)]
+    clamped = [
+        min(max(value, SOFTMAX_CLAMP_MIN), SOFTMAX_CLAMP_MAX) if valid else 0
+        for value, valid in zip(shifted, valid_mask)
+    ]
     exp_q15 = [sfu_exp_rtl_model_q15(value) for value in clamped]
-    exp_sum = sum(exp_q15)
+    exp_sum = sum(value for value, valid in zip(exp_q15, valid_mask) if valid)
     reciprocal = sfu_recip_rtl_model_q24(exp_sum)
     # Current standalone RTL uses a compact reciprocal value from SFU_RECIP.
     # Shifting by 9 maps exp_q15 * recip_q24 back near Q0.15 for the directed
     # primitive sequence; this is a v1 bring-up approximation, not final
     # softmax numerical policy.
-    output_q15 = [(value * reciprocal) >> 9 for value in exp_q15]
+    output_q15 = [
+        (value * reciprocal) >> 9 if valid else 0
+        for value, valid in zip(exp_q15, valid_mask)
+    ]
     return {
         "max": max_value,
         "shifted": shifted,
@@ -290,8 +325,11 @@ def rsqrt_q24(value: int) -> int:
     return sfu_rsqrt_rtl_model_q24(value)
 
 
-def softmax_row_primitive_lut_q15(row: list[int]) -> dict[str, list[int] | int]:
-    return softmax_rtl_model_row_q15(row)
+def softmax_row_primitive_lut_q15(
+    row: list[int],
+    valid_mask: list[bool] | None = None,
+) -> dict[str, list[int] | int]:
+    return softmax_rtl_model_row_q15(row, valid_mask)
 
 
 def rmsnorm_primitive_sequence(row: list[int], shift: int = 20) -> dict[str, list[int] | int]:

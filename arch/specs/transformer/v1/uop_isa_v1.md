@@ -170,6 +170,43 @@ These instructions describe primitive work only. Compute cluster may route
 operands and capture responses, but it must not increment row/lane indices or
 select the next Softmax primitive.
 
+### Attention mask operand contract
+
+Architecture decision: v1 does **not** add a standalone `MASK` uop and does not
+add an explicit `mask_ref` field to every row primitive.
+
+Masked row primitives use their existing row index to select one compact mask
+from the descriptor-selected local row-mask table:
+
+```text
+row_index -> local_row_mask_table[row_index]
+```
+
+The Compiler still generates the existing row-indexed `VSCALE_FIXED`,
+`VREDMAX`, `VSUB`, `VCLAMP`, `VEXP`, `VREDSUM`, `VDIV`, and `VNORM`
+instructions. The Scheduler does not decide causal, padding, or tail policy.
+Compute cluster selects and routes the row mask alongside the accepted
+primitive command.
+
+For `VSCALE_FIXED`, an invalid mask bit does not mean "write zero" or "skip
+write". It means "write the canonical `SOFTMAX_NEG_INF` fill value instead of
+the scaled result" in the same Vector transaction. Other primitive operations
+retain their separately defined inactive-lane behavior. The fill value is a
+generated architectural constant, not a new uop operand or instruction.
+
+The descriptor contract and packed row-mask table are defined in
+`descriptor_v1.md`. RTL must not hard-code the fixed `S=8` causal pattern.
+
+This decision avoids increasing the current program:
+
+```text
+Scale/Mask: remains 8 x VSCALE_FIXED + HALT
+Softmax:    remains 112 primitive uops + HALT
+```
+
+The measured added cost is mask-table movement and lane gating, not additional
+Scheduler issue/response transactions.
+
 The expanded-program baseline uses `128` instruction words. Softmax numerical
 parameters such as clamp bounds and normalization shift come from canonical
 architecture configuration and generated constants rather than Compute-cluster

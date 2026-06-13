@@ -235,6 +235,10 @@ class PerfReportTests(unittest.TestCase):
                 "Chunk 1 B prefetch: external SRAM -> preload bank 1",
             ],
         )
+        self.assertEqual(
+            lanes["Uop scheduler"]["spans"][0]["label"],
+            "Fetch/decode/issue BIND A operand bank (encoded UOP_LOAD)",
+        )
         self.assertEqual(lanes["Matrix engine"]["spans"][0]["start"], 6)
         self.assertEqual(report["jobs"][0]["timeline_provenance"]["span_placement"], "measured_cycle_event_trace")
 
@@ -284,6 +288,38 @@ class PerfReportTests(unittest.TestCase):
         self.assertEqual(
             lanes["SFU"]["spans"][0]["label"],
             "SFU EXP row 2, lane 3: exponentiate one shifted score",
+        )
+
+    def test_attention_mask_input_is_not_reported_as_matrix_b(self):
+        defaults = {
+            "cmd_event": 4, "cmd_active": 1, "cmd_wait": 0, "stream_chunk": 0,
+            "dm_program": 0, "dm_input_a": 0, "dm_input_b": 1, "dm_prefetch_a": 0,
+            "dm_prefetch_b": 0, "dm_output": 0, "dm_target_bank": 0,
+            "core_active": 0, "core_wait_data": 0, "uop_active": 0, "uop_wait": 0,
+            "sched_wait_reason": 0, "uop_load": 0, "uop_tensor": 0, "uop_store": 0,
+            "output_store_enable": 1, "matrix_issue": 0, "matrix_active": 0,
+            "acc_clear": 0, "acc_commit": 0, "acc_readout": 0,
+        }
+        event = {"job_id": 1, "cycle": 0, **defaults}
+        with TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "trace.log"
+            log_path.write_text(
+                "PERF_TRACE " + json.dumps(event) + "\n"
+                'PERF_JOB {"source":"architectural_perf_csr_snapshot","job_id":1,"id":1,'
+                '"name":"attention_softmax_v1","total_cycles":1,"core":{"total":0,"matmul":0},'
+                '"data_mover":{"active_cycles":1,"read_words":2,"write_words":0},"sram":{}}\n',
+                encoding="utf-8",
+            )
+            report = parse_perf_log(log_path)
+
+        lanes = {lane["module"]: lane for lane in report["jobs"][0]["timeline"]}
+        self.assertEqual(
+            lanes["Command processor"]["spans"][0]["label"],
+            "Wait for row-mask table movement",
+        )
+        self.assertEqual(
+            lanes["Data mover"]["spans"][0]["label"],
+            "Row-mask table: external SRAM -> core-local mask registers",
         )
 
     def test_attention_scale_trace_shows_scheduler_issue_wait_and_vector_work(self):

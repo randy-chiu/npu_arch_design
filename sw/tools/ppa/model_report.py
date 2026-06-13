@@ -668,49 +668,75 @@ def _write_case_page(report: dict[str, Any], out_dir: Path, style: str) -> None:
         metadata = item.get("metadata", {})
         group = metadata.get("attention_group") or metadata.get("workload_family") or item["kind"]
         graph_groups.setdefault(str(group), []).append(item)
-    graph = "".join(
-        f'<div class="graph-group"><h3>{html.escape(_display_group_name(group))}</h3><div class="graph-flow">'
+    attention_graph = ""
+    supporting_graphs = []
+    for group, group_items in graph_groups.items():
+        rendered = (
+            f'<div class="graph-group"><h3>{html.escape(_display_group_name(group))}</h3><div class="graph-flow">'
         + '<span class="graph-arrow">→</span>'.join(
             _render_graph_node(item)
             for item in group_items
         )
         + "</div></div>"
-        for group, group_items in graph_groups.items()
+        )
+        if group == "attention_prefill_s8_d8":
+            attention_graph = rendered
+        else:
+            supporting_graphs.append(rendered)
+    graph = (
+        '<section><h2>Attention Computation Graph</h2>'
+        '<p>This graph contains only the executable scaled dot-product Attention stages.</p>'
+        f'{attention_graph or "<p>No executable Attention graph in this case.</p>"}</section>'
+        '<section><h2>Supporting Transformer Microbenchmarks</h2>'
+        '<p>These workloads validate shared NPU capabilities but are not predecessor or successor operators of the Attention graph.</p>'
+        f'{"".join(supporting_graphs) or "<p>None.</p>"}</section>'
     )
-    rows = "".join(
-        "<tr>"
-        f"<td><strong>{html.escape(_display_operator_name(item))}</strong><br><span class=\"internal-id\">{html.escape(item['name'])}</span></td>"
-        f"<td>{html.escape(_display_operator_kind(item))}</td>"
-        f"<td><code>{html.escape(json.dumps(item.get('metadata', {}).get('logical_shape', {})))}</code></td>"
-        f"<td>{item['performance'].get('theoretical_compute_cycles')}</td>"
-        f"<td>{item['performance'].get('measured_compute_cycles')}</td>"
-        f"<td>{item['performance'].get('cycles')}</td>"
-        f"<td>{item['energy_model'].get('normalized_energy_units')}</td>"
-        f"<td>{report['area_model'].get('normalized_area_units')}</td>"
-        "</tr>"
-        for item in graph_items
-    )
-    case_job_ids = {
-        int(job_id)
-        for item in graph_items
-        for job_id in item.get("job_ids", [])
-    }
-    timeline_jobs = [
-        job for job in report.get("pipeline_jobs", [])
-        if int(job.get("job_id", job.get("id", -1))) in case_job_ids
+    attention_items = [
+        item for item in graph_items
+        if item.get("metadata", {}).get("attention_group") == "attention_prefill_s8_d8"
     ]
+    supporting_items = [item for item in graph_items if item not in attention_items]
+
+    def operator_rows(selected_items: list[dict[str, Any]]) -> str:
+        return "".join(
+            "<tr>"
+            f"<td><strong>{html.escape(_display_operator_name(item))}</strong><br><span class=\"internal-id\">{html.escape(item['name'])}</span></td>"
+            f"<td>{html.escape(_display_operator_kind(item))}</td>"
+            f"<td><code>{html.escape(json.dumps(item.get('metadata', {}).get('logical_shape', {})))}</code></td>"
+            f"<td>{item['performance'].get('theoretical_compute_cycles')}</td>"
+            f"<td>{item['performance'].get('measured_compute_cycles')}</td>"
+            f"<td>{item['performance'].get('cycles')}</td>"
+            f"<td>{item['energy_model'].get('normalized_energy_units')}</td>"
+            f"<td>{report['area_model'].get('normalized_area_units')}</td>"
+            "</tr>"
+            for item in selected_items
+        )
+
+    pipeline_jobs = report.get("pipeline_jobs", [])
     job_display_names = {
         int(job_id): _display_operator_name(item)
         for item in graph_items
         for job_id in item.get("job_ids", [])
     }
-    timelines = "".join(
-        _render_static_timeline(
-            job,
-            job_display_names.get(int(job.get("job_id", job.get("id", -1)))),
+
+    def operator_timelines(selected_items: list[dict[str, Any]]) -> str:
+        selected_job_ids = {
+            int(job_id)
+            for item in selected_items
+            for job_id in item.get("job_ids", [])
+        }
+        return "".join(
+            _render_static_timeline(
+                job,
+                job_display_names.get(int(job.get("job_id", job.get("id", -1)))),
+            )
+            for job in pipeline_jobs
+            if int(job.get("job_id", job.get("id", -1))) in selected_job_ids
         )
-        for job in timeline_jobs
-    )
+    attention_rows = operator_rows(attention_items)
+    supporting_rows = operator_rows(supporting_items)
+    attention_timelines = operator_timelines(attention_items)
+    supporting_timelines = operator_timelines(supporting_items)
     legend = "".join(
         f'<span class="legend-item"><i style="background:{color}"></i>{html.escape(module)}</span>'
         for module, color in MODULE_COLORS.items()
@@ -737,9 +763,11 @@ def _write_case_page(report: dict[str, Any], out_dir: Path, style: str) -> None:
     </style></head><body>
     <nav><a href="../ppa_overview.html">Overview</a> | <a href="../perf.html">Performance</a> | <a href="../power.html">Power</a> | <a href="../area.html">Area</a></nav>
     <h1>Test Case: {html.escape(case_name)}</h1>
-    <section><h2>Computation Graph</h2>{graph}</section>
-    <section><h2>Per-operator PPA</h2><table><thead><tr><th>Operator</th><th>Type</th><th>Shape</th><th>Theoretical cycles</th><th>Measured compute</th><th>Measured total</th><th>Energy model</th><th>Area model</th></tr></thead><tbody>{rows}</tbody></table></section>
-    <section><h2>Pipeline Timeline</h2><p>The Host wrapper is separate from the NPU core. Command processor, Uop scheduler, data mover, and compute cluster are nested under NPU core; execution engines refine compute-cluster activity. Group and child totals are not additive. Span placement provenance is displayed per job.</p><div class="timeline-legend">{legend}</div>{timelines}</section>
+    {graph}
+    <section><h2>Attention Per-operator PPA</h2><table><thead><tr><th>Operator</th><th>Type</th><th>Shape</th><th>Theoretical cycles</th><th>Measured compute</th><th>Measured total</th><th>Energy model</th><th>Area model</th></tr></thead><tbody>{attention_rows}</tbody></table></section>
+    <section><h2>Attention Pipeline Timeline</h2><p>The Host wrapper is separate from the NPU core. Command processor, Uop scheduler, data mover, and compute cluster are nested under NPU core; execution engines refine compute-cluster activity. Group and child totals are not additive. Span placement provenance is displayed per job.</p><div class="timeline-legend">{legend}</div>{attention_timelines}</section>
+    <section><h2>Supporting Microbenchmark PPA</h2><table><thead><tr><th>Operator</th><th>Type</th><th>Shape</th><th>Theoretical cycles</th><th>Measured compute</th><th>Measured total</th><th>Energy model</th><th>Area model</th></tr></thead><tbody>{supporting_rows}</tbody></table></section>
+    <section><h2>Supporting Microbenchmark Pipeline Timeline</h2><div class="timeline-legend">{legend}</div>{supporting_timelines}</section>
     </body></html>"""
     (case_dir / f"{case_name}.html").write_text(page, encoding="utf-8")
 

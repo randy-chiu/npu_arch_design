@@ -29,6 +29,71 @@ DESCRIPTOR_OP_BY_STAGE = {
 }
 
 CURRENT_RTL_PROGRAM_CAPACITY_WORDS = 128
+CURRENT_ATTENTION_TILE_ROWS = 8
+CURRENT_ATTENTION_TILE_COLS = 8
+SUPPORTED_MASK_POLICIES = {"none", "causal", "padding", "causal_padding"}
+
+
+def build_attention_mask_plan(
+    *,
+    seq_q: int,
+    seq_k: int,
+    mask_policy: str = "none",
+    valid_k: int | None = None,
+    tile_rows: int = CURRENT_ATTENTION_TILE_ROWS,
+    tile_cols: int = CURRENT_ATTENTION_TILE_COLS,
+) -> dict[str, Any]:
+    """Lower logical Attention mask rules into per-row physical lane masks."""
+
+    if mask_policy not in SUPPORTED_MASK_POLICIES:
+        raise ValueError(f"unsupported attention mask_policy {mask_policy}")
+    if seq_q <= 0 or seq_k <= 0:
+        raise ValueError("attention seq_q and seq_k must be positive")
+    if seq_q > tile_rows or seq_k > tile_cols:
+        raise ValueError("current attention mask lowering supports only one physical tile")
+    if valid_k is None:
+        valid_k = seq_k
+    if valid_k < 0 or valid_k > seq_k:
+        raise ValueError("attention valid_k must be in 0..seq_k")
+    if mask_policy in ("none", "causal") and valid_k != seq_k:
+        raise ValueError(f"mask_policy {mask_policy} cannot shorten valid_k")
+
+    causal = mask_policy in ("causal", "causal_padding")
+    padding = mask_policy in ("padding", "causal_padding")
+    key_limit = valid_k if padding else seq_k
+    valid_lane_masks = []
+    for query in range(tile_rows):
+        row_mask = 0
+        if query < seq_q:
+            for key in range(tile_cols):
+                visible = key < seq_k and key < key_limit and (not causal or key <= query)
+                if visible:
+                    row_mask |= 1 << key
+        valid_lane_masks.append(row_mask)
+
+    valid_query_mask = (1 << seq_q) - 1
+    full_lane_mask = (1 << tile_cols) - 1
+    row_mask_words = [
+        sum(valid_lane_masks[row + offset] << (offset * 8) for offset in range(4))
+        for row in (0, 4)
+    ]
+    current_rtl_executable = (
+        seq_q == tile_rows
+        and seq_k == tile_cols
+        and all(row_mask != 0 for row_mask in valid_lane_masks)
+    )
+    return {
+        "mask_policy": mask_policy,
+        "seq_q": seq_q,
+        "seq_k": seq_k,
+        "valid_k": valid_k,
+        "tile_rows": tile_rows,
+        "tile_cols": tile_cols,
+        "valid_query_mask": valid_query_mask,
+        "valid_lane_masks": valid_lane_masks,
+        "row_mask_words": row_mask_words,
+        "execution_state": "executable" if current_rtl_executable else "planned_not_executable",
+    }
 
 
 def build_softmax_expanded_primitive_program(
@@ -88,16 +153,23 @@ def build_attention_plan_from_manifest(spec: dict[str, Any], attention_group: st
     qk_shape = stage_workloads["qk"]["shape"]
     pv_shape = stage_workloads["pv"]["shape"]
     softmax_shape = stage_workloads["softmax"]["shape"]
+    parent_shape = parent["shape"]
     shape = {
-        "seq_q": int(parent["shape"]["seq_len"]),
-        "seq_k": int(parent["shape"]["seq_len"]),
+        "seq_q": int(parent_shape.get("seq_q", parent_shape["seq_len"])),
+        "seq_k": int(parent_shape.get("seq_k", parent_shape["seq_len"])),
         "head_dim": int(parent["shape"]["head_dim"]),
         "value_dim": int(pv_shape["n"]),
         "softmax_rows": int(softmax_shape.get("rows", 1)),
         "softmax_elements": int(softmax_shape["elements"]),
     }
+    mask_plan = build_attention_mask_plan(
+        seq_q=shape["seq_q"],
+        seq_k=shape["seq_k"],
+        mask_policy=str(parent.get("mask_policy", "none")),
+        valid_k=int(parent.get("valid_k", shape["seq_k"])),
+    )
     numerical_contract = parent.get("numerical_contract") or stage_workloads["pv"].get("numerical_contract")
-    stages = _build_stages(stage_workloads, numerical_contract)
+    stages = _build_stages(stage_workloads, numerical_contract, mask_plan)
     softmax_program = build_softmax_expanded_primitive_program(
         shape["softmax_rows"], shape["softmax_elements"]
     )
@@ -107,11 +179,12 @@ def build_attention_plan_from_manifest(spec: dict[str, Any], attention_group: st
         _buffer("k_t_tile", "int8", [int(qk_shape["k"]), int(qk_shape["n"])], "input", [0], layout="transposed_d_by_s"),
         _buffer("score_raw", "int32", [int(qk_shape["m"]), int(qk_shape["n"])], "qk", [1], producer_stage_index=0),
         _buffer("score_softmax_in", "int32", [int(qk_shape["m"]), int(qk_shape["n"])], "scale_mask", [2], producer_stage_index=1),
+        _buffer("row_mask", "uint32", [2], "compiler", [1, 2]),
         _buffer("prob_q15", "uint16_q0.15", [int(pv_shape["m"]), int(pv_shape["k"])], "softmax", [3], producer_stage_index=2),
         _buffer("v_tile", "int8", [int(pv_shape["k"]), int(pv_shape["n"])], "input", [3]),
         _buffer("o_i32", "int32", [int(pv_shape["m"]), int(pv_shape["n"])], "pv", [], producer_stage_index=3),
     ]
-    runtime_jobs = _build_runtime_jobs(stage_workloads, attention_group)
+    runtime_jobs = _build_runtime_jobs(stage_workloads, attention_group, mask_plan["execution_state"])
     plan = {
         "workload_name": f"transformer_{parent['name']}",
         "attention_group": attention_group,
@@ -121,6 +194,8 @@ def build_attention_plan_from_manifest(spec: dict[str, Any], attention_group: st
         "group_state": "software_group_measured_stages",
         "group_cycle_policy": "sum_measured_stages",
         "scale_mask_provenance": "measured_npu_vector_bridge",
+        "execution_state": mask_plan["execution_state"],
+        "mask": mask_plan,
         "stages": stages,
         "buffers": buffers,
         "runtime_jobs": runtime_jobs,
@@ -172,8 +247,10 @@ def _find_stage_workloads(workloads: list[dict[str, Any]], attention_group: str)
 
 def _validate_current_attention_group(parent: dict[str, Any], stage_workloads: dict[str, dict[str, Any]]) -> None:
     parent_shape = parent["shape"]
-    if int(parent_shape["seq_len"]) != 8 or int(parent_shape["head_dim"]) != 8:
-        raise ValueError("current executable attention lowering supports only seq_len=8, head_dim=8")
+    seq_q = int(parent_shape.get("seq_q", parent_shape["seq_len"]))
+    seq_k = int(parent_shape.get("seq_k", parent_shape["seq_len"]))
+    if not 0 < seq_q <= 8 or not 0 < seq_k <= 8 or int(parent_shape["head_dim"]) != 8:
+        raise ValueError("current single-tile attention planning requires seq_q/seq_k in 1..8 and head_dim=8")
     qk = stage_workloads["qk"]["shape"]
     softmax = stage_workloads["softmax"]["shape"]
     pv = stage_workloads["pv"]["shape"]
@@ -185,7 +262,11 @@ def _validate_current_attention_group(parent: dict[str, Any], stage_workloads: d
         raise ValueError("current PV lowering requires m=n=k=8")
 
 
-def _build_stages(stage_workloads: dict[str, dict[str, Any]], parent_contract: str) -> list[dict[str, Any]]:
+def _build_stages(
+    stage_workloads: dict[str, dict[str, Any]],
+    parent_contract: str,
+    mask_plan: dict[str, Any],
+) -> list[dict[str, Any]]:
     return [
         {
             "stage_id": "qk",
@@ -199,7 +280,7 @@ def _build_stages(stage_workloads: dict[str, dict[str, Any]], parent_contract: s
         {
             "stage_id": "scale_mask",
             "operator": STAGE_OPERATORS["scale_mask"],
-            "inputs": ["score_raw"],
+            "inputs": ["score_raw", "row_mask"],
             "outputs": ["score_softmax_in"],
             "descriptor_op": DESCRIPTOR_OP_BY_STAGE["scale_mask"],
             "workload_name": f"transformer_{stage_workloads['scale_mask']['name']}",
@@ -208,13 +289,17 @@ def _build_stages(stage_workloads: dict[str, dict[str, Any]], parent_contract: s
             "scale_multiplier": 11585,
             "scale_shift": 15,
             "rounding": "round_nearest_away_from_zero",
-            "mask_policy": "none",
+            "mask_policy": mask_plan["mask_policy"],
+            "valid_k": mask_plan["valid_k"],
+            "valid_query_mask": mask_plan["valid_query_mask"],
+            "valid_lane_masks": mask_plan["valid_lane_masks"],
+            "execution_state": mask_plan["execution_state"],
             "numerical_contract": stage_workloads["scale_mask"].get("numerical_contract"),
         },
         {
             "stage_id": "softmax",
             "operator": STAGE_OPERATORS["softmax"],
-            "inputs": ["score_softmax_in"],
+            "inputs": ["score_softmax_in", "row_mask"],
             "outputs": ["prob_q15"],
             "descriptor_op": DESCRIPTOR_OP_BY_STAGE["softmax"],
             "workload_name": f"transformer_{stage_workloads['softmax']['name']}",
@@ -232,7 +317,11 @@ def _build_stages(stage_workloads: dict[str, dict[str, Any]], parent_contract: s
     ]
 
 
-def _build_runtime_jobs(stage_workloads: dict[str, dict[str, Any]], attention_group: str) -> list[dict[str, Any]]:
+def _build_runtime_jobs(
+    stage_workloads: dict[str, dict[str, Any]],
+    attention_group: str,
+    execution_state: str,
+) -> list[dict[str, Any]]:
     return [
         _runtime_job(
             "qk",
@@ -242,25 +331,28 @@ def _build_runtime_jobs(stage_workloads: dict[str, dict[str, Any]], attention_gr
             "k_t_tile",
             "score_raw",
             attention_group=attention_group,
+            execution_state=execution_state,
         ),
         _runtime_job(
             "scale_mask",
             _job_id_symbol(stage_workloads["scale_mask"]["name"]),
             DESCRIPTOR_OP_BY_STAGE["scale_mask"],
             "score_raw",
-            None,
+            "row_mask",
             "score_softmax_in",
             attention_group=attention_group,
+            execution_state=execution_state,
         ),
         _runtime_job(
             "softmax",
             _job_id_symbol(stage_workloads["softmax"]["name"]),
             DESCRIPTOR_OP_BY_STAGE["softmax"],
             "score_softmax_in",
-            None,
+            "row_mask",
             "prob_q15",
             check_policy="absolute_tolerance",
             attention_group=attention_group,
+            execution_state=execution_state,
         ),
         _runtime_job(
             "pv",
@@ -270,6 +362,7 @@ def _build_runtime_jobs(stage_workloads: dict[str, dict[str, Any]], attention_gr
             "v_tile",
             "o_i32",
             attention_group=attention_group,
+            execution_state=execution_state,
         ),
     ]
 
@@ -309,6 +402,7 @@ def _runtime_job(
     *,
     check_policy: str = "exact",
     attention_group: str,
+    execution_state: str,
 ) -> dict[str, Any]:
     return {
         "stage_id": stage_id,
@@ -320,4 +414,5 @@ def _runtime_job(
         "k_chunks": 1 if descriptor_op.startswith("matmul") else 0,
         "check_policy": check_policy,
         "perf_scope": f"{attention_group}/{stage_id}",
+        "execution_state": execution_state,
     }

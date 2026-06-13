@@ -184,6 +184,7 @@
       "attention_group": "attention_prefill_s8_d8",
       "attention_stage": "full_attention",
       "shape": {"seq_len": 8, "head_dim": 8},
+      "mask_policy": "causal",
       "activity_scope": "kernel_group",
       "external_memory": {
         "activation_read_bytes": 192,

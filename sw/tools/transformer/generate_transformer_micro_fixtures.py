@@ -18,6 +18,7 @@ from transformer.micro_golden import (
     ATTENTION_BRINGUP_CONTRACT_V0,
     ATTENTION_NUMERICAL_CONTRACT_V1,
     PROB_ONE_Q15,
+    SOFTMAX_NEG_INF,
     attention_head_fixed_spec,
     attention_pv_q15_i8_i32,
     attention_qk_scores_i8_i32,
@@ -70,9 +71,23 @@ def generate_transformer_micro_fixtures(spec_path: Path = TRANSFORMER_SPEC_PATH)
         if workload["op"] in ("matmul", "matmul_u16s8_q15") and workload["status"] == "planned_current_matmul_extension":
             executable.append(_generate_matmul_workload(workload, precision, seed=index + 1, executable=executable))
         elif workload["op"] == "attention_softmax_v1" and workload["status"] == "planned_current_softmax_extension":
-            executable.append(_generate_softmax_workload(workload, precision, executable=executable))
+            executable.append(
+                _generate_softmax_workload(
+                    workload,
+                    precision,
+                    executable=executable,
+                    plan=attention_plans[workload["attention_group"]],
+                )
+            )
         elif workload["op"] == "attention_scale_mask_v1" and workload["status"] == "planned_current_scale_mask_extension":
-            executable.append(_generate_scale_mask_workload(workload, precision, executable))
+            executable.append(
+                _generate_scale_mask_workload(
+                    workload,
+                    precision,
+                    executable,
+                    attention_plans[workload["attention_group"]],
+                )
+            )
         else:
             model_only.append(_model_only_metadata(workload, precision))
     _attach_attention_plan_metadata(executable, attention_plans)
@@ -94,8 +109,7 @@ def _build_attention_plans(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
     plans: dict[str, dict[str, Any]] = {}
     for group in sorted(group for group in groups if group):
-        if group == "attention_prefill_s8_d8":
-            plans[group] = build_attention_plan_from_manifest(spec, group)
+        plans[group] = build_attention_plan_from_manifest(spec, group)
     return plans
 
 
@@ -112,6 +126,8 @@ def _attach_attention_plan_metadata(items: list[dict[str, Any]], plans: dict[str
             "attention_group": plan["attention_group"],
             "group_state": plan["group_state"],
             "group_cycle_policy": plan["group_cycle_policy"],
+            "execution_state": plan["execution_state"],
+            "mask_policy": plan["mask"]["mask_policy"],
         }
         if stage_id == "full_attention":
             metadata["attention_plan"]["stages"] = [stage["stage_id"] for stage in plan["stages"]]
@@ -277,6 +293,7 @@ def _generate_softmax_workload(
     workload: dict[str, Any],
     precision: dict[str, str],
     executable: list[dict[str, Any]],
+    plan: dict[str, Any],
 ) -> dict[str, Any]:
     shape = workload["shape"]
     elements = int(shape["elements"])
@@ -304,8 +321,11 @@ def _generate_softmax_workload(
     ]
     expected_y = [
         value
-        for row in rows
-        for value in softmax_row_primitive_lut_q15(row)["output_q15"]
+        for row, row_mask in zip(rows, plan["mask"]["valid_lane_masks"])
+        for value in softmax_row_primitive_lut_q15(
+            row,
+            [bool(row_mask & (1 << lane)) for lane in range(elements)],
+        )["output_q15"]
     ]
     x = flat_scores
     output_dtype = "q0.15_uint16"
@@ -350,6 +370,7 @@ def _generate_scale_mask_workload(
     workload: dict[str, Any],
     precision: dict[str, str],
     executable: list[dict[str, Any]],
+    plan: dict[str, Any],
 ) -> dict[str, Any]:
     qk = next(
         (
@@ -364,7 +385,11 @@ def _generate_scale_mask_workload(
         raise ValueError(f"{workload['name']}: executable QK scores must be generated first")
     scaled = scale_scores_fixed_multiplier(qk["attention_scores"], head_dim=8, shift=15)
     input_scores = [value for row in qk["attention_scores"] for value in row]
-    expected_scores = [value for row in scaled["scaled"] for value in row]
+    expected_scores = [
+        value if row_mask & (1 << lane) else SOFTMAX_NEG_INF
+        for row, row_mask in zip(scaled["scaled"], plan["mask"]["valid_lane_masks"])
+        for lane, value in enumerate(row)
+    ]
     return {
         "name": f"transformer_{workload['name']}",
         "kind": "transformer_micro",
@@ -387,9 +412,11 @@ def _generate_scale_mask_workload(
                 "scale_multiplier": scaled["multiplier"],
                 "scale_shift": scaled["shift"],
                 "rounding": "round_nearest_away_from_zero",
-                "mask_policy": "none",
+                "mask_policy": plan["mask"]["mask_policy"],
+                "valid_lane_masks": plan["mask"]["valid_lane_masks"],
             },
         },
+        "row_mask_words": plan["mask"]["row_mask_words"],
         "score_words": len(input_scores),
         "input_scores": input_scores,
         "expected_scores": expected_scores,

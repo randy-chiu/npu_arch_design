@@ -6,6 +6,7 @@ from transformer.golden import matmul_i8_i32
 from transformer.micro_golden import (
     ATTENTION_NUMERICAL_CONTRACT_V1,
     attention_head_fixed_spec,
+    attention_visibility_mask,
     attention_pv_q15_i8_i32,
     attention_qk_scores_i8_i32,
     attention_softmax_fixed_spec_q15,
@@ -61,7 +62,7 @@ class TransformerMicroFixtureTests(unittest.TestCase):
         self.assertEqual(executable[3]["metadata"]["stage_provenance"], "measured_current_softmax_path")
         self.assertEqual(
             executable[3]["metadata"]["attention_plan_stage"]["inputs"],
-            ["score_softmax_in"],
+            ["score_softmax_in", "row_mask"],
         )
         self.assertEqual(
             executable[3]["metadata"]["softmax"]["implementation"],
@@ -174,3 +175,16 @@ class TransformerMicroFixtureTests(unittest.TestCase):
         self.assertEqual(result["scores"], [[1, 0], [0, 1]])
         self.assertIn("softmax", result)
         self.assertEqual(len(result["output"]), 2)
+
+    def test_attention_visibility_mask_composes_causal_padding_and_tail(self):
+        mask = attention_visibility_mask(seq_q=4, seq_k=6, causal=True, valid_k=3)
+
+        self.assertEqual(
+            mask,
+            [
+                [True, False, False, False, False, False],
+                [True, True, False, False, False, False],
+                [True, True, True, False, False, False],
+                [True, True, True, False, False, False],
+            ],
+        )

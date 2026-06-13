@@ -21,7 +21,7 @@ hardware can execute, with explicit labels for every approximation.
 | QK score tile | CPU-to-NPU RTL measured | `transformer_attention_qk_s8_d8` |
 | attention row softmax | CPU-to-NPU RTL measured V1 primitive path | `transformer_attention_softmax_s8` |
 | PV weighted sum | CPU-to-NPU RTL measured shared mixed matrix path | `transformer_attention_pv_s8_d8` |
-| executable unmasked score scale | CPU-to-NPU RTL measured fixed-point vector scale | `transformer_attention_scale_mask_s8_d8` |
+| executable causal score scale/mask | CPU-to-NPU RTL measured fixed-point vector scale plus lane mask-select | `transformer_attention_scale_mask_s8_d8` |
 | full attention group | software-sequenced measured stage grouping | `transformer_attention_prefill_s8_d8` |
 | target Q0.15 softmax | Python golden and standalone primitive sequence | `attention_numerical_v1.md`, primitive TB |
 | mixed Q0.15-by-int8 PV | CPU-to-NPU RTL measured for `S=8,D=8` | `matmul_u16s8_q15` |
@@ -37,7 +37,7 @@ Current CPU-to-NPU RTL tests must obey these constraints:
 | attention softmax measured path uses an `8x8` int32 score tile and Q0.15 outputs | current descriptor loops over eight V1 primitive softmax rows |
 | softmax measured row count is eight rows | current fixed-shape descriptor consumes and produces one complete tile |
 | PV measured path uses Q0.15 probabilities and int8 V | current matrix path has a mixed `u16s8_q15` mode |
-| causal/padding masks are not claimed in measured attention | current measured softmax path has no per-lane invalid mask contract |
+| causal `S=8,D=8` is measured; tail/all-invalid physical rows are not claimed | current Scheduler still issues all eight physical rows |
 | model-only rows have zero measured cycles | zero cycles must not be interpreted as measured hardware performance |
 
 ## Numerical Contracts
@@ -162,3 +162,28 @@ The following are deliberately not accepted in the current simplified version:
 
 These become the next acceptance targets after the vector/reduction/SFU runtime
 issue path and reviewed PV probability policy are implemented.
+
+### Mask And Larger-Attention Acceptance Progression
+
+The current Transformer profile has no executable mask behavior:
+
+- `transformer_attention_scale_mask_s8_d8` declares `mask_policy=none`;
+- generated Scale/Mask expected data applies scaling only;
+- no packed row-mask table is emitted to firmware;
+- no descriptor points `input1` at mask data;
+- current RTL drives all vector lanes valid.
+
+Mask implementation and later shape generalization add these tests in order:
+
+| Workload | Required proof |
+| --- | --- |
+| causal `S=8,D=8` | future key lanes do not affect max/sum/probability/PV |
+| padding `S=8,D=8,valid_k=5` | padded lanes produce exact zero probability |
+| tail `S=5,D=8` | invalid query rows and key lanes are not treated as valid |
+| K-stream `S=8,D=16` | larger head dimension accumulates QK correctly |
+| multi-key-tile `S=16,D=8` | segmented Softmax max/sum matches golden |
+| multi-axis `S=16,D=16` | Compiler, Runtime, buffers, QK, Softmax, and PV compose end to end |
+
+For each masked workload, PPA must expose mask-table movement, lane-mask
+control cost, valid versus masked Reduction element operations, skipped future
+tiles, and comparison against a CPU-materialized fallback.

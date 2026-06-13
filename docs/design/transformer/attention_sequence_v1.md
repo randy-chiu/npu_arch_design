@@ -1,6 +1,6 @@
 # Attention Sequence v1
 
-## Scope
+## Scope / 范围
 
 This document defines how Transformer attention is represented on the current
 unified NPU path. Attention v1 is a software/compiler scheduled primitive
@@ -17,7 +17,15 @@ reusing and extending the existing primitive engines:
 - data mover and local tensor memory;
 - wrapper descriptor/runtime/perf path.
 
-## Mathematical Contract
+中文说明：
+
+本文档定义完整Attention如何映射到统一NPU，而不是只描述Mask。Attention
+不是一个独立的大型RTL模块；Compiler和Runtime将它拆分为QK矩阵乘、
+Score Scale/Mask、逐行Softmax和PV矩阵乘，并调度共享的Matrix、Vector、
+Reduction、SFU和Data Mover执行。本文档同时是这些阶段之间数据格式、顺序
+和模块职责的端到端设计来源。
+
+## Mathematical Contract / 数学契约
 
 For one attention head:
 
@@ -74,7 +82,15 @@ The first measured attention target may be unmasked `S=8,D=8` to validate QK
 and softmax mechanics. Causal/padding mask support must be added before claiming
 decoder-style attention semantics.
 
-## Fixed-Point Policy
+中文说明：
+
+对单个Attention head，先计算`Q × K^T`得到Score，再除以`sqrt(D)`、应用
+Mask、逐行计算Softmax，最后计算`P × V`。Mask属于Attention正确性语义：
+causal模型不能看到未来token，padding和tile尾部也不能参与最大值、求和或
+最终概率。未实现Mask的`S=8,D=8`只能作为硬件通路验证，不能声称已经实现
+decoder Attention。
+
+## Fixed-Point Policy / 定点数策略
 
 Detailed fixed-point derivations, examples, and golden/RTL consistency rules are
 owned by `docs/design/transformer/attention_numerical_v1.md`. This section keeps
@@ -208,11 +224,21 @@ The first executable target is fixed-point, single-head attention:
 The `S=8,D=8` target maps directly onto the current `8x8x8` matrix tile. Larger
 `S` or `D` values are represented as tiled primitive sequences.
 
-## Primitive Decomposition
+中文说明：
+
+RTL不执行抽象浮点公式。Score缩放、EXP、倒数、概率归一化和PV都必须明确
+输入输出位宽、Q格式、舍入、截断和饱和规则。当前概率使用unsigned Q0.15；
+所有简化近似都必须在workload和PPA中标记，不能把bring-up近似当成目标
+数值实现。
+
+## Primitive Decomposition / 原语分解
 
 Attention decomposes into five primitive groups.
 
-### 1. QK Score Matmul
+Attention由五组原语组成。Compiler决定阶段和原语顺序，硬件模块只执行各自
+原语；Compute Cluster不应重新硬编码一套Attention状态机。
+
+### 1. QK Score Matmul / QK分数矩阵乘
 
 Formula:
 
@@ -241,7 +267,14 @@ Needed for attention:
 - expose QK cycles/MACs separately from PV cycles/MACs in perf/PPA;
 - add true skinny/GEMV handling later for decode attention.
 
-### 2. Score Scale
+中文说明：
+
+QK阶段使用Matrix Engine计算`Q × K^T`并生成int32 Score。物理Matrix
+Engine一次只处理`8x8x8`，较大的`D`通过K-stream在Accumulator File中
+累加，较大的Query/Key维度通过多个输出tile完成。完整分块设计由
+`transformer_npu_v1.md`中的“大矩阵分块执行设计”负责。
+
+### 2. Score Scale / Score缩放
 
 Formula:
 
@@ -294,7 +327,19 @@ Needed for attention:
 - full attention accuracy claims require the fixed multiplier policy or another
   reviewed approximation for `1/sqrt(D)`.
 
-### 3. Attention Mask
+中文说明：
+
+Score Scale实现除以`sqrt(D)`。硬件实际使用定点乘法加移位近似，而不是
+浮点除法；Compiler选择乘数和移位，Vector Engine执行，数值文档定义舍入
+和饱和。`D=8`不能用单纯右移精确表示，因此当前固定乘数方案必须保留。
+
+### 3. Attention Mask / Attention掩码
+
+Design status: implemented for causal single-tile `S=8,D=8`. Descriptor/uop
+specs select a packed descriptor-referenced row-mask table with no new `MASK`
+uop. The Data Mover loads two words into core-local mask registers before
+Scheduler launch; Vector/Reduction/normalization consume the selected row mask.
+Tail rows and hardware-visible malformed-descriptor error reporting remain.
 
 Formula:
 
@@ -318,39 +363,366 @@ Common masks:
 | valid length / padding | mask out unused sequence or cache slots | decode/cache tiles may include invalid tail lanes |
 | tile tail | mask out lanes beyond logical `S` | tiled rows may be wider than logical row length |
 
-Masking must happen before row max. If an invalid score is simply zeroed after
-softmax, it can still affect row max, row sum, and output probability. The
-correct behavior is to exclude invalid positions from softmax. Hardware can
-implement this in one of three ways:
+#### Problem and value
 
-1. Compiler materializes `SOFTMAX_NEG_INF` into invalid score lanes before the
-   reduction.
-2. Vector engine adds a mask-select op:
+Masking is required for correctness, but correctness alone does not justify a
+new hardware block. The architecture question is where masking should execute
+so that its implementation cost is lower than the movement and synchronization
+cost it removes.
+
+For a score tile with `E` elements, a CPU-materialized mask requires, at
+minimum:
+
+```text
+read E int32 scores + modify E scores + write E int32 scores + synchronize
+```
+
+For the current `8x8` tile this is `256` bytes read plus `256` bytes written
+before Softmax. The current NPU Scale/Mask stage already reads and rewrites the
+score tile for scaling, so applying a lane predicate in that pass avoids a
+separate CPU read/modify/write pass. It also establishes the mask semantics
+needed by future on-chip-resident or fused Attention, where a CPU pass would
+force an otherwise unnecessary SRAM boundary.
+
+Mask support does not automatically reduce current `8x8` QK Matrix cycles:
+the current Matrix engine still computes the full tile. For future multi-tile
+causal Attention, the Compiler can skip completely invisible future-key tiles;
+that can reduce Matrix work and movement in addition to Softmax work.
+
+#### Industry patterns
+
+Industry implementations generally separate mask *description* from mask
+*consumption*:
+
+- software/API describes causal, padding/sequence-length, sliding-window,
+  block, or arbitrary mask semantics;
+- the selected Attention kernel applies those semantics while scores are
+  resident, instead of requiring a CPU pass over the complete score matrix;
+- regular masks use compact metadata or index predicates, while arbitrary
+  masks may require a mask tensor and additional movement.
+
+NVIDIA cuDNN SDPA is one concrete example: its Attention API accepts causal
+diagonal bounds, per-batch query/key sequence lengths for padding, block masks,
+and additive bias masks. cuDNN states that padding tokens are automatically
+masked during Attention computation. FlashAttention provides the architectural
+motivation: reducing reads and writes between memory levels is central to
+Attention performance, so materializing and revisiting the complete score
+matrix is undesirable.
+
+References:
+
+- NVIDIA cuDNN Attention:
+  `https://docs.nvidia.com/deeplearning/cudnn/latest/operations/Attention.html`
+- FlashAttention, IO-aware exact Attention:
+  `https://arxiv.org/abs/2205.14135`
+- FlashAttention-2, work partitioning and reduced communication:
+  `https://arxiv.org/abs/2307.08691`
+
+These references demonstrate the software/hardware split and IO motivation.
+They do not imply that the current NPU should implement a dedicated fused
+Attention macro.
+
+#### Alternatives considered
+
+| Option | Software responsibility | Hardware responsibility | Benefits | Costs / limitations |
+| --- | --- | --- | --- | --- |
+| A. CPU materializes masked scores | read score tile, apply all mask rules, write `SOFTMAX_NEG_INF` | execute ordinary unmasked Softmax | no new mask RTL; useful fallback and reference | extra CPU work, full score read/write, synchronization, breaks future score residency/fusion |
+| B. Compiler emits dense mask tensor | allocate and move one mask value/bit per score | load mask tensor and gate lanes | supports arbitrary masks | additional storage, movement, ports, and descriptor complexity; excessive for regular causal/tail cases |
+| C. Compiler emits compact row masks; existing engines gate lanes | compose logical policy into row-valid metadata | Scale/Mask selects sentinel; Reduction excludes invalid lanes; Softmax writes zero probability | removes CPU score pass; small metadata; supports causal/padding/tail; compatible with future residency | adds lane gating, mask transport, tests, and all-invalid-row handling |
+| D. Hardware generates all mask rules | provide policy and shape only | generate causal/padding/tail/arbitrary behavior | compact commands for supported rules | more control complexity; risks hard-coding high-level policy; arbitrary masks still need data |
+| E. Dedicated Mask engine | issue a separate mask operation | separate datapath/module rewrites tile | modular accounting | duplicates a tile pass and storage ports; no clear benefit over Vector/Reduction integration |
+
+#### Accepted v1 architecture direction
+
+中文说明：
+
+当前方案不会让Compiler额外生成一条`MASK`指令。Mask是一个tile级共享属性，
+如果每个row单独执行`MASK`指令，会增加程序长度以及Scheduler握手开销，但
+不会增加有效计算。Compiler只生成两个32-bit mask word；Scale/Mask与
+Softmax descriptor共同引用它们。现有row-indexed指令根据row编号自动选择
+对应的8-bit mask。
+
+Select **Option C**, with limited rule generation from Option D:
+
+1. Compiler owns logical policy composition and emits:
 
    ```text
-   masked_score = valid ? scaled_score : SOFTMAX_NEG_INF
+   valid_query_mask
+   valid_lane_mask[row]
    ```
 
-3. Reduction/softmax primitives accept a valid mask and ignore invalid lanes.
+2. Runtime transports a packed row-mask table through descriptor `input1`.
+   It must not infer validity from tensor values.
+3. Scale/Mask consumes each row mask while it already performs fixed score
+   scaling:
 
-The first v1 implementation should use unmasked rows for measured QK/softmax
-bring-up, then add causal/tail mask support as an explicit feature. The chosen
-mask policy must be recorded in workload metadata.
+   ```text
+   scaled = round(score * multiplier / 2^shift)
+   masked_score = valid_lane ? scaled : SOFTMAX_NEG_INF
+   ```
+
+4. Reduction receives the same row mask and excludes invalid lanes from
+   `REDUCE_MAX` and `REDUCE_SUM`.
+5. Softmax normalization forces invalid output lanes to zero.
+6. No dedicated Mask engine is added.
+7. Dense arbitrary masks remain deferred. The first executable policies are
+   causal, padding/valid-length, and tile-tail.
+
+#### What "fused into Score Scale" means
+
+The fusion is one Vector Engine read/compute/write pass, not a new combined
+ISA instruction and not Wrapper-side operator fusion.
+
+Without fusion:
+
+```text
+pass 1: read score tile -> scale every score -> write scaled tile
+pass 2: read scaled tile -> replace invalid lanes -> write masked tile
+```
+
+Selected fused pass:
+
+```text
+read one score row and its row mask
+  -> calculate eight fixed-point scaled results
+  -> eight per-lane writeback selects
+       valid lane   -> scaled result
+       invalid lane -> SOFTMAX_NEG_INF
+  -> write one masked/scaled row
+```
+
+The existing Scale/Mask program still issues one `VSCALE_FIXED row_index` uop
+per row. `row_index` selects both the score row and
+`local_row_mask_table[row_index]`. Compute-cluster routing presents the score
+row, selected mask, multiplier, shift, and canonical fill value to Vector
+Engine together.
+
+```text
+VSCALE_FIXED row=2
+  score_row       = score_tile[2]
+  lane_mask       = local_row_mask_table[2]
+  multiplier      = SCORE_SCALE_MULTIPLIER
+  shift           = SCORE_SCALE_SHIFT
+  invalid_fill    = SOFTMAX_NEG_INF
+```
+
+Vector Engine behavior:
+
+```text
+for lane in 0..7 in the same vector transaction:
+  scaled = round_fixed(score_row[lane], multiplier, shift)
+  output[lane] = lane_mask[lane] ? scaled : invalid_fill
+```
+
+The current RTL cannot be used unchanged: its generic `valid_mask=0` behavior
+writes zero. Zero is a legal score and would affect Softmax. The masked
+`VSCALE_FIXED` implementation must instead select `SOFTMAX_NEG_INF` for an
+invalid lane. This is an operation-specific inactive-lane result, while other
+Vector operations retain their reviewed inactive-lane behavior.
+
+Concrete causal-row example, using a simplified scale of one half only to make
+the dataflow easy to read:
+
+```text
+query row             = 2
+causal row mask       = 0b0000_0111
+raw scores            = [16, 12, 8, 4, 0, -4, -8, -12]
+scaled values         = [ 8,  6, 4, 2, 0, -2, -4,  -6]
+fused Scale/Mask out  = [ 8,  6, 4, N, N,  N,  N,   N]
+N                     = SOFTMAX_NEG_INF
+```
+
+Only one row read and one row write occur. The mask does not add a second
+Vector uop or a second score-tile pass.
+
+Descriptor-level execution sequence:
+
+```text
+ATTENTION_SCALE_MASK_V1 descriptor
+  -> Data Mover loads score tile
+  -> Data Mover loads/unpacks two row-mask words
+  -> Uop Scheduler issues VSCALE_FIXED row 0..7
+  -> each Vector transaction scales and mask-selects one row
+  -> Data Mover stores the scaled/masked score tile
+
+ATTENTION_SOFTMAX_V1 descriptor references the same row-mask table
+  -> Reduction excludes invalid lanes from max and sum
+  -> SFU work is consumed only according to the reviewed mask behavior
+  -> Normalization forces invalid probabilities to zero
+```
+
+Writing the sentinel during Scale/Mask and carrying the same validity mask
+through Softmax serve different purposes:
+
+- the sentinel makes the stored/intermediate masked-score tile explicit and
+  prevents ordinary downstream vector operations from treating invalid scores
+  as useful values;
+- Reduction validity gating guarantees invalid lanes never affect max or sum;
+- normalization gating guarantees invalid output probability is exactly zero.
+
+The design intentionally does not rely only on a finite sentinel to approximate
+negative infinity.
+
+This fusion primarily saves movement and control overhead. The first RTL may
+still evaluate all eight multipliers before the writeback selects, so its
+Vector active cycle count may remain unchanged and its multiplier switching
+power may not fall. Later operand gating may reduce invalid-lane switching
+power, but it requires measured benefit and must not alter the result.
+
+中文说明：
+
+“Mask融合进Score Scale”具体指同一次Vector写回完成两个动作。每个lane先
+得到定点缩放结果，写回前由一个选择器检查该row的mask bit：有效lane写缩放
+值，无效lane写`SOFTMAX_NEG_INF`。因此不会再启动一次独立Mask操作，也不会
+再次读取和写回Score tile。
+
+当前RTL中`valid_mask=0`时输出为零，不能直接当作Attention Mask，因为零分数
+仍会参与Softmax。目标RTL需要让`VSCALE_FIXED`的无效lane写sentinel，同时
+Reduction和Normalization继续使用同一row mask精确排除无效lane。该融合主要
+节省第二次数据遍历和控制开销；如果八路乘法仍全部翻转，第一版不一定降低
+Vector cycle或乘法器动态功耗。
+
+sentinel和row mask不是重复机制：sentinel用于明确保存中间masked-score；
+Reduction使用mask保证无效lane不参与max/sum；Normalization使用mask保证
+最终概率严格为零。不能只依靠一个有限负数近似数学上的负无穷。
+
+For regular causal and tail cases, an implementation may generate the row mask
+from query/key indices instead of storing all row masks, but this is an
+encoding optimization. It must preserve the same architectural
+`valid_lane_mask[row]` semantics and be compared for area, power, and cycles.
+
+#### Software and hardware ownership
+
+| Layer/module | Required responsibility |
+| --- | --- |
+| Operator/numerical contract | define visibility semantics, `SOFTMAX_NEG_INF`, all-invalid-row behavior, and output-zero rule |
+| Compiler | compose causal/padding/tail rules; skip fully invisible future tiles when multi-tile lowering exists; emit mask metadata |
+| Runtime/descriptor | transport mask policy/metadata without interpreting values; reject unsupported masked plans |
+| Uop Scheduler | issue row-indexed primitives with an architectural mask reference; no per-lane policy decisions |
+| Vector / Scale-Mask | apply fixed scaling and select `SOFTMAX_NEG_INF` for invalid score lanes |
+| Reduction | exclude invalid lanes from max/sum and count only valid reduced elements |
+| SFU | no mask-policy logic; receives only valid or reviewed sentinel-derived inputs |
+| PV / Matrix | consume zero probabilities; future multi-tile planner skips fully invisible tiles |
+| PPA | report mask policy, valid elements, skipped tiles, mask movement, and mask-control cycles |
+
+#### Selected interface
+
+The descriptor selects one compact row-mask table. Existing row-indexed
+primitives select the matching row implicitly:
+
+```text
+descriptor input1 -> local_row_mask_table
+row_index         -> valid_lane_mask[row_index]
+```
+
+For the current eight-lane tile, each `valid_lane_mask` is eight bits. Eight
+rows pack into two 32-bit words. Scale/Mask and Softmax descriptors reference
+the same table. The Data mover loads it into reviewed local row-mask registers
+before Scheduler launch. RTL must not hard-code causal row patterns.
+
+No descriptor ABI field is added. For the two Attention descriptor op types,
+`input1_words=0` means implicit all-valid execution and `input1_words=2` means
+`input1_addr` references the packed row-mask table. Command Processor validates
+this combination, Data Mover loads and unpacks the two words, and
+`row_mask_ready` becomes a Scheduler-launch dependency. Exact hardware
+sequencing and error behavior are defined in
+`arch/specs/transformer/v1/descriptor_v1.md`.
+
+中文说明：
+
+Mask确实需要通过descriptor告知硬件，但不需要新增descriptor字段。现有
+`input1_addr/input1_words`在Scale/Mask和Softmax任务中被定义为row-mask表：
+长度为0表示所有lane有效，长度为2表示从地址加载两个mask word。Command
+Processor完成校验后，由Data Mover加载到NPU Core本地8个8-bit寄存器；
+加载完成前不能启动Uop Scheduler。
+
+No new `MASK` instruction is generated:
+
+```text
+Scale/Mask program remains: 8 x VSCALE_FIXED + HALT
+Softmax program remains:    112 primitives + HALT
+```
+
+This avoids adding serialized Scheduler issue/response overhead. The new PPA
+cost is two mask-table words of movement plus lane gating.
+
+#### Correctness corner cases
+
+- Masking happens before row maximum.
+- Invalid lanes never contribute to max or sum.
+- Invalid probability lanes are exactly zero.
+- A row with no valid lane is an error/unsupported input for v1. Runtime and
+  Compiler must reject it; Reduction must expose an error if it still reaches
+  hardware.
+- Padding and tail rules compose with causal visibility using logical AND.
+- `SOFTMAX_NEG_INF` is signed int32 minimum and is never treated as a valid
+  Reduction/subtraction operand.
+
+#### Expected PPA impact and acceptance
+
+中文说明：
+
+- 新增代价：两个mask word的数据搬运、8-lane门控、Reduction输入筛选以及
+  少量控制逻辑；
+- 直接收益：避免CPU对Score矩阵进行一次完整读改写，减少SRAM流量和同步；
+- 当前限制：`8x8` QK仍会完整计算，因此当前Matrix cycle不会因为mask减少；
+- 后续收益：支持多tile后，可以跳过causal Attention中完全不可见的未来
+  QK/PV tile，并减少无效Softmax工作。
+
+Expected cost:
+
+- eight valid-lane gates/selects on the current Vector/Reduction path;
+- compact row-mask metadata storage/transport;
+- command/descriptor fields and verification logic;
+- possible critical-path pressure in Reduction input selection.
+
+Expected benefit:
+
+- removes a software-only score-mask read/modify/write pass;
+- avoids an extra score-tile synchronization boundary;
+- enables future on-chip score residency and fused scheduling;
+- permits fully masked future tiles to be skipped in multi-tile causal
+  Attention;
+- prevents invalid lanes from consuming useful Reduction/SFU work when later
+  scheduling supports skipping them.
+
+The feature is accepted only if:
+
+1. causal, padding, and tail goldens pass;
+2. invalid lanes do not affect max, sum, probability, or PV output;
+3. PPA shows mask-control and mask-movement cost explicitly;
+4. masked NPU execution is no slower than the measured CPU-materialization
+   fallback for the reviewed workload;
+5. synthesized/mapped evidence later confirms that the added gating does not
+   invalidate the performance-first timing contract.
+
+#### Remaining completeness work
+
+The implemented single-tile path settled local storage and canonical sentinel
+behavior. Remaining work is:
+
+1. precise hardware-visible malformed-descriptor/all-invalid-row reporting;
+2. executable tail rows after Scheduler stops issuing invalid physical rows;
+3. required PPA comparison against CPU materialization;
+4. deciding whether a real workload justifies arbitrary dense masks.
+
+Masking must happen before row max. If an invalid score is simply zeroed after
+softmax, it can still affect row max, row sum, and output probability. The
+correct behavior is to exclude invalid positions from softmax. The current
+unmasked path remains the measured baseline until the accepted architecture
+direction is fully specified and implemented.
 
 Current status:
 
-- vector engine has `valid_mask`, but inactive lanes currently produce zero;
-- reduction engine has `length` but no general per-lane mask;
-- no reviewed `SOFTMAX_NEG_INF` sentinel is defined.
+- Compiler emits packed causal row masks and Runtime passes the same table to
+  Scale/Mask and Softmax;
+- Vector writes `SOFTMAX_NEG_INF` for invalid scaled-score lanes;
+- Reduction excludes invalid lanes and normalization writes zero probability;
+- causal `S=8,D=8` passes end-to-end RTL execution and golden checking;
+- executable tail/all-invalid-row handling remains before generalized decoder
+  Attention claims.
 
-Needed for attention:
-
-- define `SOFTMAX_NEG_INF` in the numerical contract;
-- decide whether mask is compiler-materialized, vector mask-select, or
-  reduction-valid-mask;
-- add mask/tail golden vectors before claiming decoder attention behavior.
-
-### 4. Row Softmax
+### 4. Row Softmax / 逐行Softmax
 
 Formula per row:
 
@@ -409,7 +781,13 @@ Needed for attention:
 - add valid/ready/counter semantics before scheduler integration;
 - report reduction/SFU/vector cycles separately.
 
-### 5. Probability-Value Matmul
+中文说明：
+
+Softmax是Compiler生成的逐行micro-kernel，由Reduction求最大值和求和、
+Vector执行减法/截断/归一化、SFU执行EXP和倒数。Uop Scheduler负责取指、
+译码、发射和等待完成，各计算模块不负责决定下一条Softmax原语。
+
+### 5. Probability-Value Matmul / 概率与Value矩阵乘
 
 Formula:
 
@@ -476,7 +854,13 @@ Needed for attention:
 - if using int8 probability, define rounding/clamp and expected error;
 - if using mixed precision, update matrix/vector docs, area proxy, and tests.
 
-## Current Implementation Inventory
+中文说明：
+
+PV阶段计算`P × V`得到Attention输出。P是运行时Softmax概率，不是模型
+权重。当前路径使用Q0.15概率乘int8 Value并输出int32；较大的序列维度同样
+需要沿K维分块累加，较大的输出维度需要多个输出tile。
+
+## Current Implementation Inventory / 当前实现清单
 
 | Capability | Current implementation | Attention readiness |
 | --- | --- | --- |
@@ -490,7 +874,10 @@ Needed for attention:
 | core command processor/runtime descriptors | `npu_v0_core_system.sv` | matmul/k-stream focused; no command-list attention sequence |
 | perf/PPA | perf CSR snapshots and L0 report | matmul/data mover visible; attention group counters missing |
 
-## Planned Execution Stages
+该表用于区分已经可以作为RTL证据的能力和仍需设计或验证的能力。任何尚未
+实现的能力都不能仅依靠模型估算标记为已执行。
+
+## Planned Execution Stages / 计划执行阶段
 
 The numerical iteration plan is defined in
 `docs/design/transformer/attention_numerical_v1.md`. The execution stages below
@@ -555,10 +942,16 @@ Exit criteria:
 - Use PPA evidence to decide whether true GEMV/skinny-GEMM or KV streaming is
   the next hardware priority.
 
-## Non-Goals
+## Non-Goals / 非目标
 
 - No dedicated attention RTL macro in v1.
 - No fused attention pipeline.
 - No full decoder block until attention sequence evidence is stable.
 - No multi-head hardware fusion.
 - No real LPDDR/KV cache controller.
+
+中文说明：
+
+v1阶段不会增加独立Attention宏模块、完整融合流水线、多头硬件融合或真实
+LPDDR/KV控制器。先保证共享原语路径正确、可测量，再根据PPA证据决定是否
+引入融合硬件。

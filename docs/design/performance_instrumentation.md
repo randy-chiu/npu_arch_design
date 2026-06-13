@@ -305,6 +305,23 @@ promise. It assumes one cycle per primitive issue and no stalls. Until
 vector/reduction/SFU active-cycle CSRs are connected, scale/mask and softmax
 use measured core-active cycles as an explicitly labeled model.
 
+For report labels, current MatMul `UOP_LOAD A/B` instructions must be displayed
+as operand-bank binds, not external-memory loads. Descriptor-directed Data
+mover activity performs the external SRAM transfer before the Scheduler is
+launched; the compatibility opcode only selects and checks the already
+prefetched operand bank.
+
+Transformer case reports must render the four Attention stages as one
+computation graph:
+
+```text
+QK -> Scale/Mask -> Row Softmax -> PV
+```
+
+Projection, decode, RMSNorm, FFN, and other supporting microbenchmarks belong
+in separate graph groups and must not appear as predecessor or successor nodes
+of the Attention graph.
+
 Example for current `8x8x8` QK:
 
 ```text

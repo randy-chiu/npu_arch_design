@@ -1,6 +1,6 @@
 # Attention Compiler v1
 
-## Scope
+## Scope / 范围
 
 This document defines the compiler design for lowering a logical Transformer
 attention operator to existing NPU primitive jobs. It is the implementation plan
@@ -10,6 +10,13 @@ The compiler must replace the current attention-specific fixture logic as the
 owner of execution planning. The fixture generator should only generate
 deterministic tensor contents, expected outputs, and C/hex artifacts from
 compiler output.
+
+中文说明：
+
+Compiler负责把逻辑Attention和大矩阵运算转换成硬件能够执行的tile、
+primitive program、buffer和descriptor序列。Compiler决定Mask语义、M/N/K
+分块、tile顺序和边界有效范围；它不负责RTL内部握手，也不能依赖fixture中
+硬编码的数据布局或任务顺序。
 
 ## Current State
 
@@ -174,6 +181,19 @@ M = 8, N = 8, K = 8, k_chunks = 1
 For future `D_k > 8`, the compiler calls the existing K-stream planner and
 emits one runtime job with multiple chunks when the descriptor supports it.
 
+For future `S_q > 8` or `S_k > 8`, Compiler emits one QK output-tile
+descriptor per `(query_tile, key_tile)` pair. Each output-tile descriptor uses
+K-stream for `D_k > 8`. This is the M/N/K tiling contract defined in
+`transformer_npu_v1.md`; it must be reviewed before multi-tile Attention
+lowering is coded.
+
+中文说明：
+
+`D_k > 8`时，一个QK输出tile内部通过K-stream累加；`S_q > 8`或`S_k > 8`
+时，Compiler为每个Query tile和Key tile组合生成独立输出tile descriptor。
+因此大Attention不是扩大Matrix Engine，而是由Compiler生成多个8x8输出
+tile，并由Runtime按计划执行。
+
 ### 4. Plan Score Scale And Mask
 
 Mathematical attention requires:
@@ -216,6 +236,78 @@ Mask planning:
 
 Invalid lanes become `SCORE_NEG_INF`. The compiler must record mask policy even
 when the first smoke workload uses `none`.
+
+#### Canonical single-tile mask representation
+
+Design status: Compiler planning and causal single-tile RTL execution are
+implemented. The hardware uses a descriptor-referenced packed row-mask table
+without a new `MASK` uop.
+
+The first generalized lowering uses one `valid_lane_mask` integer per physical
+query-tile row plus one `valid_query_mask`. For the current eight-lane tile,
+bit `j` corresponds to key lane `j`:
+
+```text
+bit j = 1: lane participates in scale/mask, reduction, softmax, and PV
+bit j = 0: lane is invalid and must contribute zero probability
+```
+
+Logical policies compose before hardware issue:
+
+```text
+valid(query, key) =
+    key < seq_k
+    and key < valid_k
+    and (not causal or key <= query)
+```
+
+Here `key < seq_k` also materializes the tile-tail rule. The plan records:
+
+| Field | Meaning |
+| --- | --- |
+| `mask_policy` | `none`, `causal`, `padding`, or `causal_padding` |
+| `valid_k` | valid key count used by padding lowering |
+| `tile_rows` / `tile_cols` | current physical tile dimensions |
+| `valid_query_mask` | physical rows corresponding to logical query rows |
+| `valid_lane_masks` | one integer bit mask per physical query-tile row; tail rows are zero |
+| `execution_state` | `executable` only when current RTL supports the emitted mask |
+
+For the first P3 implementation, `seq_q` and `seq_k` may be represented only
+when both are at most eight. Shapes larger than one tile require Compiler v2
+multi-tile lowering and are rejected. The current RTL executes full physical
+eight-row plans whose rows are non-empty, including causal `S=8,D=8`.
+Plans containing zero-mask physical rows remain `planned_not_executable` until
+tail-row scheduling is implemented.
+
+The Compiler owns policy composition, not the hardware mechanism:
+
+- it may emit explicit row masks for the current single tile;
+- a future multi-tile planner may omit fully invisible causal tiles;
+- it must not assume a hardware mask transport that the selected target
+  contract does not declare;
+- arbitrary dense masks remain unsupported until their storage and movement
+  contract is reviewed.
+
+For the current `8x8` tile, Compiler output adds:
+
+```text
+row_mask_words[2]
+```
+
+It does not add primitive instructions. Existing Scale/Mask and Softmax
+programs remain row-indexed and unchanged in length. Runtime jobs for both
+stages reference the same row-mask buffer through descriptor `input1`.
+
+Current executable workload status:
+
+- `transformer_attention_prefill_s8_d8` declares `mask_policy=causal`;
+- fixture generation emits the packed row-mask table and masked score golden;
+- Scale/Mask and Softmax runtime jobs share the generated `row_mask` buffer;
+- CPU-to-NPU RTL execution verifies causal masked scores, probabilities, and
+  produced PV output.
+
+The remaining single-tile gap is tail-query execution where physical rows have
+no valid lane.
 
 ### 5. Plan Softmax
 

@@ -1,11 +1,14 @@
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from npu_compiler.attention import (
+    build_attention_mask_plan,
     build_attention_plan_from_manifest,
     build_softmax_expanded_primitive_program,
 )
 from npu_compiler.attention_plan_schema import validate_attention_plan
+from firmware.emit_soc_cpu_smoke_data import _append_transformer_runtime_plan_data
 from transformer.generate_transformer_micro_fixtures import read_jsonc
 
 
@@ -21,6 +24,10 @@ class AttentionPlanTests(unittest.TestCase):
         self.assertEqual(plan["group_state"], "software_group_measured_stages")
         self.assertEqual(plan["group_cycle_policy"], "sum_measured_stages")
         self.assertEqual(plan["scale_mask_provenance"], "measured_npu_vector_bridge")
+        self.assertEqual(plan["execution_state"], "executable")
+        self.assertEqual(plan["mask"]["valid_lane_masks"], [1, 3, 7, 15, 31, 63, 127, 255])
+        self.assertEqual(plan["mask"]["row_mask_words"], [0x0F070301, 0xFF7F3F1F])
+        self.assertTrue(all(job["execution_state"] == "executable" for job in plan["runtime_jobs"]))
 
     def test_attention_plan_preserves_typed_intermediate_buffers(self):
         plan = build_attention_plan_from_manifest(MANIFEST, "attention_prefill_s8_d8")
@@ -70,15 +77,54 @@ class AttentionPlanTests(unittest.TestCase):
             validate_attention_plan(plan)
 
     def test_manifest_lowering_rejects_unsupported_parent_shape(self):
-        spec = dict(MANIFEST)
-        spec["workloads"] = [dict(workload) for workload in MANIFEST["workloads"]]
+        spec = deepcopy(MANIFEST)
         for workload in spec["workloads"]:
             if workload.get("logical_op") == "scaled_dot_product_attention":
-                workload["shape"] = dict(workload["shape"])
                 workload["shape"]["seq_len"] = 16
 
-        with self.assertRaisesRegex(ValueError, "seq_len=8"):
+        with self.assertRaisesRegex(ValueError, "seq_q/seq_k in 1..8"):
             build_attention_plan_from_manifest(spec, "attention_prefill_s8_d8")
+
+    def test_compiler_composes_causal_and_padding_masks(self):
+        mask = build_attention_mask_plan(seq_q=4, seq_k=6, mask_policy="causal_padding", valid_k=3)
+
+        self.assertEqual(mask["valid_query_mask"], 0b1111)
+        self.assertEqual(mask["valid_lane_masks"], [0b000001, 0b000011, 0b000111, 0b000111, 0, 0, 0, 0])
+        self.assertEqual(mask["execution_state"], "planned_not_executable")
+
+    def test_tail_plan_is_not_silently_executable(self):
+        spec = deepcopy(MANIFEST)
+        for workload in spec["workloads"]:
+            if workload.get("logical_op") == "scaled_dot_product_attention":
+                workload["shape"]["seq_q"] = 5
+                workload["shape"]["seq_k"] = 5
+                workload["mask_policy"] = "padding"
+                workload["valid_k"] = 5
+
+        plan = build_attention_plan_from_manifest(spec, "attention_prefill_s8_d8")
+
+        self.assertEqual(plan["execution_state"], "planned_not_executable")
+        self.assertEqual(plan["mask"]["valid_query_mask"], 0b11111)
+        self.assertEqual(plan["mask"]["valid_lane_masks"][:5], [0b11111] * 5)
+        self.assertEqual(plan["mask"]["valid_lane_masks"][5:], [0, 0, 0])
+        self.assertTrue(all(job["execution_state"] == "planned_not_executable" for job in plan["runtime_jobs"]))
+
+    def test_validator_rejects_all_invalid_row_marked_executable(self):
+        plan = build_attention_plan_from_manifest(MANIFEST, "attention_prefill_s8_d8")
+        plan["mask"] = build_attention_mask_plan(seq_q=8, seq_k=8, mask_policy="causal")
+        plan["mask"]["valid_lane_masks"][0] = 0
+        plan["mask"]["row_mask_words"][0] &= 0xFFFFFF00
+        plan["mask"]["execution_state"] = "executable"
+
+        with self.assertRaisesRegex(ValueError, "valid_lane_masks do not match"):
+            validate_attention_plan(plan)
+
+    def test_firmware_rejects_non_executable_mask_plan(self):
+        plan = build_attention_plan_from_manifest(MANIFEST, "attention_prefill_s8_d8")
+        plan["execution_state"] = "planned_not_executable"
+
+        with self.assertRaisesRegex(ValueError, "cannot emit non-executable attention plan"):
+            _append_transformer_runtime_plan_data([], {"attention_plans": [plan]})
 
 
 if __name__ == "__main__":

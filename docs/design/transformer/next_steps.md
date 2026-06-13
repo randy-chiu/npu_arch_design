@@ -49,11 +49,12 @@ for the fixed `S=8,D=8` bring-up case.
 
 Current boundary:
 
-- QK, unmasked scale/mask, softmax, and PV are launched and measured as
+- QK, causal scale/mask, masked softmax, and PV are launched and measured as
   separate descriptor jobs,
   but the firmware launch order now comes from a compiler-generated runtime-job
   table rather than direct hand-written stage calls.
-- QK output SRAM feeds an executable unmasked scale/mask descriptor, the
+- QK output SRAM plus a packed row-mask table feed an executable causal
+  scale/mask descriptor, the
   produced scaled-score tile feeds softmax, and the produced probability tile
   feeds PV for the fixed `S=8,D=8` case.
 - The parent `attention_prefill_s8_d8` workload is now
@@ -122,7 +123,7 @@ and its acceptance gate.
 | P0 | PPA timelines can contain raw-FSM labels, residual control buckets, out-of-range terminal events, irrelevant empty lanes, and missing conservation checks | stable semantic command/compute-control/engine/wait events, one job interval contract, timeline conservation validator, and report contract tests | every displayed span is measured and in range; compute-cluster child spans reconcile with parent activity; FSM renumbering cannot alter report meaning |
 | P1 | Expanded Softmax and Scale/Mask now use the common Scheduler, but the in-order start/done integration and large expanded program expose control and movement overhead | add typed wait reasons and valid-ready commands; measure expanded program against a generic loop candidate; reduce routing handoff cycles | both jobs show real Scheduler/engine spans, no operator-specific Compute-cluster sequence FSM, functional outputs unchanged, and before/after control/movement costs measured |
 | P2 | Some current one-cycle storage operations were visible in RTL/PPA but their required parallel hardware was not an explicit architecture contract | performance-first local-storage contract declaring accumulator, Attention-row, and Matrix-feed lanes/buses/latencies; RTL elaboration checks and PPA transaction conservation | every one-cycle operation names the required parallel resource; RTL dimensions match the contract; PPA rejects duration and overlap violations |
-| P3 | Current attention is only functionally complete for unmasked fixed `S=8,D=8`; it cannot represent real causal prefill or tails | causal/padding/tail mask contract, generalized shape/tile lowering, buffer-driven descriptor construction | multiple `S`, `D`, head, and tail cases match the golden model without stage-specific firmware switches |
+| P3 | Current attention is functionally complete for causal fixed `S=8,D=8`, but cannot execute tail rows or larger shapes | tail-row scheduling, generalized shape/tile lowering, buffer-driven descriptor construction | multiple `S`, `D`, head, and tail cases match the golden model without stage-specific firmware switches |
 | P4 | Separate descriptor launches and SRAM-visible intermediate boundaries add control and movement overhead | grouped command list, dependency tokens, on-chip score/probability tile residency, and optional matrix-to-vector/reduction/SFU streaming | full-attention group cycles include a stated runtime policy and demonstrate reduced launch/movement cycles against the unfused path |
 | P5 | Future storage sharing and widening can introduce unreported port conflicts | explicit bank ownership, allocator rules, double buffering, bank-conflict and wait-reason counters | timeline explains every compute idle interval using measured data, dependency, conflict, or backpressure reasons |
 | P6 | Softmax remains a bring-up numerical path and limits correctness claims | target EXP/RECIP implementation, reviewed scale/requant widths, saturation and error bounds | masked attention output meets documented tolerance over directed and randomized cases |
@@ -132,6 +133,157 @@ and its acceptance gate.
 Recommended execution order is P0 through P8. In particular, P4 fusion must
 retain an unfused reference path so its benefit and additional control/storage
 cost can be measured rather than assumed.
+
+### Active Package: P3 Mask And Shape Generalization
+
+P0 semantic-event instrumentation, P1 common-Scheduler integration, and P2
+performance-first resource contracts are complete. The active package is P3.
+
+Problem being solved:
+
+- the executable AttentionPlan silently assumes every lane in one `8x8` tile
+  is valid;
+- causal prefill, padding, and tile tails all require invalid lanes to be
+  excluded from scale/mask, row max, row sum, probability output, and PV;
+- adding larger shapes before defining this contract would make compiler,
+  runtime, RTL, golden, and PPA disagree about which work is useful.
+
+Accepted first-step design:
+
+1. Compiler lowering converts logical mask policy into one
+   `valid_lane_mask` bit vector per physical query-tile row. Bit `j=1` means
+   key lane `j` is visible to that row; rows beyond logical `seq_q` have a zero
+   mask and are excluded by `valid_query_mask`.
+2. `causal`, `padding`, and `tile_tail` are compiler-side rules that compose
+   into the same row-mask representation; they are not separate hardware
+   engines.
+3. Current hardware tile width remains eight lanes. Logical `seq_q` and
+   `seq_k` up to eight may be represented in a plan; larger shapes are
+   explicitly rejected until multi-tile lowering exists.
+4. Full physical eight-row plans with at least one valid lane per row are
+   executable, including causal `S=8,D=8`. Plans containing all-invalid
+   physical rows remain `planned_not_executable` until tail-row scheduling is
+   implemented.
+5. Golden behavior must prove invalid lanes cannot affect row max, row sum,
+   probability, or PV output before masked RTL is enabled.
+
+P3 implementation order:
+
+1. add the canonical mask/shape fields and legality rules to compiler design
+   and AttentionPlan validation;
+2. emit row `valid_lane_mask` values for none, causal, padding, and tile-tail
+   cases and add directed golden tests;
+3. specify the descriptor-referenced row-mask table and implicit row-indexed
+   uop selection, then implement Scale/Mask, Reduction, and Softmax RTL
+   consumption;
+4. make descriptor filling buffer-driven and add executable masked/tail
+   fixtures;
+5. generalize to multi-tile shapes only after the single-tile mask contract
+   passes end-to-end.
+
+First-step acceptance:
+
+- mask policy and every row mask are explicit in AttentionPlan;
+- causal, padding, and tile-tail composition is covered by directed tests;
+- unsupported executable shapes and masked plans fail or remain explicitly
+  non-executable instead of silently using the unmasked fixed case;
+- existing unmasked Transformer and CNN execution remains unchanged.
+
+Current P3 progress:
+
+- Compiler emits `valid_query_mask` and one `valid_lane_mask` per physical
+  query-tile row for `none`, `causal`, `padding`, and `causal_padding`.
+- AttentionPlan schema recomputes the expected masks and rejects inconsistent
+  metadata, shapes larger than one tile, and masked/tail plans incorrectly
+  marked executable.
+- Firmware-data emission rejects `planned_not_executable` plans before
+  producing a runtime-job table.
+- Golden coverage composes causal, padding, and tail visibility rules.
+- Causal `S=8,D=8` Transformer execution, Transformer PPA, full CNN execution,
+  and the complete unit/RTL regression pass.
+
+Next P3 action:
+
+- finish hardware-visible malformed-descriptor/all-invalid-row reporting;
+- make tail physical rows executable through valid-row-aware scheduling;
+- begin P3b buffer-driven runtime and edge-tile work before P3c multi-tile
+  `S=16,D=16`.
+
+P3 mask implementation decision:
+
+Status: P3a causal `S=8,D=8` is implemented end to end. Descriptor/uop specs
+select a packed descriptor-referenced row-mask table and no new `MASK` uop.
+Tail/all-invalid physical rows and hardware error status remain pending.
+
+- Masking remains Compiler-planned but is consumed in the NPU execution path.
+  This does not require a separate Mask engine.
+- Regular causal/tail/padding cases use compact row metadata or a generated
+  lane-valid predicate. Scale/Mask writes `SCORE_NEG_INF` for invalid lanes;
+  Reduction excludes invalid lanes from max/sum; Softmax emits zero
+  probability for them.
+- The expected hardware cost is lane-valid compare/gating and mask metadata
+  transport. The benefit is avoiding a CPU pass over the score tile, avoiding
+  an additional score-matrix SRAM read/write round trip, and allowing fused or
+  resident-score execution later.
+- A software-only fallback may materialize `SCORE_NEG_INF` into the score
+  matrix before Softmax, but it must be reported as CPU/materialization work
+  and is not the performance target.
+- Arbitrary dense masks are deferred. They require mask-tensor movement and
+  may not be worthwhile for this small baseline until a workload requires
+  them.
+
+### P3 Completion And Larger-Attention Roadmap
+
+Mask completion is not the end of P3. It removes the correctness blocker for
+generalized shapes; the next work is to stop treating `8x8` as the logical
+Attention size while retaining it as the physical compute tile.
+
+Execution order:
+
+1. **P3a: executable single-tile masks**
+   - add packed row-mask fixture/runtime data;
+   - load two mask words through descriptor `input1`;
+   - integrate lane gating in Scale/Mask, Reduction, and normalization;
+   - execute causal and tail cases with `seq_q/seq_k <= 8`.
+2. **P3b: edge-tile and buffer-driven runtime**
+   - remove stage-specific fixed-buffer assumptions;
+   - support logical rows/columns smaller than eight with valid-row/lane
+     masks;
+   - add multiple head/value dimensions that tile cleanly or use edge tiles.
+3. **P3c: multi-tile Attention baseline**
+   - review and accept the M/N/K tiling, descriptor ownership, boundary-tile,
+     and PPA contract in `transformer_npu_v1.md` before coding;
+   - first target `S=16,D=16`, then `S=32,D=32`;
+   - tile QK over query, key, and head-dimension axes;
+   - use K-stream accumulation for `D > 8`;
+   - materialize multi-tile score rows in SRAM for the first correct baseline;
+   - implement segmented row max/sum across key tiles;
+   - stream/accumulate PV across probability/value K chunks;
+   - skip fully invisible causal future-key tiles and report saved work.
+4. **P4: reduce the baseline overhead**
+   - compare the correct multi-descriptor/multi-tile baseline against grouped
+     command lists, on-chip score/probability residency, and streaming/online
+     Softmax;
+   - keep graph lowering, fusion choice, and command-list generation in the
+     Compiler; Runtime binds/submits, Host Wrapper remains thin, and Core
+     Command Processor/Uop Scheduler executes the list;
+   - retain the unfused baseline so PPA benefit is measured rather than
+     assumed.
+
+Required multi-tile workloads:
+
+| Workload | Purpose |
+| --- | --- |
+| causal `S=8,D=8` | first executable masked RTL and regression |
+| tail `S=5,D=8` | valid query/key lane behavior |
+| K-stream `S=8,D=16` | larger head dimension without larger Matrix array |
+| multi-key-tile `S=16,D=8` | segmented Softmax correctness |
+| multi-axis `S=16,D=16` | complete Compiler/runtime/buffer tiling baseline |
+
+The physical Matrix/Vector tile remains `8x8`/eight lanes. Larger logical
+Attention is primarily a Compiler, Runtime, buffer-allocation, segmented
+reduction, and scheduling problem before it is a reason to enlarge the RTL
+array.
 
 ### P2 Performance-First Physical Resource Contract
 
@@ -303,7 +455,7 @@ Measured stage PPA exists for:
 | Stage | Current PPA evidence | Main gap |
 | --- | --- | --- |
 | QK | measured cycles, data mover words, useful MACs, matrix utilization, L0 modeled energy; output feeds scale input | larger `D_k`/tile support remains |
-| Scale/mask | measured primitive-uop program movement, typed Scheduler issue/wait pairs, eight fixed-point Vector scale operations, and semantic accept/adapter/response cycles for unmasked `8x8 int32`; output feeds tile softmax | no causal/padding/tail mask; internal start/done adapter remains |
+| Scale/mask | measured primitive-uop program movement, row-mask movement, typed Scheduler issue/wait pairs, eight fixed-point Vector scale/mask operations, and semantic accept/adapter/response cycles for causal `8x8 int32`; output feeds tile softmax | tail/all-invalid-row scheduling and internal start/done adapter remain |
 | Softmax | measured 113-word program movement, typed Scheduler issue/wait spans, semantic control events, and per-engine row/lane timeline events, L0 modeled energy | expanded program and serialized one-in-flight execution dominate; per-engine energy counters remain incomplete |
 | PV | measured cycles through shared mixed matrix mode, useful MACs, matrix utilization, L0 modeled energy | mixed `u16 x s8` area/energy still uses generic MAC model coefficients |
 | Full attention parent | buffer-chained measured QK/scale-mask/eight-row-softmax/PV stages through generated runtime table | no command-list/full-descriptor snapshot, runtime overhead not measured |
@@ -336,7 +488,7 @@ Missing before claiming complete attention PPA:
 | SFU | `docs/design/transformer/sfu_v1.md` | standalone `sfu/sfu_lut.sv` implemented | EXP/RECIP/RSQRT and sequence tests pass | refine LUT/tolerance before model accuracy claims |
 | memory / scratchpad / data mover | common docs in `docs/design/` | v0 core data mover exists | perf/PPA pass | add v1 internal scratchpad contract before widening |
 | KV cache subsystem | `arch/specs/transformer/v1/transformer_npu_v1.md` | spec/model-only counters only | perf/PPA model-only traffic visible | no RTL until decode traffic evidence justifies it |
-| Transformer attention workloads | `docs/design/transformer/attention_workload_ppa.md` | QK, unmasked scale/mask, attention softmax, and mixed PV stage jobs execute from a generated runtime-job table with fixed-case buffer chaining | `make cpu-soc-transformer` and `make ppa-l0-report WORKLOAD_PROFILE=transformer` pass | remove fixed-shape/stage-specific runtime assumptions, then reduce launch and external-memory boundaries |
+| Transformer attention workloads | `docs/design/transformer/attention_workload_ppa.md` | QK, causal scale/mask, masked attention softmax, and mixed PV stage jobs execute from a generated runtime-job table with fixed-case buffer chaining | `make cpu-soc-transformer` and `make ppa-l0-report WORKLOAD_PROFILE=transformer` pass | remove fixed-shape/stage-specific runtime assumptions, then reduce launch and external-memory boundaries |
 
 ## Completed Foundations
 
@@ -346,15 +498,16 @@ The following foundations are complete and are not competing next-step plans:
 - primitive valid/ready shims and local event counters have directed tests;
 - the fixed `S=8,D=8` attention planner, generated runtime table, and
   QK -> scale/mask -> softmax -> PV buffer chain execute;
-- unmasked Scale/Mask, tile Softmax, mixed-precision PV, and grouped
+- causal Scale/Mask, masked tile Softmax, mixed-precision PV, and grouped
   Transformer PPA are measurable;
 - PPA distinguishes measured events from modeled area/energy evidence.
 
 All new implementation priority and acceptance gates are defined only by
 `Recommended Next-Phase Plan`. Scale/Mask and Softmax migration to the common
-Uop Scheduler is complete. The active package is now P0 semantic-event and
-timeline-conservation work, followed by the remaining P1 valid-ready,
-typed-wait, and routing-handoff optimization.
+Uop Scheduler is complete. P0 semantic-event instrumentation, P1
+valid-ready/typed-wait integration, and P2 performance-first resource
+contracts are complete. The active package is P3 mask and shape
+generalization.
 
 ### Complete Attention Subnetwork Gap
 
@@ -383,8 +536,8 @@ Current state versus complete subnetwork:
 | Compiler lowering | manifest-driven plan emits QK, scale/mask, softmax, PV stages for `S=8,D=8` | generalize shape/tile lowering and reject/handle larger rows explicitly |
 | Runtime launch | CPU firmware iterates generated runtime jobs for QK, scale/mask, softmax, PV | make descriptor filling buffer-driven instead of stage-specific C switch |
 | QK stage | measured through `matmul_k_stream` | support larger `D_k`/tiles and expose matrix mode counters |
-| Scale/mask stage | executable measured unmasked `8x8 int32` descriptor; QK output feeds scale and scale output feeds softmax | add causal/padding/tail mask semantics |
-| Softmax stage | measured eight-row tile through current vector/reduction/SFU sequence | upgrade SFU/requant/mask numerical contract and generalize tiling |
+| Scale/mask stage | executable measured causal `8x8 int32` descriptor; QK output and packed row mask feed scaled/masked output | add tail/all-invalid-row scheduling and generalize tiling |
+| Softmax stage | measured masked eight-row tile through current vector/reduction/SFU sequence | upgrade SFU numerical contract and generalize segmented/tiled rows |
 | PV stage | measured through mixed `u16 x s8` matrix mode using produced probability tile | generalize tiling and review mixed-path PPA coefficients |
 | Intermediate buffers | fixed `S=8,D=8` SRAM buffers are producer-to-consumer chained | make descriptor filling generic and allocate buffers for generalized shapes |
 | Parent group PPA | `software_group_measured_stages` for QK/scale-mask/softmax/PV | add runtime-overhead policy; eventually one command-list snapshot |
@@ -403,9 +556,9 @@ Status:
 - Implemented in documentation: attention workload/PPA and compiler/runtime
   documents define parent/stage grouping, model-only versus measured evidence,
   and software-owned lowering.
-- Implemented in current SoC path: QK, unmasked scale/mask, softmax, and PV
+- Implemented in current SoC path: QK, causal scale/mask, masked softmax, and PV
   stages are separately executable and visible in PPA.
-- Still deferred: generalized intermediate-buffer allocation, mask semantics,
+- Still deferred: generalized intermediate-buffer allocation, tail/multi-tile semantics,
   command-list ABI, and measured full-attention parent row.
 
 Acceptance criteria:

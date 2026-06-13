@@ -53,11 +53,13 @@ padding masks are not yet covered because inactive lanes currently produce
 zero, while attention mask semantics require invalid positions to behave like
 large negative scores before softmax.
 
-Therefore attention needs one of:
-
-- explicit mask-select op;
-- compiler materializes masked scores before vector issue;
-- command-list field that maps invalid lanes to `SOFTMAX_NEG_INF` before max.
+The proposed end-to-end decision is owned by the Attention Mask section of
+`attention_sequence_v1.md`: Compiler emits compact row-valid metadata, the
+Scale/Mask vector operation selects `SOFTMAX_NEG_INF` for invalid lanes, and
+Reduction consumes the same validity mask. This architecture direction is
+accepted and does not add a `MASK` uop. Local mask storage/loading timing and
+the canonical `SOFTMAX_NEG_INF` value remain to be reviewed before RTL
+implementation; this is not current RTL behavior.
 
 ### Probability normalization
 
@@ -245,8 +247,61 @@ else:
 ```
 
 The core issues one eight-lane `VEC_SCALE_FIXED` operation per score row. One
-`8x8` tile therefore requires eight vector operations. Causal, padding, and
-tail mask-select behavior remains deferred.
+`8x8` tile therefore requires eight vector operations. Causal mask-select is
+implemented for the executable full-row tile. Tail rows remain deferred.
+
+### Masked Score-Scale Behavior
+
+Implementation status: implemented for the single-tile Attention path.
+
+The masked score-scale command adds one row-valid mask and one canonical
+inactive-lane fill value to the existing row operation:
+
+```text
+for lane in 0..7:
+  scaled = round_nearest_away_from_zero(score[lane] * multiplier / 2^shift)
+  out[lane] = valid_lane_mask[lane] ? scaled : SOFTMAX_NEG_INF
+```
+
+The operation reuses the Scale/Mask vector pass. It does not add a separate
+Mask engine or a second pass over the score tile.
+
+Conceptual datapath per lane:
+
+```text
+score -> fixed multiply/round/shift/clamp -> scaled ----+
+                                                       +-> output
+SOFTMAX_NEG_INF ---------------------------------------+
+                                      valid_lane ------^ select
+```
+
+The writeback select is part of the `VSCALE_FIXED` transaction. A masked
+command therefore has the same one-row uop count as an unmasked command.
+
+Current RTL behavior:
+
+- `vector_engine.sv` accepts an architectural inactive-lane fill value;
+- Compute Cluster supplies generated `SOFTMAX_NEG_INF` for `VSCALE_FIXED`;
+- later Softmax vector operations write zero for invalid probability lanes;
+- `SOFTMAX_NEG_INF` comes from canonical generated architecture configuration,
+  not an immediate encoded separately in every uop.
+
+Required interface semantics:
+
+- `valid_lane_mask` and `SOFTMAX_NEG_INF` are sampled/routed with the accepted
+  command and held stable until response;
+- invalid input values must not influence output;
+- all-invalid rows are rejected before issue and raise an error if they reach
+  the engine;
+- counters distinguish valid score-scale elements from invalid-lane selects;
+- unmasked execution uses an all-ones mask and remains bit-compatible.
+
+Expected cost is eight lane selects plus mask transport. Expected benefit is
+avoiding a separate CPU score-tile read/modify/write pass and enabling future
+score residency. This feature does not reduce current full-tile QK Matrix
+cycles by itself. If all multipliers still evaluate, the first implementation
+also does not claim invalid-lane multiplier power savings; operand gating is a
+separate measured optimization.
 
 #### Why this mechanism is effective
 
@@ -369,6 +424,8 @@ Target requant verification requires:
   shift, and explicit clamp; zero-point and runtime-selectable fields remain.
 - No scheduler-owned issue/retire protocol.
 - No attention mask-select semantics.
+- Masked score-scale semantics are documented and accepted as the architecture
+  direction but not implemented.
 - Current `VEC_MUL` is not a reviewed softmax normalization multiply.
 - Probability-to-int8 policy for PV is superseded for the first measured path
   by mixed `Q0.15 x int8` matrix mode, but final output requant policy remains
