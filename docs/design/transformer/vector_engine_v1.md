@@ -24,6 +24,44 @@ O = P * V
 
 The vector engine is needed in the following steps.
 
+### Row-level throughput target / 行级吞吐目标
+
+The current Vector Engine has eight lanes, so it computes eight elements of
+one Attention row in parallel. The integrated execution path nevertheless
+allows only one primitive command and one row context in flight. Eight
+Softmax rows therefore execute serially even though different rows are
+mathematically independent after their score data is available.
+
+当前Vector Engine具有8个lane，可以并行处理一行中的8个score；但当前
+Scheduler和Compute Cluster一次只允许一条primitive命令、一个row context
+在途，因此不同Softmax行仍完全串行。对于Prefill和多head Attention，这是
+明显的吞吐限制，而不仅是tail-row正确性问题。
+
+The architecture target is configurable row concurrency rather than blindly
+replicating a Vector Engine:
+
+```text
+row_parallelism = number of independent Softmax rows that may be in flight
+```
+
+Supporting `row_parallelism > 1` requires a reviewed combination of:
+
+- Scheduler contexts/scoreboard entries;
+- banked or multi-ported row storage;
+- Vector issue bandwidth;
+- independent Reduction state;
+- SFU EXP throughput;
+- response routing, dependency tracking, and backpressure counters.
+
+Candidate configurations begin with `1`, `2`, and `4` rows in flight. A
+candidate may replicate full row pipelines or share a pipelined/multi-lane SFU.
+The choice must follow measured bottlenecks and mapped area/timing, not an
+assumption that every row needs a dedicated Vector Engine.
+
+PPA acceptance must report per-engine issue rate/utilization, simultaneous
+rows in flight, full Softmax and full-Attention cycle change, resource delta,
+and mapped timing impact.
+
 ### Score scale
 
 Initial v1 represents `1 / sqrt(D)` as a power-of-two shift:
@@ -415,6 +453,115 @@ Target requant verification requires:
 - workload metadata test confirms numerical contract and requant mode agree
   across golden, firmware expected data, and PPA report fields.
 
+## B0 Vector Tile Requirements / B0 Vector Tile需求
+
+### Problem being solved / 要解决的问题
+
+B0 has `H=16` hidden rows and `FFN=32` intermediate rows. The current integrated
+Vector path is Attention-row-oriented: one eight-lane score row, one primitive
+command in flight, and operator-specific operand routing. That is not enough
+to execute RMSNorm, RoPE, residual add, SiLU, or gate multiply as honest B0 RTL
+workloads.
+
+中文说明：当前Vector集成路径可以服务8-lane Attention score row，但B0中
+hidden row是16个元素、FFN row是32个元素。若没有通用Vector Tile机制，这些
+非矩阵算子只能由CPU或fixture生成中间结果，PPA就看不到真实Vector/SFU开销。
+
+### Segment contract / 分段契约
+
+`DESC_VECTOR_TILE_V1` treats the eight-lane Vector Engine as the physical segment
+unit:
+
+```text
+segment_width = 8 lanes
+valid_lane_mask = compiler-derived mask for the current segment
+```
+
+For B0 initial shapes, every segment is full-width. The mask still exists in
+the contract so tail shapes do not require another descriptor format.
+
+Inactive lanes:
+
+| Operation class | Inactive lane output |
+| --- | --- |
+| unary/binary vector op | zero unless descriptor requests preserve-old-output |
+| final store | invalid lanes are not counted as useful lane ops |
+| RMSNorm scale | invalid lanes do not affect row state and store zero |
+
+The first B0 implementation should use full valid masks for `H=16` and
+`FFN=32`. Tail behavior is a required directed test before larger shapes are
+accepted.
+
+### Primitive mapping / Primitive映射
+
+| B0 stage | Primitive sequence |
+| --- | --- |
+| residual add | `VEC_ADD` per segment |
+| gate multiply | `VEC_MUL` followed by `VEC_REQUANT` or `VEC_SCALE` per segment |
+| RoPE | pairwise vector multiply/add using descriptor-visible sin/cos constants; exact primitive expansion to be reviewed before RTL |
+| SiLU | reviewed approximation through SFU or vector LUT; not executable until numerical contract is accepted |
+| RMSNorm scale pass | `VEC_SCALE` per segment using row `inv_rms` scalar |
+
+The Vector Engine must not know these operator names. It only executes the
+primitive opcode and operands supplied by the Scheduler.
+
+### v0 integrated carrier / v0集成承载路径
+
+The first RTL integration adds `DESC_VECTOR_TILE_V1` as a generic carrier, not as a
+new high-level operator engine:
+
+```text
+Data Mover input0 -> vector_src0[8] 32-bit
+Data Mover input1 -> vector_src1[8] 32-bit
+Uop Scheduler     -> VADD/VMUL/VREQUANT primitive command
+Vector Engine     -> vector_dst[8] 32-bit
+Data Mover output <- existing C window
+```
+
+This avoids using Matrix `A16/B8` operand banks as generic vector storage,
+because doing so would make B0 residual/RMSNorm/SwiGLU tests pass only for
+small truncated values. The first acceptance test is residual-style `VADD` over
+one full segment.
+
+### Constants and scalar operands / 常量与标量
+
+`DESC_VECTOR_TILE_V1` may supply constants through `input1` or a row-state/scalar
+table:
+
+- RoPE sin/cos pairs;
+- RMSNorm `inv_rms`;
+- clamp bounds and shifts;
+- SiLU approximation table or coefficients.
+
+Constants must be loaded through descriptor-visible data movement or generated
+architecture constants. They must not appear as unexplained RTL literals in
+Compute cluster.
+
+### PPA accounting / PPA统计
+
+For B0 vector tile stages, report:
+
+```text
+logical_elements = rows * row_width
+physical_segments = rows * ceil(row_width / 8)
+useful_vector_lane_ops = valid lanes operated by Vector Engine
+vector_active_cycles
+sfu_active_cycles when used
+data_mover_active_cycles
+segment_store_cycles
+```
+
+For simple per-segment ops, the theoretical minimum vector cycles are:
+
+```text
+ceil(logical_elements / vector_lanes)
+```
+
+For compound stages such as gate multiply plus requant, multiply by the number
+of primitive vector passes. The report must display both primitive-pass count
+and measured cycles so a user can see whether the loss comes from engine work
+or descriptor/movement overhead.
+
 ## Known gaps
 
 - Primitive standalone bring-up RTL only.
@@ -430,3 +577,7 @@ Target requant verification requires:
 - Probability-to-int8 policy for PV is superseded for the first measured path
   by mixed `Q0.15 x int8` matrix mode, but final output requant policy remains
   undefined.
+- First `DESC_VECTOR_TILE_V1 + VADD` carrier smoke is integrated and measured.
+- B0 residual stages are compiler-lowered into segment jobs but are not yet
+  submitted as part of the executable B0 run.
+- No B0 RoPE/SiLU/gate-multiply executable stage yet.

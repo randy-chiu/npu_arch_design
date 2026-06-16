@@ -92,6 +92,7 @@ def validate_arch(spec: dict[str, Any]) -> None:
     accumulator = contract.get("accumulator", {})
     attention_row = contract.get("attention_row_storage", {})
     matrix_feed = contract.get("matrix_operand_feed", {})
+    vector_tile_storage = contract.get("vector_tile_storage", {})
     for key in (
         "elements", "element_bits", "clear_elements_per_cycle",
         "commit_elements_per_cycle", "readout_elements_per_cycle",
@@ -111,6 +112,20 @@ def validate_arch(spec: dict[str, Any]) -> None:
         "b_read_bus_bits",
     ):
         _require_positive_int(matrix_feed, key)
+    if "vector_tile" in spec["scope"].get("operators", []):
+        for key in (
+            "elements_per_segment", "element_bits", "source_count",
+            "read_elements_per_cycle", "write_elements_per_cycle",
+            "source_read_cycles", "destination_write_cycles",
+            "read_bus_bits", "write_bus_bits",
+        ):
+            _require_positive_int(vector_tile_storage, key)
+        if vector_tile_storage["elements_per_segment"] != vector["lanes"]:
+            raise ArchSpecError("vector tile segment width must match vector lanes")
+        if vector_tile_storage["source_count"] < 2:
+            raise ArchSpecError("vector tile storage must provide two source segments")
+        if vector_tile_storage["element_bits"] != 32:
+            raise ArchSpecError("v0 vector tile storage must keep 32-bit lanes")
     tile_elems = compute["array_m"] * compute["array_n"]
     if accumulator["elements"] != tile_elems:
         raise ArchSpecError("performance_contract accumulator elements must match tile elements")

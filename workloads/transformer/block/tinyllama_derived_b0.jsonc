@@ -1,0 +1,29 @@
+{
+  "name": "tinyllama_derived_b0_block_prefill",
+  "reference_family": "TinyLlama/LLaMA",
+  "scenario": "transformer_prefill",
+  "shape": {
+    "seq_len": 8,
+    "hidden": 16,
+    "query_heads": 2,
+    "kv_heads": 1,
+    "head_dim": 8,
+    "ffn_intermediate": 32,
+    "blocks": 1
+  },
+  "topology": [
+    "rmsnorm",
+    "q_k_v_projection",
+    "rope",
+    "causal_gqa_attention",
+    "output_projection",
+    "residual_add",
+    "rmsnorm",
+    "swiglu",
+    "down_projection",
+    "residual_add"
+  ],
+  "input_and_weights": "deterministic_synthetic_int8",
+  "planner": "npu_compiler.block.build_b0_block_plan",
+  "execution_state": "planned_not_executable"
+}

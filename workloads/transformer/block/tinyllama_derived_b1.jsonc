@@ -1,0 +1,20 @@
+{
+  "name": "tinyllama_derived_b1_two_block_prefill",
+  "reference_family": "TinyLlama/LLaMA",
+  "scenario": "transformer_prefill",
+  "shape": {
+    "seq_len": 8,
+    "hidden": 16,
+    "query_heads": 2,
+    "kv_heads": 1,
+    "head_dim": 8,
+    "ffn_intermediate": 32,
+    "blocks": 2
+  },
+  "block_boundary": "block0/block_output -> block1/input_x",
+  "cpu_recomputation": false,
+  "fixture_replacement": false,
+  "input_and_weights": "deterministic_synthetic_int8_distinct_per_block",
+  "planner": "npu_compiler.block.build_b1_two_block_plan",
+  "execution_state": "planned_not_executable"
+}

@@ -107,6 +107,74 @@ The current standalone RTL accepts a packed vector up to `MAX_LEN`, but the
 future scheduler/runtime must define whether rows are issued whole or segmented.
 PPA counters must count useful reduced elements, not only command count.
 
+### B0 RMSNorm segmented rows / B0 RMSNorm分段行
+
+RMSNorm over B0 hidden width `H=16` is the first required segmented-row
+consumer:
+
+```text
+sumsq = sum_j x[j] * x[j]
+inv_rms = rsqrt(sumsq)
+y[j] = scale(x[j], inv_rms)
+```
+
+The physical reduction lane count is eight, so each hidden row has two
+segments. The first acceptable complete-B0 path must keep this whole operation
+inside measured NPU RTL:
+
+```text
+segment0 REDUCE_SUMSQ -> partial0
+segment1 REDUCE_SUMSQ -> partial1
+partial0 + partial1 -> row_sumsq
+SFU_RSQRT(row_sumsq) -> inv_rms
+Vector scale segment0 and segment1 by inv_rms
+```
+
+中文说明：RMSNorm不能只测两个segment的`REDUCE_SUMSQ`，然后由CPU把partial
+sum相加并计算`rsqrt`。如果这么做，B0仍然不是完整RTL执行。完整B0要求
+partial sum合并、RSQRT和scale都出现在NPU可测时间轴中。
+
+The initial implementation may choose either:
+
+| Option | Mechanism | Acceptance state |
+| --- | --- | --- |
+| bring-up partial only | NPU emits segment partial sums; CPU combines them | `partially_executable`, not complete B0 |
+| complete row-state path | NPU combines partials, runs `SFU_RSQRT`, then scales segments | eligible for B0 executable |
+
+The second option is the target for B0.
+
+### Row-state storage / 行状态存储
+
+Segmented reductions need temporary row state:
+
+```text
+partial_sumsq[row][segment]
+row_sumsq[row]
+inv_rms[row]
+```
+
+The first implementation may store this state in a small local scalar file or
+in SRAM through descriptor-visible movement. Either choice must be reflected in
+PPA:
+
+- local scalar file: area/storage cost and active cycles;
+- SRAM materialization: Data Mover words and cycles;
+- CPU materialization: explicit `planned_not_executable` gap.
+
+No row-state behavior may be hidden inside unreported testbench code.
+
+### Multiple independent rows / 多行并行
+
+Segmenting one long row and processing several independent rows are different
+problems. For Prefill and multi-head Attention, separate query rows can reduce
+independently. Current integration retains only one Reduction transaction in
+flight, which serializes those rows.
+
+支持多行并行不一定要求复制完整Reduction Engine，但至少需要为每个在途row
+保存独立的max/sum状态，并提供明确的输入仲裁、结果路由和backpressure语义。
+候选方案可以是多个Reduction实例，也可以是流水化、带多个row context的共享
+Reduction。选择依据必须是Softmax整组吞吐收益与mapped面积/时序代价。
+
 ## Parameters and source-of-truth config fields
 
 Source of truth: `arch/configs/npu_transformer_v1.jsonc`.
@@ -175,6 +243,20 @@ Counter exposure order:
 3. verify event and element counts in primitive directed tests;
 4. aggregate through scheduler/wrapper and expose CSR/report fields.
 
+For RMSNorm, PPA must additionally report:
+
+```text
+reduction_element_ops = rows * hidden
+segment_count = rows * ceil(hidden / reduction_lanes)
+partial_accumulate_cycles
+rsqrt_cycles
+scale_cycles
+```
+
+The theoretical minimum for the reduction portion is one reduction transaction
+per physical segment in the current in-order baseline. Any extra cycles must be
+attributed to Scheduler waits, row-state movement, SFU, or output backpressure.
+
 ## Current RTL status
 
 Implemented as `hw/npu_core/rtl/reduction/reduction_engine.sv`. The design-side
@@ -199,3 +281,4 @@ still uses start/done.
   direction but not implemented.
 - No segmented-row scheduler contract.
 - No measured `reduction_element_ops` counter.
+- No B0 RMSNorm complete row-state path yet.

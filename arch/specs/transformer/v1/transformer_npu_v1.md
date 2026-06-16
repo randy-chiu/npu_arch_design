@@ -7,6 +7,12 @@ unified tensor NPU baseline for edge LLM inference experiments. It is not a
 complete LLaMA implementation and does not introduce a fused attention
 pipeline.
 
+Architecture acceptance rule: a new hardware mechanism must be motivated by a
+measured representative LLM bottleneck, preserve a comparable baseline, and
+publish candidate-versus-baseline performance plus area/power evidence at the
+available evidence level. RTL functional completion alone does not establish
+that the mechanism is an architecture improvement.
+
 Initial model envelope:
 
 | Field | v1 target |
@@ -25,6 +31,26 @@ Initial model envelope:
 The v1 rule is primitive uops first. Software/compiler micro-kernels may expand
 `SOFTMAX_ROW` and `RMSNORM_ROW` into primitive uops, but hardware v1 does not
 need to recognize those rows as fused macro-ops.
+
+## B0/B1 Decoder Block Workload Contract
+
+The first complete-block architecture workload is fixed as:
+
+```text
+sequence=8, hidden=16, query_heads=2, kv_heads=1,
+head_dim=8, ffn_intermediate=32
+```
+
+B0 contains one block. B1 contains two chained blocks with distinct weights.
+This is a scaled TinyLlama/LLaMA-family topology and retains RMSNorm, RoPE,
+causal grouped-query Attention, SwiGLU, and two residual adds. Embeddings and
+LM head are not part of this block contract.
+
+This section defines a workload/acceptance contract; it does not add a
+hardware-visible instruction or descriptor encoding. A BlockPlan is
+`executable` only when every logical stage has measured RTL provenance.
+Compiler/golden-computed intermediates may validate a result but may not be
+substituted into an executable run.
 
 ## Module Split
 

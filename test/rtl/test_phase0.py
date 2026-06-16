@@ -77,6 +77,7 @@ class RTLFunctionalTests(unittest.TestCase):
                 "matmul_program.hex",
                 "attention_scale_mask_program.hex",
                 "attention_softmax_program.hex",
+                "vector_tile_vadd_program.hex",
                 "npu_v0_spec.svh",
                 "npu_v0_tb_params.svh",
             }

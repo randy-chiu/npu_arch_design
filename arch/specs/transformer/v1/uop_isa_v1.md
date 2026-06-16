@@ -90,10 +90,99 @@ change zero-point, dtype, or saturation range. An implementation may share the
 same multiply-round-shift datapath, but the ISA names describe different
 numerical contracts.
 
+`VMUL` alone is also not a replacement for `VSCALE_FIXED`: `VMUL` produces a
+raw lane-wise product under the generic Vector Tile contract, while
+`VSCALE_FIXED` includes attention score scaling, rounding, clamp, invalid-lane
+mask select, and score-row writeback semantics. Replacing `VSCALE_FIXED` would
+require a reviewed sequence such as `VMUL -> VREQUANT -> VMASK_SELECT` plus a
+descriptor-visible mask source. Until that sequence exists, Attention
+Scale/Mask keeps `VSCALE_FIXED`.
+
 The first scheduler integration remains in-order with at most one primitive
 command in flight. This is intentionally conservative: it removes duplicated
 operator control before adding issue queues, scoreboarding, or cross-engine
 overlap.
+
+## Vector Tile Micro-Kernel Contract
+
+`DESC_VECTOR_TILE_V1` descriptors use the same primitive uops as Attention Softmax.
+The ISA does not add `RMSNORM`, `ROPE`, `RESIDUAL`, or `SWIGLU` macro
+instructions for B0. Those operators are compiler micro-kernels.
+
+Compiler responsibilities:
+
+- expand each logical operator into primitive uops;
+- choose row/segment order;
+- provide constants such as RoPE sin/cos, scale shifts, and clamp bounds;
+- identify whether a program produces or consumes row-state scalars;
+- emit valid-lane masks for boundary segments.
+
+Scheduler responsibilities:
+
+- fetch/decode primitive uops;
+- issue one primitive command at a time in the first implementation;
+- wait for Vector/Reduction/SFU response;
+- expose primitive issue and wait events for PPA.
+
+Compute cluster responsibilities:
+
+- route the selected segment operands to engines;
+- capture intermediate row state or scalar results;
+- write output segments;
+- not own the operator loop.
+
+### Required B0 micro-kernel patterns
+
+RMSNorm over one row of width 16:
+
+```text
+segment0: REDUCE_SUMSQ row, segment0 -> partial0
+segment1: REDUCE_SUMSQ row, segment1 -> partial1
+row_sum = partial0 + partial1
+SFU_RSQRT row_sum -> inv_rms
+segment0: VEC_SCALE segment0 by inv_rms -> out0
+segment1: VEC_SCALE segment1 by inv_rms -> out1
+```
+
+Residual add over width 16:
+
+```text
+segment0: VEC_ADD x0, y0 -> out0
+segment1: VEC_ADD x1, y1 -> out1
+```
+
+Gate multiply over FFN width 32:
+
+```text
+for segment in 0..3:
+  VEC_MUL silu_gate_segment, up_segment
+  VEC_REQUANT or VEC_SCALE to target int8 domain
+```
+
+v0 bring-up opcode allocation:
+
+| Primitive | v0 opcode | Purpose |
+| --- | ---: | --- |
+| `VADD` | `0xC` | generic binary vector add segment; first `DESC_VECTOR_TILE_V1` proof |
+| `VMUL` | `0xD` | generic binary vector multiply segment for gate multiply/RoPE products |
+| `VREQUANT` | `0xE` | post-multiply fixed-point narrowing/scaling placeholder |
+
+The 4-bit v0 opcode space is now exhausted except `HALT`. Any additional
+primitive such as lane permutation, scalar-register addressing, or pairwise
+RoPE rotate must be treated as an ISA extension rather than another silent RTL
+local code.
+
+RoPE and SiLU require a reviewed numerical approximation before executable
+B0 acceptance. Their first programs may use generated constant tables, but the
+constant table must be descriptor-visible data rather than hidden RTL literals.
+
+### Row-state and scalar operands
+
+Primitive uop operands still have only small row/lane fields in the current
+encoding. B0 bring-up may interpret `arg0` as row index and `arg1` as segment
+or lane index under `DESC_VECTOR_TILE_V1`. Any expansion beyond this encoding, such
+as explicit scalar-register IDs, must be reviewed as an ISA change before RTL
+implementation.
 
 ## Softmax Scheduler Migration Contract
 

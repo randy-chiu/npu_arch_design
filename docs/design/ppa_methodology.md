@@ -136,30 +136,54 @@ The word `model` must not appear in user-facing report names or page labels.
 When physical power or area is unavailable, the page remains the power or area
 page and explicitly labels the current evidence as a normalized model.
 
-## 4. Evidence Levels / 结果可信度层级
+## 4. Evidence Views / 证据视角
 
-Every result must state its evidence level. Metrics from different levels may
-appear in one report, but must not be confused.
+The previous `L0/L1/L2/L3` names incorrectly suggested that one result replaced
+another. These are parallel views of the same named architecture variant.
+Every result must state its evidence view and metric provenance.
 
-| Level | Method | Current role | Claim boundary |
+| Evidence view | Method | Current role | Claim boundary |
 | --- | --- | --- | --- |
-| `L0_model` | Architectural perf CSR snapshot values in `PERF_JOB` plus structural resources and parameterized event-energy coefficients | immediate architecture comparison | cycles/traffic measured; area/energy normalized models only |
-| `L1_mapped` | Yosys/ABC mapping with a public Liberty library; optionally OpenSTA | lightweight ASIC area/timing trend | pre-layout mapped estimate |
-| `L2_power` | mapped netlist/library plus workload activity | workload-sensitive on-chip energy trend | pre-layout activity-driven estimate |
-| `L3_physical` | OpenROAD/OpenLane placement, CTS, routing, parasitic-aware reports | selected-variant validation | public-process physical estimate, not signoff |
+| `rtl_workload_view` | Architectural perf CSR snapshots plus structural resources and parameterized event-energy coefficients | fast workload-driven architecture iteration | cycles/traffic measured; area/energy are normalized estimates only |
+| `mapped_area_timing_view` | Yosys/ABC mapping with a public Liberty library; optionally OpenSTA | check resource cost and timing feasibility | pre-layout mapped area/timing estimate |
+| `activity_power_view` | mapped netlist/library plus workload activity | workload-sensitive on-chip power/energy trend | pre-layout activity-driven estimate |
+| `physical_implementation_view` | OpenROAD/OpenLane placement, CTS, routing, parasitic-aware reports | selected-variant validation | public-process physical estimate, not signoff |
 
-Immediate implementation target:
+The views coexist for the same architecture variant; none replaces another:
 
 ```text
-L0_model:
+one RTL/config/commit variant
+  -> rtl_workload_view: simulate workloads to measure cycles, events, traffic
+  -> mapped_area_timing_view: map the same RTL to estimate area and timing
+  -> activity_power_view: apply workload activity to estimate power/energy
+```
+
+The RTL workload view remains the fast workload-sensitive loop. The mapped
+area/timing view answers whether the resources and one-cycle assumptions are
+credible under a declared library and clock constraint. Reports may correlate
+views only when variant ID, RTL/config revision, synthesis top, and relevant
+parameterization match.
+
+这些证据视角应长期并存。RTL workload view回答workload执行了多少cycle、
+发生了多少搬运和等待；mapped area/timing view回答并行资源、宽端口和
+单cycle假设需要多少面积、能否达到目标时钟。只有variant、RTL/config版本、
+综合top和参数一致时，才能将不同视角组合成同一个架构结论。
+
+Current machine-readable schemas and make targets still contain legacy
+`L0_model`/`ppa-l0-*` identifiers. P8a must migrate those identifiers to view
+names without changing the underlying measured results or baseline identity.
+
+Current executable view:
+
+```text
+rtl_workload_view:
   measured performance and movement counters
   structural area model
   event-based energy model
 ```
 
 The existing `flows/asic/openroad/` directory is retained as the future
-`L3_physical` integration point. It is not required to begin Level 0
-comparison.
+`physical_implementation_view` integration point.
 
 当前第一步输出必须明确注明：cycle 与 movement 来自 RTL 实测；area 是结构
 模型；energy 是基于事件和系数的模型，不是综合后功耗。
@@ -170,7 +194,7 @@ Initial target policy:
 
 | Target | Role |
 | --- | --- |
-| `sky130hd` | future first public physical ASIC baseline target (`L3_physical`) |
+| `sky130hd` | future first public physical implementation baseline target |
 | `nangate45` | optional fast/reference comparison target |
 | `asap7` | optional advanced-node trend comparison after flow stability |
 
@@ -431,14 +455,16 @@ ppa/baselines/
 
 ## 9. Development Order / 开发顺序
 
-1. `L0_model`: integrate current RTL counters, structural area config, and
+1. `rtl_workload_view`: integrate current RTL counters, structural area config, and
    event-energy config into one comparable report.
 2. Use existing matmul/data-mover/ping-pong measurements and Transformer
    workload manifests to check whether the model exposes useful tradeoffs.
-3. `L1_mapped`: add lightweight Yosys/ABC mapping and optional OpenSTA timing
-   once representative variants need ASIC area/timing ranking.
-4. `L2_power`: add job-scoped activity-based on-chip power extraction.
-5. `L3_physical`: use SKY130HD/OpenROAD/OpenLane for selected variants after
+3. `mapped_area_timing_view`: add lightweight Yosys/ABC mapping and optional OpenSTA timing
+   for the retained baseline before accepting substantial datapath widening,
+   additional storage ports, larger arrays, or fusion structures. Continue
+   L1 ranking for representative candidates in parallel with workload growth.
+4. `activity_power_view`: add job-scoped activity-based on-chip power extraction.
+5. `physical_implementation_view`: use SKY130HD/OpenROAD/OpenLane for selected variants after
    memory accounting and Transformer evaluation shapes are stable.
 
 Transformer counter expansion order:

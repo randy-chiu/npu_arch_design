@@ -123,13 +123,92 @@ synthesized, but it must be reported as a distinct contribution.
 
 ## 6. Near-Term Deliverables / 近期交付
 
-1. Establish workload manifest format and directory entry point.
-2. Add initial prefill/decode micro-kernel manifests for GEMM/GEMV, RMSNorm,
-   and KV-cache traffic.
-3. Reuse current matmul/softmax simulation and perf mechanisms wherever the
-   operator contract already exists.
-4. Use resulting workload gaps and PPA baselines to select the first
-   Transformer-driven RTL extension.
+1. Define and execute one complete tiny LLaMA-like Prefill Decoder Block.
+2. Chain two complete blocks without CPU recomputation between them.
+3. Reuse current matrix/vector/reduction/SFU mechanisms and add only missing
+   primitives required by the complete block.
+4. Keep micro workloads as diagnosis tests, but select hardware optimizations
+   only from the complete-block bottleneck report.
+5. Add Decode/KV execution after the Prefill block baseline is complete.
+
+近期首先让NPU真实执行一个完整tiny Decoder Block，再串联两个Block。微算子
+测试继续用于定位问题，但不能单独决定硬件优化优先级；首次架构优化必须由
+完整Block PPA暴露的主要瓶颈驱动。
+
+### Complete tiny block contract / 完整tiny block约束
+
+The accepted executable block must include:
+
+```text
+RMSNorm
+Q/K/V projection
+position transform
+causal Attention
+Attention output projection
+residual add
+RMSNorm
+FFN gate/up projection
+activation and gate multiply
+FFN down projection
+residual add
+```
+
+Every stage must execute through NPU RTL and appear in PPA. Fixture-generated
+inputs and expected outputs are allowed; fixture- or CPU-computed intermediate
+operator results are not allowed in an accepted complete-block run.
+
+### B0/B1 TinyLlama-derived workload / B0/B1 TinyLlama派生工作负载
+
+The first block workload scales down TinyLlama/LLaMA structure without
+removing the architectural behaviors that matter to the NPU:
+
+| Field | B0 | B1 |
+| --- | ---: | ---: |
+| Prefill sequence `S` | 8 | 8 |
+| Hidden size `H` | 16 | 16 |
+| Query heads | 2 | 2 |
+| KV heads | 1 | 1 |
+| Head dimension | 8 | 8 |
+| FFN intermediate | 32 | 32 |
+| Decoder blocks | 1 | 2 |
+| Input/weight source | deterministic synthetic INT8 | deterministic synthetic INT8, distinct per block |
+
+`Q_heads=2, KV_heads=1` intentionally preserves grouped-query Attention. The
+two query heads initially execute sequentially and share one K/V head. This is
+a functional baseline, not the final scheduling policy.
+
+B0/B1 use separate Q, K, and V projections; separate gate and up projections;
+and materialized intermediate buffers. Fused projections, concurrent heads,
+resident intermediates, and command lists remain later candidates whose value
+must be measured against this retained baseline.
+
+The Compiler/planner must lower every logical matrix operation into physical
+`8x8x8` M/N/K tiles. The Runtime/submitter must not infer shapes or perform
+tiling. B0 already exercises N-axis tiling (`H=16`, `FFN=32`) and K-axis
+streaming (`H=16` or `FFN=32`); B1 additionally proves that the first block's
+actual output buffer is the second block's input.
+
+Acceptance state is explicit:
+
+| State | Meaning |
+| --- | --- |
+| `planned_not_executable` | BlockPlan, buffers, numerical golden, and tile jobs exist, but at least one stage lacks RTL execution provenance |
+| `partially_executable` | some stages execute in RTL; gaps remain visible and the block is not accepted |
+| `executable` | every stage executes through measured NPU RTL and the complete output matches golden |
+
+Neither a Python golden nor fixture-produced intermediates may promote a block
+to `executable`.
+
+Current executable subset:
+
+- `transformer_tinyllama_b0_matrix_subgraph` executes the seven B0 matrix
+  stages through NPU RTL as 16 `MATMUL_K_STREAM` descriptor jobs.
+- `transformer_tinyllama_b0_residual_vector_subgraph` executes the two B0
+  residual-add stages through NPU RTL as 32 `DESC_VECTOR_TILE_V1` descriptor
+  jobs, each running an eight-lane `VADD + HALT` primitive program.
+- Their status is `partially_executable` for the executable subgraphs and
+  `planned_not_executable` for the complete block.
+- PPA must display them as Block subgraph workloads, not as complete B0.
 
 ## 7. Post-CSR Baseline Decision / CSR 基线后的执行顺序
 

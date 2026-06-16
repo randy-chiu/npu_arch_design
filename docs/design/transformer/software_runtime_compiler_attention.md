@@ -67,6 +67,25 @@ silently perform ad hoc tiling itself.
 超出已编译契约，应明确拒绝或调用JIT/Compiler，而不是让Runtime临时发明一
 套未经验证的tiling。
 
+For architecture exploration, a convenient test API may accept a logical
+shape such as `matmul(M,N,K)` and appear to "run it automatically". The
+implementation still invokes the Compiler/planner first:
+
+```text
+test requests matmul(M,N,K)
+  -> Compiler/planner emits M/N/K tile descriptors and buffers
+  -> thin Runtime/submitter binds addresses and launches descriptors
+```
+
+The project does not need a production-grade Runtime to test this behavior.
+It needs a small, deterministic submit path that does not hard-code one shape
+and therefore does not distort hardware PPA experiments.
+
+在架构探索测试中，接口可以表现为输入一个`matmul(M,N,K)`就自动执行，但
+真正负责拆分tile的仍是Compiler/planner。Runtime只绑定地址并提交descriptor。
+当前不需要建设生产级Runtime，只需要一个不会硬编码单一shape、不会干扰
+硬件PPA分析的轻量提交路径。
+
 ## Large GEMM Example / 大矩阵示例
 
 For logical `C[16,16] = A[16,16] * B[16,16]` on an `8x8x8` Matrix Engine:
@@ -156,6 +175,195 @@ Current implementation:
 
 Therefore the architectural next step is to extend static Compiler output, not
 to move graph lowering into Runtime or Wrapper.
+
+### B0 non-matrix lowering / B0非矩阵lowering
+
+The same ownership rule applies to `DESC_VECTOR_TILE_V1`:
+
+```text
+logical RMSNorm/RoPE/Residual/SwiGLU stage
+  -> Compiler emits row/segment plan and primitive program
+  -> Runtime binds input/output/state addresses
+  -> Command Processor moves segment data
+  -> Uop Scheduler issues Vector/Reduction/SFU primitives
+```
+
+Runtime must not decide how many segments a row has, when to combine RMSNorm
+partial sums, or which SiLU approximation to use. Those are Compiler and spec
+decisions. Hardware must not infer operator identity from buffer names; it
+executes the descriptor and primitive program.
+
+During bring-up, a partial executable state is allowed only when clearly
+reported. For example, if NPU computes RMSNorm segment partial sums but CPU
+combines them, the workload is not complete B0 and PPA must show the CPU gap.
+
+## B0 Operator Lowering To Primitive Programs / B0算子到Primitive程序的编译
+
+### Problem / 问题
+
+B0 high-level operators are model semantics:
+
+```text
+RMSNorm, RoPE, Residual Add, SiLU, Gate Multiply
+```
+
+The NPU should not grow one RTL macro for each of these names. The correct
+software/hardware split is:
+
+```text
+Compiler understands operator math and emits primitive programs
+Runtime binds addresses and submits descriptors
+RTL executes generic primitive uops
+```
+
+If operator lowering is left implicit in firmware or test fixtures, B0 cannot
+be reused for shape changes and PPA cannot attribute work to actual engines.
+
+### Compiler artifact
+
+For every B0 non-matrix stage, the Compiler emits:
+
+| Field | Meaning |
+| --- | --- |
+| `stage_id` | stable B0 stage name |
+| `logical_op` | RMSNorm/RoPE/etc. |
+| `input_buffers` | logical buffers consumed |
+| `output_buffers` | logical buffers produced |
+| `segment_plan` | rows, row width, segment width, segment count, valid masks |
+| `primitive_program` | ordered uops consumed by the common Scheduler |
+| `constants` | RoPE tables, shifts, clamp bounds, SiLU coefficients |
+| `row_state` | scalar temporaries such as `sumsq` and `inv_rms` |
+| `golden_contract` | fixed-point model name and tolerance |
+| `ppa_theory` | useful lane ops and theoretical cycles |
+
+The generated firmware/header is only a serialization of this compiler
+artifact. It must not invent the primitive program.
+
+### RMSNorm lowering
+
+For one row of width `H=16`:
+
+```text
+for segment in 0..1:
+  REDUCE_SUMSQ row, segment -> partial_sumsq[segment]
+REDUCE_SUM partial_sumsq[0:2] -> row_sumsq
+SFU_RSQRT row_sumsq -> inv_rms
+for segment in 0..1:
+  VEC_SCALE row_segment by inv_rms -> output_segment
+```
+
+Bring-up may implement `partial0 + partial1` using a small scalar vector row
+and `REDUCE_SUM`, so it still uses existing Reduction/SFU primitives. Complete
+B0 requires all four steps to be in the measured NPU path.
+
+### Residual Add lowering
+
+For `H=16`:
+
+```text
+for segment in 0..1:
+  VEC_ADD input_segment, residual_segment -> output_segment
+```
+
+This is the first simple `DESC_VECTOR_TILE_V1` acceptance test because it needs no
+whole-row state.
+
+Compiler emission for the first RTL carrier test is:
+
+```text
+program = [VADD row=0 segment=0, HALT]
+descriptor.op_type = DESC_VECTOR_TILE_V1
+input0 = first 8-lane 32-bit segment
+input1 = second 8-lane 32-bit segment
+output = 8-lane 32-bit segment
+```
+
+This is intentionally not a `RESIDUAL_ADD` ISA instruction. The stage name
+remains a compiler/PPA label; the hardware sees only `DESC_VECTOR_TILE_V1` plus
+primitive uops.
+
+Layer naming rule:
+
+```text
+logical operator:     Residual Add
+descriptor/job type:  desc_vector_tile_v1 / DESC_VECTOR_TILE_V1
+primitive program:    VADD, HALT
+engine-local op:      OP_VEC_ADD
+```
+
+Software artifacts should keep these names separate so a PPA page or test
+failure immediately shows whether the issue is operator lowering, descriptor
+transport, Scheduler ISA decode, or Vector Engine execution.
+
+### RoPE lowering
+
+RoPE is pairwise rotation:
+
+```text
+y0 = round(x0 * cos - x1 * sin)
+y1 = round(x0 * sin + x1 * cos)
+```
+
+The compiler owns the sin/cos table and fixed-point scale. The first hardware
+implementation may use a reviewed primitive expansion such as:
+
+```text
+VEC_MUL x_even, cos
+VEC_MUL x_odd, sin
+VEC_SUB products -> y_even
+VEC_MUL x_even, sin
+VEC_MUL x_odd, cos
+VEC_ADD products -> y_odd
+VEC_REQUANT rotated values
+```
+
+If the current primitive set cannot express even/odd lane packing without
+extra swizzle support, the Compiler must mark RoPE `planned_not_executable`
+until a reviewed `VEC_PERMUTE` or pairwise-rotate primitive is added. It must
+not silently compute RoPE in CPU for an accepted B0 run.
+
+### SwiGLU lowering
+
+SwiGLU in B0 is:
+
+```text
+gated = SiLU(gate) * up
+```
+
+`gate` and `up` are `S=8, FFN=32`, so each row has four vector segments.
+
+First lowering:
+
+```text
+for segment in 0..3:
+  SFU/Vector approximation for SiLU(gate_segment) -> silu_segment
+  VEC_MUL silu_segment, up_segment -> product
+  VEC_REQUANT product -> gated_segment
+```
+
+SiLU approximation must be named in the numerical contract. A coarse LUT or
+piecewise-linear approximation is acceptable for bring-up only after its error
+and PPA cost are documented.
+
+### Compiler legality
+
+The Compiler must reject or mark `planned_not_executable` when:
+
+- row width cannot be represented by 8-lane segments;
+- required primitive opcodes are not available in the target RTL variant;
+- RoPE needs an unsupported lane swizzle;
+- SiLU approximation is not reviewed;
+- RMSNorm row-state accumulation would be CPU-materialized in a supposedly
+  executable B0 run.
+
+### First coding order
+
+1. residual add, because it proves generic binary vector segment routing;
+2. gate multiply without SiLU, as a second binary vector/requant check;
+3. RMSNorm segmented row-state;
+4. RoPE lane-pair support;
+5. SiLU approximation;
+6. full B0 connection and PPA.
 
 ## Current Executable State
 

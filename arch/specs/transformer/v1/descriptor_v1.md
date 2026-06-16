@@ -49,11 +49,131 @@ struct npu_job_desc_v1 {
 | `FFN_TILE` | feed-forward projection tile |
 | `KV_CACHE_READ` | KV read traffic or streamer job |
 | `KV_CACHE_WRITE` | KV write traffic or streamer job |
+| `DESC_VECTOR_TILE_V1` | compiler-expanded vector/reduction/SFU micro-kernel over one or more 8-lane row segments |
 
 The first implementation can execute only `MATMUL_TILE`, `MATMUL_K_STREAM`,
 and current-compatible Transformer matmul micro workloads. Unsupported job
 types must be reported as planned or unavailable, not silently treated as
 measured hardware support.
+
+## Vector Tile Descriptor Contract
+
+`DESC_VECTOR_TILE_V1` is the common non-matrix descriptor for B0 Decoder Block
+bring-up. It is not a dedicated RMSNorm, RoPE, Residual, or SwiGLU hardware
+macro. The descriptor selects tensor segments and a compiler-expanded primitive
+program; the Uop Scheduler still issues primitive Vector/Reduction/SFU commands.
+
+中文说明：`DESC_VECTOR_TILE_V1`解决的是B0非矩阵算子缺少通用RTL执行路径的问题。
+它不把RMSNorm、RoPE、SwiGLU固化为硬件状态机，而是让Compiler生成primitive
+程序，硬件按descriptor搬运数据并由Scheduler执行。
+
+### Naming layers / 命名层级
+
+Architecture names must expose their ownership layer:
+
+| Layer | Prefix/example | Meaning |
+| --- | --- | --- |
+| Descriptor/job class | `DESC_VECTOR_TILE_V1`, ABI string `desc_vector_tile_v1` | CPU-visible descriptor `op_type`; selects movement and local storage contract |
+| Primitive uop ISA | `VADD`, `VMUL`, `VSCALE_FIXED` | Scheduler-fetched instruction word inside the descriptor's program |
+| Engine-local operation | `OP_VEC_ADD`, `OP_VEC_SCALE_FIXED` | private Vector Engine control encoding, not visible to firmware/compiler ABI |
+| Logical model operator | `RMSNorm`, `RoPE`, `Residual Add`, `SwiGLU` | Compiler/PPA label only; not a hardware macro instruction |
+
+中文说明：`desc_vector_tile_v1`是job/descriptor层的类型，不是ISA指令。
+真正进入primitive program的是`VADD/VMUL/...`。同理，`OP_VEC_ADD`只是
+Vector Engine内部编码，不能直接出现在compiler/firmware ABI中。
+
+### Shape and segment fields
+
+For v1, the descriptor layout already reserves `m`, `n`, `k`, `hidden`, and
+`flags`. Their `DESC_VECTOR_TILE_V1` interpretation is:
+
+| Field | Meaning |
+| --- | --- |
+| `m` | number of logical rows covered by this descriptor |
+| `n` | logical row width in elements |
+| `k` | segment offset or segment count, selected by flags |
+| `hidden` | optional full hidden width for BlockPlan/PPA identity |
+| `input0_words` | words in one input0 segment payload |
+| `input1_words` | zero for unary ops, or words in one input1/constants segment |
+| `output_words` | words in one output segment payload |
+| `flags.segment_count` | number of physical 8-lane segments covered |
+| `flags.row_state_policy` | none, produce partial state, consume row state, or produce final output |
+| `flags.input_policy` | unary, binary, or constant-table |
+
+The first physical vector segment is eight lanes. Boundary segments use a
+valid-lane mask derived by Compiler from `n` and `segment_offset`.
+
+### Required hardware sequence
+
+```text
+Command Processor validates descriptor
+  -> Data Mover loads program
+  -> Data Mover loads input0 segment(s)
+  -> Data Mover loads input1/constants when present
+  -> optional Data Mover loads row-state/scalar table
+  -> Uop Scheduler executes primitive program
+  -> Compute cluster routes commands to Vector/Reduction/SFU engines
+  -> optional row-state/scalar result is stored
+  -> Data Mover stores output segment(s)
+```
+
+The descriptor is illegal when a primitive program references a segment outside
+the declared segment count or requires row state that was not supplied.
+
+### v0 bring-up storage mapping
+
+The first RTL-compatible `DESC_VECTOR_TILE_V1` mapping is deliberately narrow but
+generic at the primitive-program boundary:
+
+| Descriptor field | RTL destination/source |
+| --- | --- |
+| `input0` | `vector_src0[0:7]`, 32-bit lanes |
+| `input1` | `vector_src1[0:7]`, 32-bit lanes, optional for unary programs |
+| `output` | `vector_dst[0:7]` exposed through the existing `C` output window |
+| `program` | existing 16-word primitive instruction memory |
+
+This replaces Attention-specific routing where primitives implicitly consumed
+and produced `C[row][lane]`. Matrix `A16/B8` storage remains for Matrix Engine
+feeds and must not be used as the generic vector source for B0 non-matrix
+operators.
+
+中文说明：v0先证明“两个32-bit输入向量segment + 一个32-bit输出segment +
+primitive program”的硬件承载路径。它不把`RMSNorm/RoPE/SwiGLU`做成新的
+硬件macro，也不再依赖Attention score row的隐式C窗口语义。
+
+### RMSNorm row-state policy
+
+RMSNorm over `H=16` uses two 8-lane segments. The first accepted baseline may
+use two descriptor classes under `DESC_VECTOR_TILE_V1` flags:
+
+1. `produce_partial_sumsq`: each segment emits a partial `SUMSQ`;
+2. `consume_inv_rms_and_scale`: each segment consumes a row `inv_rms` scalar
+   and produces the scaled output segment.
+
+A middle software/firmware accumulation step is not accepted for complete B0.
+If used during bring-up, it must be labeled `planned_not_executable` or
+`partially_executable` and reported as a CPU/materialized gap. Complete B0
+requires the row-state accumulation and `SFU_RSQRT` to be measured through NPU
+RTL.
+
+### PPA fields
+
+`DESC_VECTOR_TILE_V1` reports:
+
+```text
+logical_elements
+physical_segments
+valid_lane_ops
+vector_active_cycles
+reduction_active_cycles
+sfu_active_cycles
+row_state_cycles
+data_mover_active_cycles
+descriptor_cycles
+```
+
+For B0, reports must keep `DESC_VECTOR_TILE_V1` stages under the Decoder Block graph
+and must not merge them into Attention-only rows.
 
 ## Attention Row-Mask Descriptor Contract
 

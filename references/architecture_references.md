@@ -1,5 +1,16 @@
 # Architecture References
 
+## LLM Workload References
+
+- TinyLlama, a compact LLaMA-family model used as the structural reference for
+  the scaled B0/B1 Decoder Block workload:
+  <https://arxiv.org/abs/2401.02385>
+- MobileLLM, a later small-model reference for depth, GQA, and edge-inference
+  workload comparisons:
+  <https://arxiv.org/abs/2402.14905>
+- Qwen2.5 technical report, a later model-family comparison point:
+  <https://arxiv.org/abs/2412.15115>
+
 This directory tracks architecture references and design ideas. The project
 should use these references as input for later architecture iterations, not as
 requirements for the minimal Phase 0/Phase 1 system.

@@ -5,7 +5,7 @@ module npu_v0_tb;
     logic clk;
     logic rst_n;
     logic start;
-    logic [1:0] op;
+    logic [2:0] op;
     logic done;
     logic [3:0] host_we;
     logic [11:0] host_addr;
@@ -32,7 +32,7 @@ module npu_v0_tb;
     initial begin
         rst_n = 1'b0;
         start = 1'b0;
-        op = 2'd0;
+        op = 3'd0;
         host_we = 4'b0000;
         host_addr = 12'h0;
         host_wdata = 128'h0;
@@ -42,6 +42,7 @@ module npu_v0_tb;
         run_matmul_fixture_test();
         run_mixed_u16s8_q15_matmul_test();
         run_attention_scale_mask_test();
+        run_vector_tile_vadd_test();
         run_core_host_lane_smoke();
 
         $display("PASS npu_v0 RTL generated-fixture tests");
@@ -149,7 +150,7 @@ module npu_v0_tb;
             $readmemh(MATMUL_EXPECTED_C_HEX, expected_c);
 
             launch_and_wait();
-            op <= 2'd0;
+            op <= 3'd0;
 
             for (i = 0; i < MATMUL_OUTPUT_COUNT; i = i + 1) begin
                 if (dut.dram_c[i] !== expected_c[i]) begin
@@ -172,10 +173,10 @@ module npu_v0_tb;
             dut.instr_mem[2] = uop(UOP_MATMUL, 4'h0, 4'h0);
             dut.instr_mem[3] = uop(UOP_STORE, TENSOR_C, BUF_ACC);
             dut.instr_mem[4] = uop(UOP_HALT, 4'h0, 4'h0);
-            op <= 2'd2;
+            op <= 3'd2;
 
             launch_and_wait();
-            op <= 2'd0;
+            op <= 3'd0;
 
             for (i = 0; i < RTL_MATMUL_ELEMS; i = i + 1) begin
                 if (dut.dram_c[i] !== 32'd8) begin
@@ -204,9 +205,9 @@ module npu_v0_tb;
                 dut.instr_mem[i] = uop(UOP_VSCALE_FIXED, i[3:0], 4'h0);
             end
             dut.instr_mem[RTL_SOFTMAX_LEN] = uop(UOP_HALT, 4'h0, 4'h0);
-            op <= 2'd3;
+            op <= 3'd3;
             launch_and_wait();
-            op <= 2'd0;
+            op <= 3'd0;
 
             for (i = 0; i < RTL_MATMUL_ELEMS; i = i + 1) begin
                 row = i / RTL_SOFTMAX_LEN;
@@ -224,6 +225,34 @@ module npu_v0_tb;
             end
             dut.row_mask_words[0] = 32'hffff_ffff;
             dut.row_mask_words[1] = 32'hffff_ffff;
+        end
+    endtask
+
+    task automatic run_vector_tile_vadd_test;
+        integer i;
+        logic signed [31:0] lhs;
+        logic signed [31:0] rhs;
+        logic signed [31:0] expected;
+        begin
+            for (i = 0; i < RTL_SOFTMAX_LEN; i = i + 1) begin
+                lhs = 32'sd1000 + i;
+                rhs = -32'sd17 - i;
+                host_write(RTL_HOST_VECTOR_SRC0_BASE + i[11:0], lhs);
+                host_write(RTL_HOST_VECTOR_SRC1_BASE + i[11:0], rhs);
+            end
+            dut.instr_mem[0] = uop(UOP_VADD, 4'h0, 4'h0);
+            dut.instr_mem[1] = uop(UOP_HALT, 4'h0, 4'h0);
+            op <= 3'd4;
+            launch_and_wait();
+            op <= 3'd0;
+
+            for (i = 0; i < RTL_SOFTMAX_LEN; i = i + 1) begin
+                expected = (32'sd1000 + i) + (-32'sd17 - i);
+                if (dut.dram_c[i] !== expected) begin
+                    $display("FAIL vector_tile_vadd[%0d] actual=%0d expected=%0d", i, dut.dram_c[i], expected);
+                    $fatal(1);
+                end
+            end
         end
     endtask
 

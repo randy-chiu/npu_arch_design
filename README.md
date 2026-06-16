@@ -89,6 +89,7 @@ Read these first when entering the project:
 
 | Entry | Purpose |
 | --- | --- |
+| [AGENTS.md](AGENTS.md) | Mandatory AI-agent startup, hardware-first architecture iteration, and completion gates |
 | [docs/architecture.md](docs/architecture.md) | Current SoC/NPU architecture, NPU compute model, CPU/NPU interaction protocol |
 | [docs/design/](docs/design/) | Detailed module design docs for SoC, wrapper, NPU core, perf, verification, and software/hardware flow |
 | [docs/target_architecture.md](docs/target_architecture.md) | Research-backed target NPU architecture and staged evolution plan |

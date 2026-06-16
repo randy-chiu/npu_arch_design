@@ -4,7 +4,7 @@ module npu_v0_compute_cluster #(
     input  logic        clk,
     input  logic        rst_n,
     input  logic        start,
-    input  logic [1:0]  op,          // 0: uop, 1: attention softmax, 2: matrix u16s8 q15, 3: attention scale/mask.
+    input  logic [2:0]  op,          // 0: matrix/uop, 1: attention softmax, 2: matrix u16s8 q15, 3: attention scale/mask, 4: vector tile.
     input  logic        output_store_enable,
     input  logic        row_mask_enable,
     output logic        done,
@@ -58,6 +58,8 @@ module npu_v0_compute_cluster #(
     logic signed [7:0]  dram_b [0:RTL_MATMUL_ELEMS-1];
     logic signed [7:0]  dram_b_bank1 [0:RTL_MATMUL_ELEMS-1];
     logic signed [31:0] dram_c [0:RTL_MATMUL_ELEMS-1];
+    logic signed [31:0] vector_src0 [0:RTL_SOFTMAX_LEN-1];
+    logic signed [31:0] vector_src1 [0:RTL_SOFTMAX_LEN-1];
     logic [31:0]        row_mask_words [0:RTL_HOST_MASK_WORDS-1];
     logic [31:0]        instr_mem [0:RTL_HOST_PROGRAM_WORDS-1];
 
@@ -124,6 +126,7 @@ module npu_v0_compute_cluster #(
     logic [3:0] local_route_row;
     logic [3:0] local_route_lane;
     logic [3:0] perf_compute_control_event;
+    logic       op_is_vector_tile;
 
     integer idx;
     integer host_lane_idx;
@@ -200,10 +203,11 @@ module npu_v0_compute_cluster #(
         .perf_wait(perf_uop_sched_wait),
         .perf_wait_reason(perf_uop_sched_wait_reason)
     );
+    assign op_is_vector_tile = op == 3'd4;
     assign uop_sched_exec_ready =
         local_route_state == LOCAL_ROUTE_IDLE &&
         !uop_sched_local_rsp_valid &&
-        op != 2'd0;
+        op != 3'd0;
     assign perf_compute_control_event =
         (uop_sched_exec_valid && uop_sched_exec_ready) ? TRACE_COMPUTE_CTRL_PRIMITIVE_ACCEPT :
         ((uop_sched_local_rsp_valid && uop_sched_local_rsp_ready) ? TRACE_COMPUTE_CTRL_PRIMITIVE_RESPONSE :
@@ -221,7 +225,7 @@ module npu_v0_compute_cluster #(
         .clk(clk),
         .rst_n(rst_n),
         .start(uop_sched_matrix_start),
-        .mixed_u16s8_q15(op == 2'd2),
+        .mixed_u16s8_q15(op == 3'd2),
         .done(matmul_done),
         .perf_active(matrix_datapath_active),
         .a_flat(matmul_a_flat),
@@ -338,6 +342,10 @@ module npu_v0_compute_cluster #(
                 dram_b_bank1[idx] <= '0;
                 dram_c[idx] <= '0;
             end
+            for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
+                vector_src0[idx] <= '0;
+                vector_src1[idx] <= '0;
+            end
             for (idx = 0; idx < RTL_HOST_PROGRAM_WORDS; idx = idx + 1) begin
                 instr_mem[idx] <= '0;
             end
@@ -389,6 +397,14 @@ module npu_v0_compute_cluster #(
                     end else if (host_lane_addr >= RTL_HOST_C_BASE &&
                                  host_lane_addr < RTL_HOST_C_BASE + RTL_HOST_C_WORDS) begin
                         dram_c[host_lane_addr - RTL_HOST_C_BASE] <= host_wdata[(host_lane_idx * 32) +: 32];
+                    end else if (host_lane_addr >= RTL_HOST_VECTOR_SRC0_BASE &&
+                                 host_lane_addr < RTL_HOST_VECTOR_SRC0_BASE + RTL_HOST_VECTOR_SRC0_WORDS) begin
+                        vector_src0[host_lane_addr - RTL_HOST_VECTOR_SRC0_BASE] <=
+                            host_wdata[(host_lane_idx * 32) +: 32];
+                    end else if (host_lane_addr >= RTL_HOST_VECTOR_SRC1_BASE &&
+                                 host_lane_addr < RTL_HOST_VECTOR_SRC1_BASE + RTL_HOST_VECTOR_SRC1_WORDS) begin
+                        vector_src1[host_lane_addr - RTL_HOST_VECTOR_SRC1_BASE] <=
+                            host_wdata[(host_lane_idx * 32) +: 32];
                     end else if (host_lane_addr >= RTL_HOST_MASK_BASE &&
                                  host_lane_addr < RTL_HOST_MASK_BASE + RTL_HOST_MASK_WORDS) begin
                         row_mask_words[host_lane_addr - RTL_HOST_MASK_BASE] <=
@@ -493,6 +509,29 @@ module npu_v0_compute_cluster #(
                         primitive_vector_clamp_high <= 32'sh7fff_ffff;
                         primitive_vector_invalid_value <= RTL_SOFTMAX_NEG_INF;
                     end
+                    UOP_VADD: begin
+                        for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
+                            primitive_vector_a_flat[(idx * 32) +: 32] <= vector_src0[idx];
+                            primitive_vector_b_flat[(idx * 32) +: 32] <= vector_src1[idx];
+                        end
+                        primitive_vector_op <= 3'd0;
+                        primitive_vector_valid_mask <= {RTL_SOFTMAX_LEN{1'b1}};
+                    end
+                    UOP_VMUL: begin
+                        for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
+                            primitive_vector_a_flat[(idx * 32) +: 32] <= vector_src0[idx];
+                            primitive_vector_b_flat[(idx * 32) +: 32] <= vector_src1[idx];
+                        end
+                        primitive_vector_op <= 3'd2;
+                        primitive_vector_valid_mask <= {RTL_SOFTMAX_LEN{1'b1}};
+                    end
+                    UOP_VREQUANT: begin
+                        primitive_vector_op <= 3'd4;
+                        primitive_vector_shift <= 5'd0;
+                        primitive_vector_clamp_low <= 32'sh8000_0000;
+                        primitive_vector_clamp_high <= 32'sh7fff_ffff;
+                        primitive_vector_valid_mask <= {RTL_SOFTMAX_LEN{1'b1}};
+                    end
                     default: begin
                     end
                 endcase
@@ -545,12 +584,17 @@ module npu_v0_compute_cluster #(
                                 local_route_state <= LOCAL_ROUTE_IDLE;
                             end
                         end
-                        UOP_VNORM, UOP_VSCALE_FIXED: begin
+                        UOP_VNORM, UOP_VSCALE_FIXED, UOP_VADD, UOP_VMUL, UOP_VREQUANT: begin
                             if (primitive_vector_done) begin
                                 for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
-                                    dram_c[(local_route_row * RTL_SOFTMAX_LEN) + idx] <=
-                                        primitive_vector_y_flat[(idx * 32) +: 32];
+                                    if (op_is_vector_tile) begin
+                                        dram_c[idx] <= primitive_vector_y_flat[(idx * 32) +: 32];
+                                    end else begin
+                                        dram_c[(local_route_row * RTL_SOFTMAX_LEN) + idx] <=
+                                            primitive_vector_y_flat[(idx * 32) +: 32];
+                                    end
                                 end
+                                primitive_vector_a_flat <= primitive_vector_y_flat;
                                 uop_sched_local_rsp_valid <= 1'b1;
                                 local_route_state <= LOCAL_ROUTE_IDLE;
                             end

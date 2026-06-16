@@ -1,4 +1,4 @@
-.PHONY: test test-full demo digits-demo validate-arch transformer-config soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke primitive-engines-sim npu-core-sim npu-subsystem-elab rtl-sim soc-sim cpu-soc-sim cpu-soc-quick cpu-soc-transformer cpu-soc-cnn-full cpu-soc-all perf-report perf-l0-quick perf-l0-transformer perf-l0-cnn-full perf-l0-all ppa-l0-from-perf ppa-l0-report validate-ppa-l0
+.PHONY: check-workflow test test-full demo digits-demo validate-arch transformer-config soc-spec npu-wrapper-spec rtl-fixtures firmware-data firmware-smoke-generated firmware-smoke-c firmware-smoke primitive-engines-sim npu-core-sim npu-subsystem-elab rtl-sim soc-sim cpu-soc-sim cpu-soc-quick cpu-soc-transformer cpu-soc-cnn-full cpu-soc-all perf-report perf-l0-quick perf-l0-transformer perf-l0-cnn-full perf-l0-all ppa-l0-from-perf ppa-l0-report validate-ppa-l0
 
 PYTHONPATH := sw/tools
 ARCH := arch/configs/npu_v0.jsonc
@@ -60,7 +60,10 @@ else
 firmware-smoke: firmware-smoke-generated
 endif
 
-test:
+check-workflow:
+	python scripts/check_workflow.py
+
+test: check-workflow
 	PYTHONPATH=$(PYTHONPATH) python -m unittest discover -s test -v
 
 test-full:

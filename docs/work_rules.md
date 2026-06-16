@@ -4,6 +4,22 @@
 
 ## 1. Architecture Spec Is The Contract
 
+Every AI-assisted task must begin with the root `AGENTS.md`. It is the concise,
+mandatory execution contract that links to this detailed rule set, the active
+next-step plan, owning design documents, and PPA methodology. `make
+check-workflow` mechanically rejects common cases where architecture-facing
+implementation changes omit design or verification updates, and `make test`
+runs that gate first.
+
+`AGENTS.md` improves session-to-session instruction continuity, but prose alone
+is not a guarantee. Rules that can be checked mechanically should be encoded
+in workflow checks, schema validation, or regression tests. Rules requiring
+architecture judgment remain explicit human-review gates before coding.
+
+每次AI辅助工作必须先读取根目录`AGENTS.md`。仅写文档不能绝对保证后续执行，
+因此能够机械检查的约束应进入`make check-workflow`、schema校验或回归测试；
+涉及架构判断的新增机制仍必须在编码前由用户review设计。
+
 The hardware description file is the source of truth for the whole project.
 For Phase 0, the canonical file is:
 

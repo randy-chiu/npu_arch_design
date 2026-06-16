@@ -48,6 +48,7 @@ DATASETS = (
     ("matmul_program", "matmul_program.hex"),
     ("attention_scale_mask_program", "attention_scale_mask_program.hex"),
     ("attention_softmax_program", "attention_softmax_program.hex"),
+    ("vector_tile_vadd_program", "vector_tile_vadd_program.hex"),
 )
 
 
@@ -81,6 +82,8 @@ def main() -> None:
             lines.append(f"    0x{value & 0xFFFF_FFFF:08x}u,")
         lines.append("};")
         lines.append("")
+
+    _append_vector_tile_smoke_data(lines)
 
     include_cnn = args.workload_profile in ("cnn-full", "all")
     include_transformer = args.workload_profile in ("quick", "transformer", "all")
@@ -450,13 +453,18 @@ def _build_workload_jobs(
             jobs.append(item)
 
     add("operator_smoke_matmul", "matmul", "smoke", 1)
+    add("operator_smoke_vector_tile_vadd", "desc_vector_tile_v1", "smoke", 1)
     add("digits_linear_classifier", "matmul", "regression", digits_jobs, tiled=True)
     add("real_mnist_cnn_fc1_tile0", "matmul", "regression", fc1_tile_jobs, tiled=True)
     add("real_mnist_cnn_fc1_k_stream_smoke", "matmul_k_stream", "regression", fc1_k_stream_jobs, tiled=True)
     add("real_mnist_cnn_fc1_full_k_stream_layer", "matmul_k_stream", "regression", fc1_full_jobs, tiled=True)
     add("real_mnist_cnn_fc2", "matmul", "regression", fc2_jobs, tiled=True)
     for workload in transformer_workloads or []:
-        add(workload["name"], workload["op"], workload["role"], 1, tiled=True)
+        job_op = {
+            "block_matmul_k_stream_group": "matmul_k_stream",
+            "block_desc_vector_tile_group": "desc_vector_tile_v1",
+        }.get(workload["op"], workload["op"])
+        add(workload["name"], job_op, workload["role"], len(workload.get("tile_jobs", [None])), tiled=True)
     return jobs
 
 
@@ -475,6 +483,42 @@ def _append_transformer_micro_data(lines: list[str]) -> dict:
             _append_2d_array(lines, f"{workload['name']}_a", workload["a_stream"], bits=int(workload.get("a_bits", 8)))
             _append_2d_array(lines, f"{workload['name']}_b", workload["b_stream"], bits=8)
             _append_flat_array(lines, f"{workload['name']}_expected_c", workload["expected_c"], bits=32)
+        elif workload["op"] == "block_matmul_k_stream_group":
+            max_chunks = int(workload["max_k_chunks"])
+            tile_words = int(workload["tile_words"])
+            tile_jobs = workload["tile_jobs"]
+            lines.append(f"#define {macro}_TILE_JOBS {len(tile_jobs)}u")
+            lines.append(f"#define {macro}_MAX_CHUNKS {max_chunks}u")
+            lines.append(f"#define {macro}_TILE_WORDS {tile_words}u")
+            lines.append("")
+            _append_flat_array(lines, f"{workload['name']}_k_chunks", [job["k_chunks"] for job in tile_jobs], bits=32)
+            _append_3d_array(
+                lines,
+                f"{workload['name']}_a",
+                [_pad_chunks(job["a_stream"], max_chunks, tile_words) for job in tile_jobs],
+                bits=8,
+            )
+            _append_3d_array(
+                lines,
+                f"{workload['name']}_b",
+                [_pad_chunks(job["b_stream"], max_chunks, tile_words) for job in tile_jobs],
+                bits=8,
+            )
+            _append_2d_array(lines, f"{workload['name']}_expected_c", [job["expected_c"] for job in tile_jobs], bits=32)
+        elif workload["op"] == "block_desc_vector_tile_group":
+            tile_words = int(workload["tile_words"])
+            tile_jobs = workload["tile_jobs"]
+            lines.append(f"#define {macro}_TILE_JOBS {len(tile_jobs)}u")
+            lines.append(f"#define {macro}_TILE_WORDS {tile_words}u")
+            lines.append("")
+            _append_2d_array(lines, f"{workload['name']}_input0", [job["input0"] for job in tile_jobs], bits=32)
+            _append_2d_array(lines, f"{workload['name']}_input1", [job["input1"] for job in tile_jobs], bits=32)
+            _append_2d_array(
+                lines,
+                f"{workload['name']}_expected_output",
+                [job["expected_output"] for job in tile_jobs],
+                bits=32,
+            )
         elif workload["op"] == "attention_softmax_v1":
             lines.append(f"#define {macro}_X_WORDS {workload['x_words']}u")
             lines.append(f"#define {macro}_Y_WORDS {workload['y_words']}u")
@@ -491,6 +535,17 @@ def _append_transformer_micro_data(lines: list[str]) -> dict:
         else:
             raise ValueError(f"unsupported executable transformer op {workload['op']!r}")
     return transformer_micro
+
+
+def _append_vector_tile_smoke_data(lines: list[str]) -> None:
+    lhs = [1000 + lane for lane in range(8)]
+    rhs = [-17 - lane for lane in range(8)]
+    expected = [lhs[lane] + rhs[lane] for lane in range(8)]
+    lines.append("#define VECTOR_TILE_VADD_WORDS 8u")
+    lines.append("")
+    _append_flat_array(lines, "vector_tile_vadd_lhs", lhs, bits=32)
+    _append_flat_array(lines, "vector_tile_vadd_rhs", rhs, bits=32)
+    _append_flat_array(lines, "vector_tile_vadd_expected", expected, bits=32)
 
 
 def _append_transformer_disabled(lines: list[str]) -> dict:
@@ -597,6 +652,13 @@ def _append_3d_array(lines: list[str], symbol: str, values: list, bits: int) -> 
         lines.append("    },")
     lines.append("};")
     lines.append("")
+
+
+def _pad_chunks(chunks: list[list[int]], max_chunks: int, tile_words: int) -> list[list[int]]:
+    padded = [list(chunk) for chunk in chunks]
+    while len(padded) < max_chunks:
+        padded.append([0 for _ in range(tile_words)])
+    return padded
 
 
 def _append_flat_array(lines: list[str], symbol: str, values: list[int], bits: int) -> None:

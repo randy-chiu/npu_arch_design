@@ -473,12 +473,16 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
                 else "Uop program: external SRAM -> instr_mem"
             )
         if event["dm_input_a"]:
+            if job_name == "desc_vector_tile_v1":
+                return "Vector input0 segment: external SRAM -> vector_src0"
             return (
                 "Score tile: external SRAM -> compute-cluster local storage"
                 if job_name in ("attention_scale_mask_v1", "attention_softmax_v1")
                 else f"Chunk 0 A: external SRAM -> preload bank {bank}"
             )
         if event["dm_input_b"]:
+            if job_name == "desc_vector_tile_v1":
+                return "Vector input1/constants segment: external SRAM -> vector_src1"
             return (
                 "Row-mask table: external SRAM -> core-local mask registers"
                 if has_attention_row_mask
@@ -515,6 +519,9 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
                 9: f"Fetch/decode/issue fixed score scale row {row}",
                 10: f"Fetch/decode/issue vector clamp row {row}",
                 11: f"Fetch/decode/issue vector normalize row {row}",
+                12: "Fetch/decode/issue vector add segment",
+                13: "Fetch/decode/issue vector multiply segment",
+                14: "Fetch/decode/issue vector requant segment",
             }
             return labels.get(opcode, f"Fetch/decode/issue primitive opcode {opcode}")
         if event["uop_store"]:
@@ -557,12 +564,15 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
         span["kind"] = "wait" if span["label"].startswith("Wait") else "work"
 
     module_lanes = []
-    if job_name in ("attention_scale_mask_v1", "attention_softmax_v1"):
+    if job_name in ("attention_scale_mask_v1", "attention_softmax_v1", "desc_vector_tile_v1"):
         active_core_cycles = [int(event["cycle"]) for event in trace if event["core_active"]]
 
         vector_names = {
+            0: "Vector add segment: src0 + src1",
             1: "Vector subtract row {row}: score - row maximum",
+            2: "Vector multiply segment: src0 * src1",
             3: "Vector normalize row {row}: exp * reciprocal(sum)",
+            4: "Vector requant segment",
             5: "Vector clamp row {row}: limit shifted scores to EXP input range",
             6: "Vector fixed scale row {row}: apply 1/sqrt(head_dim)",
         }
@@ -615,24 +625,29 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
                         ),
                     ),
                 },
-                {
-                    "module": "Reduction engine",
-                    "spans": _event_spans(
-                        trace,
-                        lambda event: primitive_label(
-                            event, "reduction_active", "reduction_op", reduction_names
-                        ),
-                    ),
-                },
-                {
-                    "module": "SFU",
-                    "spans": _event_spans(
-                        trace,
-                        lambda event: primitive_label(event, "sfu_active", "sfu_op", sfu_names),
-                    ),
-                },
             ]
         )
+        if job_name != "desc_vector_tile_v1":
+            module_lanes.extend(
+                [
+                    {
+                        "module": "Reduction engine",
+                        "spans": _event_spans(
+                            trace,
+                            lambda event: primitive_label(
+                                event, "reduction_active", "reduction_op", reduction_names
+                            ),
+                        ),
+                    },
+                    {
+                        "module": "SFU",
+                        "spans": _event_spans(
+                            trace,
+                            lambda event: primitive_label(event, "sfu_active", "sfu_op", sfu_names),
+                        ),
+                    },
+                ]
+            )
 
     base_lanes = [
         cpu_lane,
@@ -1283,6 +1298,7 @@ def _workload_summary(
         _accumulate_counter_dict(movement_totals, job.get("movement", {}))
         _accumulate_counter_dict(data_mover_totals, job.get("data_mover", {}))
 
+    _fill_core_engine_totals_from_timeline(core_totals, jobs)
     total_cycles = sum(int(job["total_cycles"]) for job in jobs)
     core_matmul_cycles = int(core_totals.get("matmul", 0))
     movement_cycles = int(movement_totals.get("sram_read_cycles", 0)) + int(
@@ -1307,6 +1323,30 @@ def _workload_summary(
     return summary
 
 
+def _fill_core_engine_totals_from_timeline(core_totals: dict[str, int], jobs: list[dict]) -> None:
+    # Older CSRs expose matrix totals directly. Generic primitive engines are
+    # currently visible through measured trace lanes, so workload summaries
+    # must not drop their active cycles.
+    module_to_core_key = {
+        "Vector engine": "vector",
+        "Reduction engine": "reduction",
+        "SFU": "sfu",
+    }
+    for module, core_key in module_to_core_key.items():
+        if int(core_totals.get(core_key, 0)) != 0:
+            continue
+        cycles = 0
+        for job in jobs:
+            for lane in job.get("timeline", []):
+                if lane.get("module") != module:
+                    continue
+                for span in lane.get("spans", []):
+                    if span.get("kind", "work") == "work":
+                        cycles += int(span.get("cycles", 0))
+        if cycles:
+            core_totals[core_key] = cycles
+
+
 def transformer_metrics(workload: dict, model: dict = DEFAULT_MODEL) -> dict:
     metadata = workload.get("metadata", {})
     shape = metadata.get("logical_shape", {})
@@ -1321,6 +1361,8 @@ def transformer_metrics(workload: dict, model: dict = DEFAULT_MODEL) -> dict:
         effective_mac_ops = m_dim * n_dim * k_dim * max(1, int(workload.get("jobs", 0)))
         if shape_class is None:
             shape_class = classify_matrix_shape(m_dim, n_dim, k_dim)
+    elif metadata.get("effective_mac_ops") is not None:
+        effective_mac_ops = int(metadata["effective_mac_ops"])
 
     peak_mac_capacity = matrix_active * peak_macs_per_cycle if matrix_active else None
     matrix_utilization = (
@@ -1392,6 +1434,11 @@ def transformer_metrics(workload: dict, model: dict = DEFAULT_MODEL) -> dict:
             if peak_mac_capacity is not None and effective_mac_ops_for_report is not None
             else None
         ),
+        "effective_vector_lane_ops": (
+            int(metadata["effective_vector_lane_ops"])
+            if metadata.get("effective_vector_lane_ops") is not None and not is_model_only
+            else None
+        ),
         "kv_read_bytes": kv_read,
         "kv_write_bytes": kv_write,
         "bytes_per_token": bytes_per_token,
@@ -1461,6 +1508,16 @@ def _transformer_cycle_analysis(
             "REDUCE_MAX+VEC_SUB+VEC_CLAMP+REDUCE_SUM+RECIP+VEC_SCALE=6)"
         )
         measured_provenance = "measured_core_active_cycles_aggregate"
+    elif metadata.get("theoretical_vector_cycles") is not None:
+        theoretical = int(metadata["theoretical_vector_cycles"])
+        measured_compute = int(core.get("vector", 0))
+        lanes = int(model.get("vector_lanes", 8))
+        vector_ops = metadata.get("effective_vector_lane_ops")
+        if vector_ops is not None:
+            basis = f"ceil(effective_vector_lane_ops={int(vector_ops)}/vector_lanes={lanes})"
+        else:
+            basis = "metadata.theoretical_vector_cycles"
+        measured_provenance = "measured_vector_engine_active_cycles"
 
     if theoretical is None or measured_compute is None or measured_compute <= 0:
         return empty

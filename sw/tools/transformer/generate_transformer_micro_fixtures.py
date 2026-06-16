@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from npu_compiler.attention import build_attention_plan_from_manifest
+from npu_compiler.block import (
+    build_b0_block_plan,
+    build_b0_matrix_subgraph_workload,
+    build_b0_residual_vector_subgraph_workload,
+    build_b1_two_block_plan,
+)
 from transformer.golden import (
     TILE_K,
     TILE_M,
@@ -91,11 +97,14 @@ def generate_transformer_micro_fixtures(spec_path: Path = TRANSFORMER_SPEC_PATH)
         else:
             model_only.append(_model_only_metadata(workload, precision))
     _attach_attention_plan_metadata(executable, attention_plans)
+    executable.append(build_b0_matrix_subgraph_workload())
+    executable.append(build_b0_residual_vector_subgraph_workload())
     _attach_attention_plan_metadata(model_only, attention_plans)
     return {
         "spec_name": spec["name"],
         "version": int(spec["version"]),
         "attention_plans": list(attention_plans.values()),
+        "block_plans": [build_b0_block_plan(), build_b1_two_block_plan()],
         "executable_workloads": executable,
         "model_only_workloads": model_only,
     }

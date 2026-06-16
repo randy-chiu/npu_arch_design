@@ -12,6 +12,10 @@ static uint32_t matmul_c_sram[MATMUL_EXPECTED_C_LEN];
 
 static uint32_t attention_scale_mask_program_sram[ATTENTION_SCALE_MASK_PROGRAM_LEN];
 static uint32_t attention_softmax_program_sram[ATTENTION_SOFTMAX_PROGRAM_LEN];
+static uint32_t vector_tile_vadd_program_sram[VECTOR_TILE_VADD_PROGRAM_LEN];
+static uint32_t vector_tile_vadd_lhs_sram[VECTOR_TILE_VADD_WORDS];
+static uint32_t vector_tile_vadd_rhs_sram[VECTOR_TILE_VADD_WORDS];
+static uint32_t vector_tile_vadd_output_sram[VECTOR_TILE_VADD_WORDS];
 
 static uint32_t digits_a_tile_sram[DIGITS_TILE_WORDS];
 static uint32_t digits_b_tile_sram[DIGITS_TILE_WORDS];
@@ -63,6 +67,14 @@ static uint32_t transformer_attention_pv_s8_d8_c_sram[TRANSFORMER_ATTENTION_PV_S
 static uint32_t transformer_decode_skinny_gemm_m8_compat_a_sram[TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_CHUNKS][TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS];
 static uint32_t transformer_decode_skinny_gemm_m8_compat_b_sram[TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_CHUNKS][TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS];
 static uint32_t transformer_decode_skinny_gemm_m8_compat_c_sram[TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS];
+
+static uint32_t transformer_tinyllama_b0_matrix_subgraph_a_sram[TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_MAX_CHUNKS][TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_matrix_subgraph_b_sram[TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_MAX_CHUNKS][TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_matrix_subgraph_c_sram[TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_TILE_WORDS];
+
+static uint32_t transformer_tinyllama_b0_residual_vector_subgraph_input0_sram[TRANSFORMER_TINYLLAMA_B0_RESIDUAL_VECTOR_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_residual_vector_subgraph_input1_sram[TRANSFORMER_TINYLLAMA_B0_RESIDUAL_VECTOR_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_residual_vector_subgraph_output_sram[TRANSFORMER_TINYLLAMA_B0_RESIDUAL_VECTOR_SUBGRAPH_TILE_WORDS];
 #endif
 
 static soc_npu_job_desc_t job_desc;
@@ -211,6 +223,30 @@ static int run_digits_classifier(void)
         return 0;
     }
     return 1;
+}
+
+static int run_operator_smoke_vector_tile_vadd(void)
+{
+    copy_words(vector_tile_vadd_lhs_sram, vector_tile_vadd_lhs, VECTOR_TILE_VADD_WORDS);
+    copy_words(vector_tile_vadd_rhs_sram, vector_tile_vadd_rhs, VECTOR_TILE_VADD_WORDS);
+
+    job_desc.op_type = SOC_NPU_JOB_OP_DESC_VECTOR_TILE_V1;
+    job_desc.job_id = JOB_ID_OPERATOR_SMOKE_VECTOR_TILE_VADD;
+    job_desc.program_addr = ptr32(vector_tile_vadd_program_sram);
+    job_desc.program_words = VECTOR_TILE_VADD_PROGRAM_LEN;
+    job_desc.input0_addr = ptr32(vector_tile_vadd_lhs_sram);
+    job_desc.input0_words = VECTOR_TILE_VADD_WORDS;
+    job_desc.input1_addr = ptr32(vector_tile_vadd_rhs_sram);
+    job_desc.input1_words = VECTOR_TILE_VADD_WORDS;
+    job_desc.output_addr = ptr32(vector_tile_vadd_output_sram);
+    job_desc.output_words = VECTOR_TILE_VADD_WORDS;
+    job_desc.k_chunks = 0u;
+    run_job();
+
+    return check_words(vector_tile_vadd_output_sram,
+                       vector_tile_vadd_expected,
+                       VECTOR_TILE_VADD_WORDS,
+                       0x280u);
 }
 
 #if REAL_MNIST_CNN_FC1_TILE_ENABLED
@@ -449,6 +485,75 @@ static int run_transformer_decode_skinny_gemm_m8_compat(void)
                        TRANSFORMER_DECODE_SKINNY_GEMM_M8_COMPAT_TILE_WORDS, 0xc00u);
 }
 
+static int run_transformer_tinyllama_b0_matrix_subgraph(void)
+{
+    for (uint32_t tile = 0u; tile < TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_TILE_JOBS; ++tile) {
+        uint32_t chunks = transformer_tinyllama_b0_matrix_subgraph_k_chunks[tile];
+        for (uint32_t chunk = 0u; chunk < chunks; ++chunk) {
+            copy_words(transformer_tinyllama_b0_matrix_subgraph_a_sram[chunk],
+                       transformer_tinyllama_b0_matrix_subgraph_a[tile][chunk],
+                       TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_TILE_WORDS);
+            copy_words(transformer_tinyllama_b0_matrix_subgraph_b_sram[chunk],
+                       transformer_tinyllama_b0_matrix_subgraph_b[tile][chunk],
+                       TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_TILE_WORDS);
+        }
+
+        job_desc.op_type = SOC_NPU_JOB_OP_MATMUL_K_STREAM;
+        job_desc.job_id = JOB_ID_TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_BASE + tile;
+        job_desc.program_addr = ptr32(matmul_program_sram);
+        job_desc.program_words = MATMUL_PROGRAM_LEN;
+        job_desc.input0_addr = ptr32(transformer_tinyllama_b0_matrix_subgraph_a_sram);
+        job_desc.input0_words = TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_TILE_WORDS;
+        job_desc.input1_addr = ptr32(transformer_tinyllama_b0_matrix_subgraph_b_sram);
+        job_desc.input1_words = TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_TILE_WORDS;
+        job_desc.output_addr = ptr32(transformer_tinyllama_b0_matrix_subgraph_c_sram);
+        job_desc.output_words = TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_TILE_WORDS;
+        job_desc.k_chunks = chunks;
+        run_job();
+
+        if (!check_words(transformer_tinyllama_b0_matrix_subgraph_c_sram,
+                         transformer_tinyllama_b0_matrix_subgraph_expected_c[tile],
+                         TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_TILE_WORDS,
+                         0xa00u | (tile & 0xffu))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int run_transformer_tinyllama_b0_residual_vector_subgraph(void)
+{
+    for (uint32_t tile = 0u; tile < TRANSFORMER_TINYLLAMA_B0_RESIDUAL_VECTOR_SUBGRAPH_TILE_JOBS; ++tile) {
+        copy_words(transformer_tinyllama_b0_residual_vector_subgraph_input0_sram,
+                   transformer_tinyllama_b0_residual_vector_subgraph_input0[tile],
+                   TRANSFORMER_TINYLLAMA_B0_RESIDUAL_VECTOR_SUBGRAPH_TILE_WORDS);
+        copy_words(transformer_tinyllama_b0_residual_vector_subgraph_input1_sram,
+                   transformer_tinyllama_b0_residual_vector_subgraph_input1[tile],
+                   TRANSFORMER_TINYLLAMA_B0_RESIDUAL_VECTOR_SUBGRAPH_TILE_WORDS);
+
+        job_desc.op_type = SOC_NPU_JOB_OP_DESC_VECTOR_TILE_V1;
+        job_desc.job_id = JOB_ID_TRANSFORMER_TINYLLAMA_B0_RESIDUAL_VECTOR_SUBGRAPH_BASE + tile;
+        job_desc.program_addr = ptr32(vector_tile_vadd_program_sram);
+        job_desc.program_words = VECTOR_TILE_VADD_PROGRAM_LEN;
+        job_desc.input0_addr = ptr32(transformer_tinyllama_b0_residual_vector_subgraph_input0_sram);
+        job_desc.input0_words = TRANSFORMER_TINYLLAMA_B0_RESIDUAL_VECTOR_SUBGRAPH_TILE_WORDS;
+        job_desc.input1_addr = ptr32(transformer_tinyllama_b0_residual_vector_subgraph_input1_sram);
+        job_desc.input1_words = TRANSFORMER_TINYLLAMA_B0_RESIDUAL_VECTOR_SUBGRAPH_TILE_WORDS;
+        job_desc.output_addr = ptr32(transformer_tinyllama_b0_residual_vector_subgraph_output_sram);
+        job_desc.output_words = TRANSFORMER_TINYLLAMA_B0_RESIDUAL_VECTOR_SUBGRAPH_TILE_WORDS;
+        job_desc.k_chunks = 0u;
+        run_job();
+
+        if (!check_words(transformer_tinyllama_b0_residual_vector_subgraph_output_sram,
+                         transformer_tinyllama_b0_residual_vector_subgraph_expected_output[tile],
+                         TRANSFORMER_TINYLLAMA_B0_RESIDUAL_VECTOR_SUBGRAPH_TILE_WORDS,
+                         0x980u | (tile & 0x7fu))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int run_transformer_attention_runtime_job(const transformer_runtime_job_t *runtime_job)
 {
     if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_QK) {
@@ -576,6 +681,12 @@ int main(void)
                ATTENTION_SCALE_MASK_PROGRAM_LEN);
     copy_words(attention_softmax_program_sram, attention_softmax_program,
                ATTENTION_SOFTMAX_PROGRAM_LEN);
+    copy_words(vector_tile_vadd_program_sram, vector_tile_vadd_program,
+               VECTOR_TILE_VADD_PROGRAM_LEN);
+
+    if (!run_operator_smoke_vector_tile_vadd()) {
+        return 1;
+    }
 
     if (!run_digits_classifier()) {
         return 1;
@@ -613,6 +724,12 @@ int main(void)
         return 1;
     }
     if (!run_transformer_decode_skinny_gemm_m8_compat()) {
+        return 1;
+    }
+    if (!run_transformer_tinyllama_b0_matrix_subgraph()) {
+        return 1;
+    }
+    if (!run_transformer_tinyllama_b0_residual_vector_subgraph()) {
         return 1;
     }
 #endif

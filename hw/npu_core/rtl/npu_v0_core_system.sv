@@ -137,6 +137,7 @@ module npu_v0_core_system #(
     logic        core_perf_local_active;
     logic        job_is_k_stream;
     logic        job_is_attention_mask_consumer;
+    logic        job_is_vector_tile;
     logic        job_has_row_mask;
     logic        k_stream_has_next;
     logic        k_stream_next_bank;
@@ -180,6 +181,7 @@ module npu_v0_core_system #(
     logic [31:0] perf_sram_write_increment;
 
     assign job_is_k_stream = (job_op_type == SOC_NPU_JOB_OP_MATMUL_K_STREAM);
+    assign job_is_vector_tile = (job_op_type == SOC_NPU_JOB_OP_DESC_VECTOR_TILE_V1);
     assign job_is_attention_mask_consumer =
         job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1 ||
         job_op_type == SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1;
@@ -289,9 +291,10 @@ module npu_v0_core_system #(
         .clk(clk),
         .rst_n(rst_n),
         .start(start_pulse),
-        .op((job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1) ? 2'd1 :
-            ((job_op_type == SOC_NPU_JOB_OP_MATMUL_U16S8_Q15) ? 2'd2 :
-            ((job_op_type == SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1) ? 2'd3 : 2'd0))),
+        .op((job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1) ? 3'd1 :
+            ((job_op_type == SOC_NPU_JOB_OP_MATMUL_U16S8_Q15) ? 3'd2 :
+            ((job_op_type == SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1) ? 3'd3 :
+            (job_is_vector_tile ? 3'd4 : 3'd0)))),
         .output_store_enable(!job_is_k_stream || !k_stream_has_next),
         .row_mask_enable(job_has_row_mask),
         .done(npu_done),
@@ -404,7 +407,9 @@ module npu_v0_core_system #(
                     mover_sram_base = job_input0_addr;
                 end
                 mover_words = job_input0_words[7:0];
-                if (job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1 ||
+                if (job_is_vector_tile) begin
+                    mover_host_base = RTL_HOST_VECTOR_SRC0_BASE;
+                end else if (job_op_type == SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1 ||
                              job_op_type == SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1) begin
                     mover_host_base = RTL_HOST_C_BASE;
                 end else begin
@@ -425,7 +430,8 @@ module npu_v0_core_system #(
                 end else begin
                     mover_sram_base = job_input1_addr;
                 end
-                mover_host_base = job_has_row_mask ? RTL_HOST_MASK_BASE : RTL_HOST_B_BASE;
+                mover_host_base = job_is_vector_tile ? RTL_HOST_VECTOR_SRC1_BASE :
+                    (job_has_row_mask ? RTL_HOST_MASK_BASE : RTL_HOST_B_BASE);
                 mover_words = job_input1_words[7:0];
                 sram_req = mover_sram_req;
                 sram_we = mover_sram_we;
@@ -858,7 +864,7 @@ module npu_v0_core_system #(
                         transfer_idx <= 8'h0;
                         if (job_op_type == SOC_NPU_JOB_OP_MATMUL ||
                             job_op_type == SOC_NPU_JOB_OP_MATMUL_U16S8_Q15 ||
-                            job_is_k_stream || job_has_row_mask) begin
+                            job_is_k_stream || job_has_row_mask || job_is_vector_tile) begin
                             desc_state <= DESC_FETCH_INPUT1;
                         end else begin
                             desc_state <= DESC_START_CORE;

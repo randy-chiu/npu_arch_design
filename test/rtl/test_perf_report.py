@@ -409,9 +409,9 @@ class PerfReportTests(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
         self.assertEqual(manifest["generated_by"], "sw/tools/firmware/emit_soc_cpu_smoke_data.py")
-        self.assertEqual(len(manifest["jobs"]), 67)
-        self.assertEqual(manifest["jobs"][19]["workload"], "real_mnist_cnn_fc1_full_k_stream_layer")
-        self.assertEqual(manifest["jobs"][-1]["job_id"], 67)
+        self.assertEqual(len(manifest["jobs"]), 68)
+        self.assertEqual(manifest["jobs"][20]["workload"], "real_mnist_cnn_fc1_full_k_stream_layer")
+        self.assertEqual(manifest["jobs"][-1]["job_id"], 68)
         self.assertEqual(
             manifest["workload_metadata"]["real_mnist_cnn_fc1_full_k_stream_layer"]["metadata"]["k_chunks"],
             1152,
@@ -439,14 +439,28 @@ class PerfReportTests(unittest.TestCase):
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(len(manifest["jobs"]), 73)
+        self.assertEqual(len(manifest["jobs"]), 122)
         self.assertEqual(manifest["manifest_id"], "soc_cpu_smoke_quick_v0")
-        self.assertEqual(manifest["jobs"][-6]["workload"], "transformer_prefill_gemm_tiny")
-        self.assertEqual(manifest["jobs"][-5]["workload"], "transformer_attention_qk_s8_d8")
-        self.assertEqual(manifest["jobs"][-4]["workload"], "transformer_attention_scale_mask_s8_d8")
-        self.assertEqual(manifest["jobs"][-3]["workload"], "transformer_attention_softmax_s8")
-        self.assertEqual(manifest["jobs"][-2]["workload"], "transformer_attention_pv_s8_d8")
-        self.assertEqual(manifest["jobs"][-1]["workload"], "transformer_decode_skinny_gemm_m8_compat")
+        self.assertEqual(manifest["jobs"][-54]["workload"], "transformer_prefill_gemm_tiny")
+        self.assertEqual(manifest["jobs"][-53]["workload"], "transformer_attention_qk_s8_d8")
+        self.assertEqual(manifest["jobs"][-52]["workload"], "transformer_attention_scale_mask_s8_d8")
+        self.assertEqual(manifest["jobs"][-51]["workload"], "transformer_attention_softmax_s8")
+        self.assertEqual(manifest["jobs"][-50]["workload"], "transformer_attention_pv_s8_d8")
+        self.assertEqual(manifest["jobs"][-49]["workload"], "transformer_decode_skinny_gemm_m8_compat")
+        self.assertTrue(
+            all(
+                job["workload"] == "transformer_tinyllama_b0_matrix_subgraph"
+                and job["op"] == "matmul_k_stream"
+                for job in manifest["jobs"][-48:-32]
+            )
+        )
+        self.assertTrue(
+            all(
+                job["workload"] == "transformer_tinyllama_b0_residual_vector_subgraph"
+                and job["op"] == "desc_vector_tile_v1"
+                for job in manifest["jobs"][-32:]
+            )
+        )
         self.assertEqual(
             manifest["workload_metadata"]["transformer_prefill_gemm_tiny"]["metadata"]["scenario"],
             "transformer_prefill",
@@ -469,6 +483,10 @@ class PerfReportTests(unittest.TestCase):
         )
         self.assertTrue(
             manifest["workload_metadata"]["transformer_kv_cache_traffic_tiny"]["metadata"]["model_only"]
+        )
+        self.assertEqual(
+            manifest["workload_metadata"]["transformer_tinyllama_b0_residual_vector_subgraph"]["metadata"]["tile_jobs"],
+            32,
         )
 
     def test_manifest_groups_jobs_by_job_id_not_log_order(self):
@@ -582,6 +600,72 @@ class PerfReportTests(unittest.TestCase):
         self.assertEqual(report["model_only_workloads"][0]["metadata"]["external_memory"]["kv_cache_read_bytes"], 1024)
         self.assertIsNone(report["model_only_workloads"][0]["transformer_metrics"]["matrix_utilization"])
         self.assertEqual(report["summary"]["transformer"]["kv_read_bytes"], 1024)
+
+    def test_manifest_vector_tile_workload_reports_measured_vector_cycles(self):
+        defaults = {
+            "cmd_event": 6, "cmd_active": 0, "cmd_wait": 1, "stream_chunk": 0,
+            "dm_program": 0, "dm_input_a": 0, "dm_input_b": 0, "dm_prefetch_a": 0,
+            "dm_prefetch_b": 0, "dm_output": 0, "dm_target_bank": 0,
+            "core_active": 1, "core_wait_data": 0, "uop_active": 0, "uop_wait": 0,
+            "sched_wait_reason": 0, "compute_ctrl_event": 0,
+            "uop_load": 0, "uop_tensor": 0, "uop_buffer": 0,
+            "uop_exec": 1, "uop_opcode": 12, "uop_store": 0,
+            "output_store_enable": 1, "matrix_issue": 0, "matrix_active": 0,
+            "acc_clear": 0, "acc_commit": 0, "acc_readout": 0,
+            "vector_active": 1, "vector_op": 0, "reduction_active": 0,
+            "reduction_op": 0, "sfu_active": 0, "sfu_op": 0,
+            "primitive_row": 0, "primitive_lane": 0,
+        }
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "trace.log"
+            manifest_path = tmp_path / "manifest.json"
+            lines = [
+                "PERF_TRACE " + json.dumps({"job_id": 1, "cycle": 0, **defaults}),
+                "PERF_TRACE " + json.dumps({"job_id": 1, "cycle": 1, **defaults}),
+                'PERF_JOB {"source":"architectural_perf_csr_snapshot","job_id":1,"id":1,'
+                '"name":"desc_vector_tile_v1","total_cycles":3,'
+                '"core":{"total":2,"matmul":0},'
+                '"data_mover":{"active_cycles":0,"read_words":0,"write_words":0},"sram":{}}',
+            ]
+            log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "npu_workload_manifest_v0",
+                        "manifest_id": "vector_tile_unit_v0",
+                        "run_name": "unit",
+                        "workload_metadata": {
+                            "residual_vector": {
+                                "kind": "transformer_block",
+                                "metadata": {
+                                    "logical_op": "residual_vector_add",
+                                    "effective_vector_lane_ops": 16,
+                                    "theoretical_vector_cycles": 2,
+                                },
+                            },
+                        },
+                        "jobs": [
+                            {
+                                "job_id": 1,
+                                "workload": "residual_vector",
+                                "op": "desc_vector_tile_v1",
+                                "role": "transformer_block",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = parse_perf_log(log_path, manifest_path)
+
+        metrics = report["workloads"][0]["transformer_metrics"]
+        self.assertEqual(metrics["vector_active_cycles"], 2)
+        self.assertEqual(metrics["theoretical_compute_cycles"], 2)
+        self.assertEqual(metrics["measured_compute_cycles"], 2)
+        self.assertEqual(metrics["compute_efficiency"], 1.0)
+        self.assertEqual(metrics["measured_compute_provenance"], "measured_vector_engine_active_cycles")
 
     def test_manifest_requires_explicit_perf_job_id(self):
         with TemporaryDirectory() as tmp:

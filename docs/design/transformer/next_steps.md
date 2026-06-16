@@ -2,19 +2,144 @@
 
 ## Goal
 
-Prepare the next implementation rounds around Transformer attention. Attention
-is the primary workload and PPA driver for the next phase, but it is not a
-dedicated RTL macro. The implementation target is a compiler/runtime scheduled
-sequence over matrix, vector, reduction, SFU, data mover, and scheduler
-primitives.
+Build an iteratively measurable NPU architecture that can eventually satisfy
+the performance, power, and area requirements of representative LLM
+inference. Transformer Attention is the current architecture driver, but it is
+one part of the target workload rather than the final product or a dedicated
+RTL macro. The implementation target remains a compiler/runtime scheduled
+sequence over matrix, vector, reduction, SFU, data mover, scheduler, and
+memory-system primitives.
+
+最终目标是构建一个面向典型LLM推理、能够持续进行架构探索并以PPA数据驱动
+取舍的NPU，而不是仅仅让固定`8x8` Attention用例跑通。Attention是当前阶段
+用于建立编译、调度、数据通路和PPA闭环的主要载体；后续架构选择还必须同时
+面对Prefill、Decode、FFN、Norm、KV-cache和系统存储流量。
 
 The immediate architectural question is:
 
 ```text
-Which existing primitive blocks are sufficient for attention, which contracts
-are underspecified, and which missing features must be added before attention
-measurements are valid PPA evidence?
+Which bottleneck prevents the current architecture from meeting a
+representative LLM inference target, what candidate mechanism addresses it,
+and does measured performance plus credible area/power evidence prove that the
+candidate is better than the retained baseline?
 ```
+
+## North-Star Architecture Exploration Contract / 总体架构探索约束
+
+### Current distance from the final goal / 当前差距
+
+The project already has a useful exploration foundation:
+
+- executable RTL, Compiler/Runtime/Firmware integration, and golden checking;
+- CNN regression plus end-to-end causal `S=8,D=8` Attention;
+- measured cycle/event timelines exposing module order, overlap, and waits;
+- Level-0 structural area and event-energy models with baseline comparison.
+
+This can detect functional regressions and several performance bottlenecks. It
+cannot yet prove an LLM inference NPU or support final PPA choices:
+
+| Dimension | Current evidence | Gap to the final goal |
+| --- | --- | --- |
+| Workloads | tiny Attention stages, matrix micro-workloads, CNN regression, model-only decode/KV views | executable decoder block, realistic Prefill/Decode shapes, FFN/RMSNorm/residual, multi-head/multi-layer traces |
+| Performance | RTL-measured cycles and module timelines | model/block latency, tokens/s, sustained utilization, bandwidth limits, runtime and external-memory inclusion |
+| Area | Level-0 structural normalized model | synthesized/mapped module area, timing closure, SRAM/macro policy, later physical trend |
+| Power/energy | Level-0 event-coefficient model | activity-driven on-chip power, credible external-memory energy, energy/token |
+| Comparison | one frozen serial K-stream baseline and local comparisons | repeatable candidate matrix across a representative workload suite with regression limits |
+| Scalability | correct fixed `8x8` causal Attention | large/tail shapes, multi-tile reduction, buffer allocation, command lists, executable decode/KV |
+
+当前工程已经能发现功能错误、模块工作顺序错误和部分cycle瓶颈，但仍不能证明
+某个架构能够满足典型LLM推理PPA。尤其面积和功耗仍属于L0模型，workload也
+以微型用例为主。后续不能把“某个小算子cycle下降”直接等同于“LLM架构更优”。
+
+### Mandatory iteration loop / 每轮迭代必须遵守的闭环
+
+Every architecture-changing package must use this sequence:
+
+```text
+representative workload or trace
+  -> measured baseline and identified bottleneck
+  -> architecture hypothesis and spec-first design
+  -> Compiler/Runtime/RTL implementation
+  -> functional and compatibility regression
+  -> candidate-versus-baseline PPA report
+  -> accept, revise, or reject the candidate
+```
+
+Each candidate design must state:
+
+1. the measured problem and affected LLM scenario;
+2. why software scheduling or current hardware is inadequate;
+3. the proposed mechanism and required resources;
+4. expected performance benefit and expected area/power cost;
+5. metrics, workloads, baseline identity, and pass/fail threshold;
+6. a retained reference path or other valid before/after comparison.
+
+No architecture feature is complete merely because its RTL works. It is
+complete only when the report explains whether measured behavior matches
+theory, where remaining cycles/traffic are spent, and whether the PPA tradeoff
+is accepted.
+
+每次架构修改必须从可量化的问题开始，并保留修改前基线。功能验证通过只是
+必要条件；还必须回答实际性能是否符合理论、瓶颈是否真的消除、增加的面积和
+功耗是否值得。没有对比数据的硬件功能不能作为架构优化结论。
+
+### Required LLM decision workloads / 架构决策工作负载
+
+Architecture decisions must eventually pass a common suite rather than one
+favorable operator:
+
+| Suite level | Required scenarios | Primary decision metrics |
+| --- | --- | --- |
+| Primitive | GEMM, GEMV/skinny GEMM, vector, reduction, SFU, movement | active/stall cycles, utilization, bandwidth, energy/event |
+| Operator/group | QKV projection, causal Attention, FFN, RMSNorm/residual, KV traffic | latency, movement, intermediate residency, useful work/waste |
+| Decoder block | one executable tiny decoder block in Prefill and Decode | block latency, cycles/token, bytes/token, engine balance |
+| Trace/model view | representative sequence/context/hidden-size traces | estimated/measured tokens/s, energy/token, capacity and bandwidth pressure |
+
+MNIST/CNN remains a compatibility regression, not an optimization target.
+Every candidate may improve its target LLM scenario, but must report
+regressions across the common suite and explain any accepted loss.
+
+### Hardware-first scope control / 硬件优先的范围控制
+
+The project is an NPU architecture exploration project, not a general-purpose
+compiler/runtime product. Software is implemented only when it is needed to:
+
+- generate representative and repeatable hardware workloads;
+- express tiling, scheduling, fusion, and data placement candidates;
+- submit those candidates without shape-specific firmware distortion;
+- produce golden results and trustworthy PPA attribution.
+
+Near-term work explicitly excludes a general graph importer, dynamic memory
+allocator, broad operator framework, and production runtime APIs unless a
+measured hardware experiment requires them. The main output of each iteration
+is a hardware architecture conclusion, not software feature count.
+
+本项目以NPU硬件架构探索为核心。Compiler/planner和轻量submitter只用于生成
+代表性硬件执行流、避免固件硬编码干扰测试、并获得可信PPA；不以建设大而全
+的软件栈为近期目标。每轮工作的最终产出必须是硬件瓶颈和架构取舍结论。
+
+### PPA evidence policy / PPA证据策略
+
+- `rtl_workload_view` remains the fast inner loop: RTL-measured cycles/traffic plus
+  structural area and event-energy models.
+- `mapped_area_timing_view` is an early feasibility gate, not final polish. It
+  must precede acceptance of major datapath widening, new storage ports,
+  larger arrays, or fusion structures.
+- `activity_power_view` evidence is required before making power/energy
+  conclusions or selecting among candidates with similar performance.
+- External-memory assumptions, process/library, clock target, SRAM accounting,
+  and activity scope must be explicit; incomparable reports must not publish a
+  numerical winner.
+
+The exact final PPA target requires a declared product envelope: model
+class/size, context length, batch, latency or tokens/s target, power budget,
+area/process target, and memory system. Until that envelope is fixed, the
+project optimizes transparent trend metrics and does not claim product-level
+sufficiency.
+
+最终PPA目标需要明确模型规模、上下文长度、batch、吞吐/时延目标、功耗预算、
+芯片面积/工艺和外部存储条件。在这些条件确定前，报告用于比较架构趋势，不
+声称已经满足产品级指标。
 
 ## Current Attention Validation Summary
 
@@ -118,21 +243,129 @@ attention macro or a larger Matrix engine.
 Each package below first states the problem being solved, then the mechanism
 and its acceptance gate.
 
+### Functional-baseline-first decision / 功能基线优先决策
+
+Architecture optimization candidates are deferred until the NPU executes a
+recognizable complete tiny Decoder Block, then two chained blocks, with all
+major operator work attributed honestly to NPU RTL. Optimizing the current
+isolated Attention path first could select the wrong bottleneck because a real
+block also contains projection GEMMs, RMSNorm, residual operations, FFN
+activation/gating, output movement, and repeated block boundaries.
+
+架构优化候选暂缓。当前首要目标是让NPU真实执行一个完整tiny Decoder Block，
+随后串联执行两个Block。只有完整Block的PPA才能判断主要瓶颈究竟来自矩阵计算、
+Softmax、Norm、FFN、数据搬运还是任务边界；仅根据当前Attention微用例优化，
+可能会优化错误的对象。
+
+For this milestone, "complete block" means a LLaMA-like prefill block:
+
+```text
+input
+  -> RMSNorm
+  -> Q/K/V projections
+  -> position transform (RoPE or an explicitly measured NPU fallback)
+  -> causal Attention: QK -> Scale/Mask -> Softmax -> PV
+  -> Attention output projection
+  -> residual add
+  -> RMSNorm
+  -> FFN gate/up projections
+  -> activation and gate multiply
+  -> FFN down projection
+  -> residual add
+  -> block output
+```
+
+No CPU-computed operator may be hidden inside an executable block result.
+Model-only stages may remain visible as gaps during development, but the block
+is not accepted as executable until every listed stage has measured NPU RTL
+provenance. Numerical behavior may use documented bring-up fixed-point
+contracts; it must still match the corresponding end-to-end golden.
+
+The first two functional milestones use a scaled TinyLlama-derived structure.
+The dimensions are deliberately small, but the operator topology retains the
+important LLaMA-family behavior: RMSNorm, RoPE, causal Attention, GQA, SwiGLU,
+and residual connections.
+
+首个完整Block工作负载参考TinyLlama/LLaMA结构。尺寸缩小是为了尽快闭合RTL
+功能路径，而不是删除关键模型语义；B0仍保留RMSNorm、RoPE、因果Attention、
+GQA、SwiGLU和两次Residual Add。
+
+| Milestone | Shape/scope | Purpose | Acceptance |
+| --- | --- | --- | --- |
+| B0 one-block bring-up | `S=8, H=16, Q_heads=2, KV_heads=1, head_dim=8, FFN=32`, one Prefill block | close a complete TinyLlama-derived block while forcing useful projection/FFN tiling | one NPU-launched block plan matches golden; every stage has measured RTL cycles and visible buffers/movement |
+| B1 two-block representative baseline | two chained B0-shape blocks with distinct weights | expose repeated-block scheduling, movement, storage lifetime, and resource balance | block 0 output feeds block 1 input without CPU recomputation or fixture replacement; grouped PPA reports per-stage/per-block/full-run totals |
+
+The accepted B0/B1 workload contract is:
+
+- `Q_heads=2, KV_heads=1` preserves GQA: both query heads share one K/V head;
+- Q/K/V are separate projection jobs first; fused QKV is a later measured
+  optimization candidate;
+- heads execute sequentially first; concurrent-head execution is a later
+  candidate selected from block PPA;
+- deterministic synthetic INT8 inputs and weights are used first so fixed-point
+  failures are reproducible; importing real model weights is a later accuracy
+  milestone;
+- embeddings, tokenizer, sampling, and LM head are outside the block workload;
+- Compiler/planner owns all `8x8x8` M/N/K tiling; Runtime only binds buffers and
+  submits the generated jobs.
+
+B0 may use small dimensions to close functionality, but it is not architecture
+optimization evidence. B1 and later representative shapes become the first
+valid surface for selecting hardware optimization candidates.
+
 | Priority | Problem | Mechanism | Acceptance gate |
 | --- | --- | --- | --- |
 | P0 | PPA timelines can contain raw-FSM labels, residual control buckets, out-of-range terminal events, irrelevant empty lanes, and missing conservation checks | stable semantic command/compute-control/engine/wait events, one job interval contract, timeline conservation validator, and report contract tests | every displayed span is measured and in range; compute-cluster child spans reconcile with parent activity; FSM renumbering cannot alter report meaning |
 | P1 | Expanded Softmax and Scale/Mask now use the common Scheduler, but the in-order start/done integration and large expanded program expose control and movement overhead | add typed wait reasons and valid-ready commands; measure expanded program against a generic loop candidate; reduce routing handoff cycles | both jobs show real Scheduler/engine spans, no operator-specific Compute-cluster sequence FSM, functional outputs unchanged, and before/after control/movement costs measured |
 | P2 | Some current one-cycle storage operations were visible in RTL/PPA but their required parallel hardware was not an explicit architecture contract | performance-first local-storage contract declaring accumulator, Attention-row, and Matrix-feed lanes/buses/latencies; RTL elaboration checks and PPA transaction conservation | every one-cycle operation names the required parallel resource; RTL dimensions match the contract; PPA rejects duration and overlap violations |
-| P3 | Current attention is functionally complete for causal fixed `S=8,D=8`, but cannot execute tail rows or larger shapes | tail-row scheduling, generalized shape/tile lowering, buffer-driven descriptor construction | multiple `S`, `D`, head, and tail cases match the golden model without stage-specific firmware switches |
+| P3 | The NPU executes Attention stages but not a complete Decoder Block, so current bottleneck conclusions are incomplete | complete one tiny LLaMA-like Prefill block, chain two blocks, and expose honest block-level PPA | every major block operator executes in NPU RTL, matches golden, and appears in per-stage/per-block/full-run PPA |
 | P4 | Separate descriptor launches and SRAM-visible intermediate boundaries add control and movement overhead | grouped command list, dependency tokens, on-chip score/probability tile residency, and optional matrix-to-vector/reduction/SFU streaming | full-attention group cycles include a stated runtime policy and demonstrate reduced launch/movement cycles against the unfused path |
 | P5 | Future storage sharing and widening can introduce unreported port conflicts | explicit bank ownership, allocator rules, double buffering, bank-conflict and wait-reason counters | timeline explains every compute idle interval using measured data, dependency, conflict, or backpressure reasons |
 | P6 | Softmax remains a bring-up numerical path and limits correctness claims | target EXP/RECIP implementation, reviewed scale/requant widths, saturation and error bounds | masked attention output meets documented tolerance over directed and randomized cases |
 | P7 | Decode behavior and KV traffic are not executable architecture evidence | decode workload suite first, then KV-cache streamer and GEMV/skinny-GEMM changes only where measured evidence justifies them | tokens/s, bytes/token, utilization, and energy/token compare baseline and proposed decode paths |
-| P8 | L0 performance and modeled coefficients cannot validate final PPA tradeoffs | per-engine event-based power model followed by mapped area/timing and activity-driven power | architecture decisions cite measured performance plus clearly identified L1/L2 area and power provenance |
+| P8 | RTL workload performance and normalized coefficients cannot validate physical feasibility or final PPA tradeoffs | introduce mapped area/timing as an early gate for substantial resource changes, then add per-engine activity-driven power | architecture decisions correlate clearly identified workload, mapped area/timing, and activity-power views of the same variant |
 
-Recommended execution order is P0 through P8. In particular, P4 fusion must
-retain an unfused reference path so its benefit and additional control/storage
-cost can be measured rather than assumed.
+P0 through P2 are complete and P3 remains the active
+functional/scalability package. P8 is a parallel evidence track and must begin
+before P4 fusion or any larger-array/storage-port decision is accepted. P4
+fusion must retain an unfused reference path so its benefit and additional
+control/storage cost can be measured rather than assumed.
+
+### Revised Near-Term Execution Order / 修订后的近期执行顺序
+
+The immediate work proceeds on two coordinated tracks:
+
+| Order | Track | Deliverable | Why it is required now |
+| --- | --- | --- | --- |
+| 1 | Decision framework | freeze an initial LLM decision suite and report scorecard covering causal Attention, projection/FFN-shaped GEMM, decode skinny GEMM/KV traffic, and CNN regression | prevents optimization against only the current favorable `8x8` case |
+| 2 | P3b complete one-block baseline | implement the missing RMSNorm, projection, residual, FFN, activation/gating, and block-plan execution path using existing shared engines where possible | creates the first honest full-block bottleneck profile |
+| 3 | P8a physical feasibility | executable mapped area/timing view for the current retained baseline, with module hierarchy and SRAM-accounting policy | establishes a physical cost baseline before fusion, wider ports, or larger arrays |
+| 4 | P3c two-block and shape expansion | chain two complete blocks, then add multi-tile dimensions and a first Decode path | supplies representative measured evidence for architecture choices |
+| 5 | Candidate optimization | Softmax parallelism, residency, command-list, buffering, fusion, or datapath candidates selected from measured block bottlenecks | ensures mechanisms are evidence-driven rather than roadmap-driven |
+| 6 | P8b power evidence | activity-power view for shortlisted variants | supports energy/token and final candidate selection |
+
+The next coding package is redefined as P3b complete-block functionality.
+Software changes remain limited to generating and submitting the block's
+hardware-relevant schedule. P8a remains a parallel evidence task, but no
+hardware optimization candidate is selected until B0/B1 PPA exists.
+
+下一步P3b改为先完成完整Block功能基线。软件只生成并提交必要的硬件执行流，
+不扩展为通用软件平台。P8a可并行建立mapped area/timing基线，但在B0/B1完整
+Block PPA出现前，不选择Softmax并行、融合、扩大阵列或宽存储端口等优化方案。
+
+P3b and P8a do not modify the same architectural responsibility:
+
+- P3b changes the test Compiler/planner, minimal submit path, and required RTL
+  behavior for correct partial-tile execution, then measures workload behavior
+  in the RTL workload view;
+- P8a builds a repeatable synthesis/mapping flow and first records the retained
+  pre-P3b/current baseline; it can then map the post-P3b candidate;
+- RTL workload and mapped area/timing results are associated only when they
+  name the same architecture variant and RTL/config revision.
+
+They may progress in parallel at the tooling level. P8a must not block P3b
+correctness work, while P3b must not silently overwrite the L1 baseline
+identity.
 
 ### Active Package: P3 Mask And Shape Generalization
 
@@ -232,7 +465,143 @@ Tail/all-invalid physical rows and hardware error status remain pending.
   may not be worthwhile for this small baseline until a workload requires
   them.
 
-### P3 Completion And Larger-Attention Roadmap
+### P3 Complete-Block Functional Roadmap / 完整Block功能路线
+
+The earlier P3b Softmax row-throughput candidates remain documented below as
+future optimization candidates, but they are no longer the active coding
+package. First complete the block and use its PPA to decide whether Softmax
+parallelism is actually the highest-value change.
+
+P3b complete-block implementation order:
+
+1. **Freeze B0 block operator and numerical contract**
+   - use `S=8, H=16, Q_heads=2, KV_heads=1, head_dim=8, FFN=32`;
+   - define every stage, dtype, scale, buffer, and golden boundary;
+   - use deterministic synthetic INT8 weights and a reviewed fixed-point RoPE
+     table for the bring-up workload;
+   - reject any CPU-hidden stage in the executable block.
+2. **Reuse existing Matrix path for all projections**
+   - Q/K/V projection;
+   - Attention output projection;
+   - FFN gate/up/down projections;
+   - first use tile-compatible shapes, then reuse Compiler tiling for B1.
+3. **Make shared non-matrix primitives executable**
+   - RMSNorm through Reduction `SUMSQ`, SFU `RSQRT`, Vector scale/multiply;
+   - Residual Add through Vector Add;
+   - FFN activation and gate multiply through reviewed Vector/SFU primitives;
+   - RoPE through reviewed Vector primitive sequence or a clearly named
+     temporary NPU implementation.
+4. **Generate and submit one complete block plan**
+   - Compiler/planner emits ordered descriptors/programs/buffers;
+   - thin submitter launches them without operator-specific computation;
+   - produced intermediate/output buffers feed their real consumers.
+5. **Chain two blocks**
+   - block 1 output becomes block 2 input;
+   - no CPU recomputation or fixture replacement at the boundary.
+6. **Publish block-level PPA**
+   - graph view for every block stage;
+   - theoretical versus measured operator cycles;
+   - per-engine timeline and movement;
+   - per-stage, per-block, and two-block totals;
+   - measured bottleneck ranking that selects the first hardware optimization.
+
+P3b B0 acceptance:
+
+- all listed block stages have measured NPU RTL provenance;
+- complete block output matches the documented fixed-point golden;
+- PPA contains no unexplained or model-only stage inside the accepted block;
+- existing Attention and CNN regressions remain unchanged;
+- missing performance is reported but not optimized in the same package.
+
+Current P3b implementation status:
+
+- B0/B1 are frozen as the TinyLlama-derived shape
+  `S=8,H=16,Q_heads=2,KV_heads=1,head_dim=8,FFN=32`;
+- the Compiler emits an 18-stage BlockPlan with explicit inputs, outputs,
+  provenance, and execution state;
+- generic M/N/K tiling now emits one K-stream job per output tile, including
+  zero-filled boundary-tile metadata;
+- the seven matrix stages in one B0 Block lower to 16 output-tile descriptor
+  jobs, 36 physical tile invocations, and 288 theoretical Matrix-active
+  cycles;
+- deterministic fixed-point golden carries the real Block 0 output into
+  Block 1 without CPU recomputation or fixture replacement;
+- B0/B1 remain `planned_not_executable`. RMSNorm, RoPE, SwiGLU,
+  multi-head Attention grouping, and complete block-level submission still need
+  measured RTL paths. This state is intentional and must not be presented as
+  completed block execution.
+- B0 matrix subgraph is now executable through the CPU-to-NPU descriptor path:
+  16 `MATMUL_K_STREAM` descriptor jobs cover Q/K/V, output projection, and
+  FFN gate/up/down matrices. Firmware submits every tile job and checks RTL
+  output against the Compiler golden.
+- Measured B0 matrix-subgraph PPA:
+  `effective_mac_ops=18432`, `physical_tile_invocations=36`,
+  `theoretical_matrix_cycles=288`, `measured_matrix_cycles=288`,
+  `total_cycles=2008`, `data_mover_active_cycles=1472`,
+  `matrix_utilization=1.0`, `end_to_end_efficiency=0.143426`.
+  This proves the Matrix Engine math is fully utilized for these tile shapes,
+  but descriptor/data-movement boundaries dominate elapsed cycles.
+- Complete B0 remains incomplete. The remaining non-matrix stages still
+  require hardware-visible segmented-row primitive sequences; Python golden
+  intermediates are not substituted into the executable workload.
+- The first `DESC_VECTOR_TILE_V1 + VADD` carrier slice is now implemented and
+  measured as `operator_smoke_vector_tile_vadd`. It proves descriptor-driven
+  program movement, two 32-bit vector input segments, Scheduler primitive
+  issue, Vector Engine execution, and C-window output writeback. Measured
+  transformer-profile smoke result: `total_cycles=30`, `core.total=4`,
+  `data_mover.active_cycles=10`, `uop_scheduler.active_cycles=4`, and the
+  PPA timeline labels the Vector Engine span as `Vector add segment: src0 + src1`.
+- The Compiler BlockPlan now lowers `residual_attn` and `residual_ffn` into
+  `desc_vector_tile_v1` segment jobs: each `H=16` residual row becomes two
+  eight-lane `VADD + HALT` primitive programs.
+- B0 residual vector subgraph is now executable through the CPU-to-NPU
+  descriptor path: 32 `DESC_VECTOR_TILE_V1` jobs cover the two residual adds
+  across `S=8,H=16`. Firmware submits every segment job and checks RTL output
+  against the Compiler golden.
+- Measured B0 residual-vector subgraph PPA:
+  `effective_vector_lane_ops=256`, `theoretical_vector_cycles=32`,
+  `measured_vector_cycles=32`, `total_cycles=960`,
+  `data_mover_active_cycles=320`, `compute_efficiency=1.0`,
+  `end_to_end_efficiency=0.033333`.
+  This proves the Vector Engine primitive math is correct and fully utilized
+  for each segment, but the current per-segment descriptor boundary dominates
+  elapsed cycles.
+
+Immediate next implementation order:
+
+1. complete: review and accept the detailed `DESC_VECTOR_TILE_V1`/segmented-row design in
+   `transformer_npu_v1.md`, `descriptor_v1.md`, `uop_isa_v1.md`,
+   `vector_engine_v1.md`, and `reduction_engine_v1.md`;
+2. complete: implement the first common `DESC_VECTOR_TILE_V1 + VADD` carrier path so a
+   primitive program consumes descriptor-selected 32-bit vector source
+   segments instead of implicit Attention score rows;
+3. complete: submit the compiler-lowered multi-segment residual `DESC_VECTOR_TILE_V1`
+   jobs so rows wider than
+   eight lanes can execute through Vector/Reduction/SFU without CPU
+   materialization;
+4. add RMSNorm primitive uops (`SUMSQ -> RSQRT -> scale`) over `H=16` using
+   segmented row reduction;
+5. add RoPE and SwiGLU primitive sequences;
+6. compose the two measured Attention heads and complete B0;
+7. submit Block 0 output directly as Block 1 input and publish B1 PPA.
+
+Coding gate:
+
+- do not add RMSNorm/RoPE/SwiGLU operator-specific Compute-cluster FSMs;
+- do not mark B0 executable while any non-matrix stage is CPU/materialized;
+- do not hide row-state accumulation or constants in testbench code;
+- review descriptor flags, row-state storage, and PPA fields before RTL.
+
+P3c B1 acceptance:
+
+- two blocks execute and chain correctly;
+- at least one important dimension exceeds the physical tile and is
+  Compiler-tiled;
+- full-run PPA identifies the top bottlenecks by elapsed cycles, movement,
+  utilization, and available area/energy evidence;
+- only then is the first hardware optimization candidate selected.
+
+### Deferred Attention-Only Optimization Roadmap
 
 Mask completion is not the end of P3. It removes the correctness blocker for
 generalized shapes; the next work is to stop treating `8x8` as the logical
@@ -244,16 +613,23 @@ Execution order:
    - add packed row-mask fixture/runtime data;
    - load two mask words through descriptor `input1`;
    - integrate lane gating in Scale/Mask, Reduction, and normalization;
-   - execute causal and tail cases with `seq_q/seq_k <= 8`.
-2. **P3b: edge-tile and buffer-driven runtime**
-   - remove stage-specific fixed-buffer assumptions;
-   - support logical rows/columns smaller than eight with valid-row/lane
-     masks;
-   - add multiple head/value dimensions that tile cleanly or use edge tiles.
+   - execute causal full-physical-row cases with `seq_q/seq_k <= 8`;
+   - leave all-invalid physical query rows to P3b valid-row scheduling.
+2. **P3b: Softmax row-throughput architecture**
+   - treat `seq_q<8` valid-row omission as a small Compiler correctness change,
+     not the main optimization;
+   - quantify the current one-row-at-a-time Scheduler/Vector/Reduction/SFU
+     bottleneck;
+   - design and compare `row_parallelism = 1, 2, 4` candidates;
+   - keep the current serial path as the functional/PPA baseline;
+   - use mapped area/timing before accepting replicated or widened resources.
 3. **P3c: multi-tile Attention baseline**
    - review and accept the M/N/K tiling, descriptor ownership, boundary-tile,
      and PPA contract in `transformer_npu_v1.md` before coding;
    - first target `S=16,D=16`, then `S=32,D=32`;
+   - make the test Compiler/planner accept logical operator shapes and
+     automatically emit M/N/K tile descriptors; Runtime/submitter does not
+     perform tiling;
    - tile QK over query, key, and head-dimension axes;
    - use K-stream accumulation for `D > 8`;
    - materialize multi-tile score rows in SRAM for the first correct baseline;
@@ -284,6 +660,151 @@ The physical Matrix/Vector tile remains `8x8`/eight lanes. Larger logical
 Attention is primarily a Compiler, Runtime, buffer-allocation, segmented
 reduction, and scheduling problem before it is a reason to enlarge the RTL
 array.
+
+#### P3b corrected priority / P3b修订后的优先级
+
+Matrix edge-tile waste is an accounting result, not a new execution mechanism.
+The Compiler/planner already knows logical `M/N/K`; RTL performance counters
+already expose Matrix active cycles and physical issue capacity. Therefore:
+
+```text
+useful_mac_ops = logical M * N * K
+issued_mac_capacity = measured_matrix_active_cycles * peak_macs_per_cycle
+tail_waste = issued_mac_capacity - useful_mac_ops
+```
+
+Adding these fields requires workload metadata/report validation, but no
+Matrix RTL control and no Runtime decision logic. The first baseline continues
+to execute a full physical `8x8` tile when it contains padding.
+
+Matrix边界tile中的无效MAC属于PPA统计结果，不需要新增软件执行逻辑或Matrix
+控制逻辑。Compiler提供逻辑shape，RTL提供实测Matrix active cycle，报告据此
+计算有效MAC、物理发射容量和tail waste。只有数据证明tail waste成为主要瓶颈
+后，才评审Matrix lane gating。
+
+The more important current hardware limitation is serialized Softmax:
+
+```text
+one in-order Uop Scheduler
+  -> at most one primitive command in flight
+  -> one 8-lane Vector Engine processes one score row
+  -> one Reduction Engine processes one row
+  -> one scalar SFU processes EXP lanes serially
+  -> next row begins only after the prior primitive responses complete
+```
+
+The current eight-lane Vector Engine already computes all eight elements of
+one row in parallel. It does **not** compute multiple rows concurrently.
+Commercial accelerators commonly expose more parallel execution capacity
+through multiple SIMD/vector/SFU lanes or clusters and multiple outstanding
+rows/heads/tiles. The useful architecture question is not simply "how many
+Vector Engines", but how many rows can be in flight and which resources must
+be replicated, widened, banked, or pipelined to sustain them.
+
+当前Vector Engine的8个lane并行处理一行中的8个score，但8行Softmax仍完全
+串行。真实高性能加速器通常允许多个row、head或tile同时在途，并配置多个
+SIMD/SFU执行资源或执行簇。我们下一步应探索“同时在途多少行、复制哪些资源、
+共享哪些资源”，而不是只处理无效行。
+
+P3b architecture candidates:
+
+| Candidate | Mechanism | Expected benefit | Main cost/risk |
+| --- | --- | --- | --- |
+| S0 serial baseline | current one-command-in-flight Scheduler and one row datapath | retained reference | measured Softmax latency is dominated by serialized issue/response and scalar EXP |
+| S1 multi-row scheduler contexts | allow multiple independent row states in flight while retaining shared engines | overlaps Scheduler/control and prepares engine parallelism with modest state cost | little benefit if engines remain single-issue; requires dependency/scoreboard contract |
+| S2 duplicated row pipelines | instantiate 2 or 4 Vector/Reduction/SFU row pipelines with banked row storage | near-proportional row throughput when bandwidth and issue keep up | area/power growth; replicated SFU/Reduction may hurt timing |
+| S3 asymmetric shared pipeline | multiple Vector/Reduction row contexts plus a pipelined or multi-lane SFU shared across rows | targets the likely scalar-SFU bottleneck with less duplication | arbitration, buffering, and backpressure complexity |
+| S4 fused/online Attention pipeline | overlap tiled QK, online Softmax, and PV | highest long-context movement/latency opportunity | much larger architecture change; defer until S1-S3 evidence and multi-tile baseline |
+
+P3b first design package must measure S0 and specify S1-S3 before coding a
+candidate. Required report fields:
+
+- row throughput and rows simultaneously in flight;
+- per-engine issue rate, active, stall, and backpressure cycles;
+- Scheduler issue/response overhead per primitive and per row;
+- Vector, Reduction, and SFU utilization;
+- theoretical and measured Softmax cycles for 1, 2, 4, and 8 rows;
+- normalized resource delta followed by mapped area/timing delta;
+- full Attention group cycle improvement, not only isolated Softmax speedup.
+
+Initial acceptance decision:
+
+1. add only the small valid-row Compiler omission needed for correctness;
+2. establish the S0 serial Softmax bottleneck report;
+3. review S1-S3 resource/handshake/storage design and theoretical benefit;
+4. implement the selected candidate only after review;
+5. accept it only if full-Attention benefit justifies mapped area/timing and
+   later power cost.
+
+#### Edge-tile terminology and correctness work / 边界tile术语与正确性工作
+
+`tail` describes the logical remainder when a dimension does not fill the
+physical hardware tile. For example, `seq_q=5` on an eight-row physical tile
+has five valid query rows and three padding rows that must not execute as real
+Softmax rows.
+
+`edge tile` is the physical tile containing such a tail. The first correct
+baseline still stores and moves the current `8x8` container, but it carries
+explicit valid extents:
+
+```text
+logical shape: seq_q=5, seq_k=5, head_dim=8
+physical QK tile: 8x8
+valid query rows: 0..4
+valid key columns: 0..4
+physical rows/columns outside those extents: padding, never logical output
+```
+
+`minimal plan-driven submission` means the test Compiler/planner emits the
+descriptor sequence, buffer references, and tile offsets needed by a hardware
+test. The thin submitter sends those descriptors without knowing Attention
+stage names. Current firmware still contains branches equivalent to:
+
+```text
+if stage == QK:       use fixed Q/K/score addresses
+if stage == Softmax:  use fixed score/probability addresses
+if stage == PV:       use fixed probability/V/output addresses
+```
+
+That cannot launch another shape or tile without new C code. P3b changes only
+the submission contract needed for architecture experiments:
+
+```text
+runtime_job.input0_buffer_id -> allocated address/word count
+runtime_job.input1_buffer_id -> allocated address/word count
+runtime_job.output_buffer_id -> allocated address/word count
+runtime_job.program_buffer_id -> generated program address/word count
+runtime_job.op/shape metadata -> generic descriptor fields
+```
+
+The test Compiler/planner owns shape-to-tile conversion. The submitter binds
+addresses and submits jobs; it does not recalculate masks, tile the graph, or
+choose a different execution order. A user-facing test API may accept
+`matmul(M,N,K)`, but that API invokes the Compiler/planner to create tiles
+before submission. Tiling is not a Runtime algorithm.
+
+P3b contains three separately reviewable changes:
+
+| P3b item | Problem | Design and ownership | Initial acceptance |
+| --- | --- | --- | --- |
+| P3b.1 valid-row scheduling | fixed Scale/Mask and Softmax programs issue all eight physical rows; for `seq_q<8`, padding rows have no valid lane and would execute invalid Softmax work | Compiler emits row-indexed uops only for valid query rows; Scheduler executes only emitted rows; row masks still gate invalid key columns | causal `seq_q=5,seq_k=5,D=8` executes rows 0..4 only; no Vector/Reduction/SFU activity appears for rows 5..7 |
+| P3b.2 single edge-tile execution | Matrix and storage paths use physical `8x8` containers, but logical rows/columns may be smaller and useful work/tail waste are not executable/reportable end to end | Compiler records valid M/N/K extents; first baseline zero-fills invalid input lanes, masks invalid Attention columns, and checks/stores only valid logical output; hardware Matrix lane-skipping is not assumed | `S=5,D=8`, `S=8,D=5`, and one combined edge case match golden; PPA reports useful MACs, issued capacity, Matrix tail waste, transferred padding, and invalid Softmax-row work as zero |
+| P3b.3 minimal plan-driven submitter | generated job order exists, but firmware still maps each Attention stage to fixed C arrays and addresses | test Compiler/planner emits concrete descriptor records and buffer references; a thin submitter launches them without stage-specific behavior | a second shape runs without adding a new stage-specific firmware branch; no general allocator, graph importer, or dynamic Runtime tiler is required |
+
+P3b does **not** execute a logical dimension larger than eight. It makes one
+partially filled physical tile correct and removes fixed-shape Runtime
+assumptions. P3c then composes multiple full or edge tiles for `S=16,D=16` and
+beyond.
+
+P3b acceptance reports must show:
+
+- logical shape and physical tile shape;
+- valid rows/columns and emitted row-uop count;
+- theoretical Matrix cycles, measured Matrix cycles, and tail-waste capacity;
+- Data Mover words, including explicit padding movement;
+- absence of engine activity for invalid query rows;
+- RTL workload-view candidate-versus-baseline results;
+- CNN and existing causal `S=8,D=8` regression results.
 
 ### P2 Performance-First Physical Resource Contract
 
@@ -471,7 +992,7 @@ Missing before claiming complete attention PPA:
 - structural area model split by matrix, mixed-precision multiplier delta,
   vector lanes, reduction tree, SFU LUT/table, accumulator/local buffers, and
   wrapper/data mover;
-- later L1 mapped area/timing and L2 activity-driven power if architecture
+- later mapped area/timing and activity-driven power if architecture
   choices need ASIC trend validation.
 
 ## V1 Module Status

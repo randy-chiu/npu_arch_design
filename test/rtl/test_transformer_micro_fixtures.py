@@ -28,6 +28,14 @@ class TransformerMicroFixtureTests(unittest.TestCase):
         executable = generated["executable_workloads"]
         model_only = generated["model_only_workloads"]
         self.assertEqual(
+            [plan["name"] for plan in generated["block_plans"]],
+            [
+                "tinyllama_derived_b0_block0_prefill",
+                "tinyllama_derived_b1_two_block_prefill",
+            ],
+        )
+        self.assertTrue(all(plan["execution_state"] == "planned_not_executable" for plan in generated["block_plans"]))
+        self.assertEqual(
             [plan["attention_group"] for plan in generated["attention_plans"]],
             ["attention_prefill_s8_d8"],
         )
@@ -44,6 +52,8 @@ class TransformerMicroFixtureTests(unittest.TestCase):
                 "transformer_attention_softmax_s8",
                 "transformer_attention_pv_s8_d8",
                 "transformer_decode_skinny_gemm_m8_compat",
+                "transformer_tinyllama_b0_matrix_subgraph",
+                "transformer_tinyllama_b0_residual_vector_subgraph",
             ],
         )
         self.assertEqual(executable[0]["k_chunks"], 2)
@@ -82,6 +92,18 @@ class TransformerMicroFixtureTests(unittest.TestCase):
         self.assertEqual(executable[4]["a_bits"], 16)
         self.assertEqual(executable[5]["k_chunks"], 1)
         self.assertTrue(any(item["name"] == "transformer_kv_cache_traffic_tiny" for item in model_only))
+        self.assertEqual(executable[6]["op"], "block_matmul_k_stream_group")
+        self.assertEqual(executable[6]["metadata"]["tile_jobs"], 16)
+        self.assertEqual(executable[6]["metadata"]["effective_mac_ops"], 18432)
+        self.assertEqual(executable[6]["max_k_chunks"], 4)
+        self.assertEqual(executable[6]["tile_jobs"][0]["stage_id"], "q_proj")
+        self.assertEqual(executable[6]["tile_jobs"][-1]["stage_id"], "down_proj")
+        self.assertEqual(executable[7]["op"], "block_desc_vector_tile_group")
+        self.assertEqual(executable[7]["metadata"]["tile_jobs"], 32)
+        self.assertEqual(executable[7]["metadata"]["effective_vector_lane_ops"], 256)
+        self.assertEqual(executable[7]["tile_words"], 8)
+        self.assertEqual(executable[7]["tile_jobs"][0]["stage_id"], "residual_attn")
+        self.assertEqual(executable[7]["tile_jobs"][-1]["stage_id"], "residual_ffn")
         self.assertTrue(any(item["name"] == "transformer_softmax_row" for item in model_only))
         self.assertTrue(any(item["name"] == "transformer_attention_prefill_s8_d8" for item in model_only))
         parent = next(item for item in model_only if item["name"] == "transformer_attention_prefill_s8_d8")

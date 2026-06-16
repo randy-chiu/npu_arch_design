@@ -6,6 +6,20 @@ Transformer NPU v1 turns the project from a CNN/MNIST regression SoC into a
 Transformer-oriented tensor NPU baseline. The goal is a verified and PPA-visible
 foundation for edge LLM inference, not a full LLaMA runtime.
 
+The longer-term target is not merely functional Transformer support. This
+architecture must support a repeatable exploration loop where representative
+LLM Prefill/Decode workloads identify a measured bottleneck, a spec-first
+candidate changes the architecture, and candidate-versus-baseline PPA evidence
+determines whether the change is retained. A feature that passes RTL but lacks
+a workload-level PPA comparison is functional progress, not an accepted
+architecture optimization.
+
+长期目标不仅是支持Transformer功能，而是建立可持续迭代的LLM NPU架构探索
+平台：由代表性Prefill/Decode workload暴露量化瓶颈，先修改spec和设计，再
+实现Compiler/Runtime/RTL，最后通过候选方案与保留基线的PPA对比决定是否
+接受。仅RTL功能正确但没有workload级PPA收益证据，只能算功能进展，不能算
+已经完成的架构优化。
+
 V1 scope:
 
 - single-batch tiny decoder-only Transformer envelope;
@@ -17,8 +31,43 @@ V1 scope:
 - primitive uops and micro-kernels before macro-op hardware;
 - MNIST/CNN remains a regression workload.
 
+The next functional acceptance target is one complete tiny LLaMA-like Prefill
+Decoder Block followed by two chained blocks. Local hardware optimization is
+deferred until block-level PPA identifies the dominant bottleneck. Micro
+workloads remain diagnostic tools, not the sole optimization decision surface.
+
+下一阶段首先让NPU完整执行一个tiny LLaMA-like Prefill Decoder Block，再串联
+两个Block。局部硬件优化暂缓，直到Block级PPA识别出主要瓶颈；微算子只用于
+定位问题，不能单独决定优化优先级。
+
+The frozen B0/B1 functional workload is TinyLlama-derived:
+
+```text
+S=8, H=16, Q_heads=2, KV_heads=1, head_dim=8, FFN=32
+B0 = one block
+B1 = two chained blocks with distinct weights
+```
+
+This deliberately preserves GQA, RoPE, RMSNorm, SwiGLU, causal Attention, and
+both residual connections. It excludes embeddings, LM head, tokenization, and
+sampling because the current decision surface is the Decoder Block datapath.
+
 Out of v1 scope: complete LLaMA, fused attention pipeline, hardware macro-op
 expansion, reorder scheduler, real LPDDR controller, INT4/FP8, multi-core NPU.
+
+### Architecture decision evidence / 架构决策证据
+
+The fast iteration loop uses the RTL workload view: RTL-measured performance
+plus normalized structural area/energy estimates. Substantial resource changes
+such as wider datapaths, additional storage ports, larger arrays, and fused
+pipelines also require the mapped area/timing view before acceptance.
+Power/energy conclusions require later activity-power evidence. Every
+comparison must declare workload suite, baseline variant, process/library and
+clock assumptions, SRAM/external-memory accounting, and activity scope.
+
+快速迭代阶段继续使用RTL workload view；但扩大数据通路、增加存储端口、
+扩大阵列或增加融合流水线等重大资源修改，在正式接受前必须经过mapped
+area/timing view验证。功耗与能耗结论还需要后续基于activity的证据。
 
 ## 2. Overall Design / 整体设计思路
 
@@ -245,6 +294,333 @@ and tail waste. Initial acceptance workloads are `8x8x16`, `16x8x8`,
    model tensors are supported.
 5. Use measured stalls to decide whether larger buffers, wider movement, or
    command-list scheduling is the next optimization.
+
+### 3.2 Complete Decoder Block Plan / 完整Decoder Block执行计划
+
+#### Problem / 要解决的问题
+
+The current executable path proves individual Attention stages, but it cannot
+identify the dominant bottleneck of a real Decoder Block. Projection/FFN
+matrices, normalization, residual movement, activation, repeated heads, and
+block boundaries may dominate the measured result. A Python-computed
+intermediate would hide exactly those costs.
+
+当前可执行路径只证明了Attention局部阶段，无法判断完整Decoder Block真正的
+瓶颈。若由Python或fixture生成中间结果，会隐藏Norm、Projection、FFN、
+Residual和Block边界的真实硬件开销，因此不能算完整Block执行。
+
+#### B0 stage order and buffer contract / B0阶段与Buffer约束
+
+```text
+x
+ -> rmsnorm_attn
+ -> q_proj, k_proj, v_proj
+ -> rope_q, rope_k
+ -> head0_attention, head1_attention using shared K/V head
+ -> concat_heads
+ -> o_proj
+ -> residual_attn
+ -> rmsnorm_ffn
+ -> gate_proj, up_proj
+ -> silu_gate
+ -> gate_mul_up
+ -> down_proj
+ -> residual_ffn
+ -> block_output
+```
+
+The first baseline materializes every named intermediate in workspace SRAM.
+This is intentionally expensive but observable. Residency, fusion, concurrent
+heads, fused QKV, and command lists remain later candidates measured against
+this baseline.
+
+Each BlockPlan stage records:
+
+```text
+stage_id, logical_op, inputs, outputs
+logical shape and dtype
+lowered tile jobs or primitive program
+execution_state and provenance
+```
+
+Allowed aggregate states are:
+
+- `planned_not_executable`: plan/golden exists but no complete RTL path;
+- `partially_executable`: some measured RTL stages and explicit gaps;
+- `executable`: every stage has measured RTL provenance and complete output
+  matches golden.
+
+The Compiler may calculate expected results for verification, but Runtime and
+firmware must never substitute those expected intermediates in an accepted
+`executable` run.
+
+#### Numerical bring-up policy / 数值Bring-up策略
+
+- activation and weights are deterministic signed INT8;
+- matrix accumulation is INT32, followed by explicit saturating INT8
+  requantization at BlockPlan stage boundaries;
+- RMSNorm uses the existing `SUMSQ -> RSQRT -> Vector scale` bring-up contract;
+- RoPE uses a deterministic fixed-point table owned by the Compiler fixture,
+  then must execute through reviewed Vector primitives before B0 acceptance;
+- causal Attention reuses the existing `S=8,D=8` numerical contract per head;
+- SwiGLU uses `SiLU(gate) * up`; its fixed-point approximation must be reviewed
+  before RTL execution is accepted.
+
+These rules favor deterministic functional closure. Their accuracy is not a
+claim that the final quantization policy is selected.
+
+#### B1 chaining contract / B1串联约束
+
+B1 contains two B0-shaped plans. Block 0 `block_output` is the sole input of
+Block 1; no CPU recomputation, fixture replacement, or reset to the original
+input is legal. Block-level reporting must preserve stage identity as
+`block0/...` and `block1/...` and also publish the combined run.
+
+#### Current executable subset / 当前可执行子集
+
+The first executable subsets are the B0 matrix subgraph and the B0 residual
+vector subgraph. The matrix subgraph intentionally covers only the seven
+matrix stages:
+
+```text
+q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
+```
+
+Compiler lowering emits 16 output-tile `MATMUL_K_STREAM` descriptor jobs, which
+contain 36 physical `8x8x8` Matrix Engine invocations. The measured RTL result
+matches the Compiler golden for every tile.
+
+This subset is useful because it makes projection and FFN movement/control cost
+visible before complete B0 is ready. It is not accepted as complete B0 because
+RMSNorm, RoPE, Attention head composition, SiLU, and gate multiply still lack
+measured RTL provenance.
+
+Measured matrix-subgraph evidence:
+
+| Metric | Value |
+| --- | ---: |
+| descriptor jobs | 16 |
+| physical Matrix invocations | 36 |
+| effective MAC ops | 18432 |
+| theoretical Matrix cycles | 288 |
+| measured Matrix cycles | 288 |
+| total cycles | 2008 |
+| Data Mover active cycles | 1472 |
+| Matrix utilization | 1.0 |
+| end-to-end efficiency | 0.143426 |
+
+The conclusion is functional, not yet an optimization decision: the Matrix
+Engine is fully utilized while active, but the current per-tile descriptor and
+external SRAM movement boundaries dominate elapsed cycles.
+
+The residual vector subgraph covers `residual_attn` and `residual_ffn` through
+32 `DESC_VECTOR_TILE_V1` descriptor jobs. Each `H=16` row is split into two
+eight-lane `VADD + HALT` primitive programs. Measured RTL evidence:
+
+| Metric | Value |
+| --- | ---: |
+| descriptor jobs | 32 |
+| effective vector lane ops | 256 |
+| theoretical Vector cycles | 32 |
+| measured Vector cycles | 32 |
+| total cycles | 960 |
+| Data Mover active cycles | 320 |
+| Vector compute efficiency | 1.0 |
+| end-to-end efficiency | 0.033333 |
+
+中文说明：Residual Add已经通过通用`DESC_VECTOR_TILE_V1`路径执行和验证，
+不是完整B0的剩余缺口。它暴露出的主要问题是每个8-lane segment都独立提交
+descriptor，导致Vector Engine实际只工作32 cycle，但端到端耗时960 cycle。
+这类边界开销应在完整B0 PPA之后作为command-list或融合候选来评估。
+
+### 3.3 Vector Tile And Segmented-Row Path / Vector Tile与分段行路径
+
+#### Problem / 要解决的问题
+
+B0 now has measured matrix and residual-vector subgraphs, but the remaining
+stages still cannot be accepted as executable:
+
+```text
+RMSNorm, RoPE, Attention head composition, SiLU, gate multiply
+```
+
+These stages are not Matrix Engine work. They are row/vector operations over
+`S=8, H=16` or `S=8, FFN=32` tensors. The current measured Vector/Reduction/SFU
+path is tied to Attention row storage and fixed eight-lane Attention programs.
+It can execute `S=8,D=8` Softmax rows, but it is not a general way to run a
+16-wide hidden row or a 32-wide FFN row.
+
+中文说明：B0剩余算子不是矩阵乘，而是对`H=16`或`FFN=32`的行向量做归一化、
+旋转、激活和逐元素乘法，并把两个Attention head组合进Block执行流。
+当前Attention专用row path只能自然表达
+8-lane score row，不能把这些更宽的行向量作为通用硬件工作负载执行。如果继续
+在fixture或CPU里生成这些中间结果，就会隐藏B0真正的数据搬运和Vector/Reduction
+开销，因此不能算完整B0。
+
+#### Why not add one descriptor per operator? / 为什么不为每个算子新增专用descriptor
+
+Adding `RMSNORM_OP`, `ROPE_OP`, `RESIDUAL_OP`, and `SWIGLU_OP` as private
+Compute-cluster state machines would repeat the old Softmax problem: operator
+sequencing would live in RTL control instead of the common Scheduler, PPA would
+show opaque control buckets, and later changes to numerical policy would
+require RTL rewrites.
+
+The accepted direction is one common descriptor family:
+
+```text
+DESC_VECTOR_TILE_V1 descriptor
+  -> Data Mover loads one or two tensor segments
+  -> Uop Scheduler executes a compiler-expanded primitive program
+  -> Vector / Reduction / SFU engines execute primitive commands
+  -> Data Mover stores the produced segment or row result
+```
+
+This keeps complex operators as compiler micro-kernels, not hardware macros.
+It also gives PPA one comparable surface for all non-matrix B0 stages.
+
+#### Logical row segmentation / 逻辑行分段
+
+The physical Vector Engine has eight lanes. B0 rows may be wider:
+
+| Tensor row | Width | Physical segments |
+| --- | ---: | ---: |
+| hidden row | 16 | 2 x 8-lane segments |
+| FFN intermediate row | 32 | 4 x 8-lane segments |
+| attention head row | 8 | 1 x 8-lane segment |
+
+Compiler lowers a logical row into segment descriptors:
+
+```text
+segment_width = 8
+segment_count = ceil(row_width / 8)
+for row in rows:
+  for segment in segments:
+    emit DESC_VECTOR_TILE_V1 descriptor or command-list entry
+```
+
+For operations requiring whole-row state, Compiler emits a two-pass segmented
+micro-kernel. RMSNorm is the first example:
+
+```text
+Pass 1:
+  for each segment:
+    REDUCE_SUMSQ(segment)
+  accumulate row_sumsq across segments
+  SFU_RSQRT(row_sumsq)
+
+Pass 2:
+  for each segment:
+    VEC_SCALE(segment, inv_rms)
+```
+
+The first implementation may materialize `row_sumsq` and `inv_rms` in SRAM or
+a small local scalar file. It must report that movement/storage explicitly.
+Keeping these scalars resident is a later optimization candidate.
+
+#### B0 stage mapping / B0阶段映射
+
+| Stage | Width | First `DESC_VECTOR_TILE_V1` mapping | Whole-row state |
+| --- | ---: | --- | --- |
+| `rmsnorm_attn` | 16 | segmented `REDUCE_SUMSQ`, `SFU_RSQRT`, `VEC_SCALE` | `sumsq`, `inv_rms` |
+| `rope_q` | 16 | two segments per row, pairwise rotate using compiler-provided sin/cos constants | none across segments |
+| `rope_k` | 8 | one segment per row | none |
+| `residual_attn` | 16 | `VEC_ADD` per segment | none |
+| `rmsnorm_ffn` | 16 | same as `rmsnorm_attn` | `sumsq`, `inv_rms` |
+| `silu_gate` | 32 | bring-up LUT/approximation through SFU or reviewed vector approximation | none across segments |
+| `gate_mul_up` | 32 | `VEC_MUL`/requant per segment | none |
+| `residual_ffn` | 16 | `VEC_ADD` per segment | none |
+
+RoPE and SiLU require reviewed numerical approximations before they are marked
+`executable`. Until then, their BlockPlan stages remain
+`planned_not_executable` even if the descriptor transport exists.
+
+#### Descriptor and storage model / Descriptor与存储模型
+
+The first `DESC_VECTOR_TILE_V1` descriptor is intentionally segment-oriented:
+
+```text
+input0_addr/input0_words = first segment tensor
+input1_addr/input1_words = optional second segment tensor or constants
+input2_addr             = optional scalar/state table in descriptor v1
+output_addr/output_words = output segment tensor
+program_addr/program_words = compiler-expanded primitive program
+m = rows in this job
+n = logical row width for metadata/PPA
+k = segment offset or segment count, depending on descriptor flags
+flags = op class, input count, segment count, row-state policy
+```
+
+The current v0 ABI lacks `input2`, `m/n/k`, and flags, so the first executable
+implementation may use fixed firmware-generated descriptors for bring-up. The
+canonical v1 spec still records the full contract now so implementation does
+not depend on hidden fixture assumptions.
+
+#### v0 generic primitive carrying boundary / v0通用primitive承载边界
+
+The current RTL cannot honestly be called a generic primitive-program carrier
+until two Attention-specific constraints are removed:
+
+| Constraint | Why it blocks B0 |
+| --- | --- |
+| Compute-cluster primitive routing reads and writes the Attention score row in `C` | RMSNorm, residual, RoPE, and SwiGLU need arbitrary tensor segments, not only `score[row][lane]` |
+| Matrix operand windows are `A16` and `B8` while vector outputs are `C32` | a general vector program needs two 32-bit source segments and one 32-bit destination segment; using `A16/B8` would silently truncate non-Attention data |
+
+中文说明：这里的“通用”不是指硬件能理解`RMSNorm`、`RoPE`、`SwiGLU`这些
+模型算子名字，而是指硬件能接收Compiler生成的primitive program，并把descriptor
+中声明的两个输入segment搬到通用32-bit向量源窗口，再由Scheduler发给
+Vector/Reduction/SFU执行，最后把结果写回32-bit输出窗口。
+
+The accepted v0 bring-up mechanism is:
+
+```text
+DESC_VECTOR_TILE_V1 op_type
+  input0 -> vector_src0[8] 32-bit
+  input1 -> vector_src1[8] 32-bit when binary/constants are needed
+  output <- vector_dst[8] / C window
+  program -> existing 16-word primitive instruction memory
+```
+
+This first boundary supports simple 8-lane segment programs such as `VADD`.
+It does not yet claim complete RMSNorm row-state, RoPE swizzle, or SiLU
+approximation support. Those remain explicit lowering steps after the carrier
+path is proven.
+
+#### PPA acceptance / PPA验收
+
+For every `DESC_VECTOR_TILE_V1` workload, PPA must show:
+
+```text
+logical_elements
+physical_segment_count
+useful_vector_lane_ops
+vector_active_cycles
+reduction_active_cycles
+sfu_active_cycles
+data_mover_active_cycles
+descriptor/control cycles
+```
+
+For segmented whole-row operations such as RMSNorm, PPA must additionally show:
+
+```text
+segment_reduce_cycles
+row_state_accumulate_cycles
+rsqrt_cycles
+segment_scale_cycles
+scalar/state movement cycles
+```
+
+B0 can be marked `executable` only when these non-matrix stages appear with
+measured RTL provenance and the final `block_output` matches the documented
+golden. Model-only or CPU-filled intermediates must remain visible as gaps.
+
+#### Deliberate non-goals / 非目标
+
+- no dedicated RMSNorm, RoPE, or SwiGLU hardware macro in this step;
+- no multi-row Vector parallelism yet;
+- no command-list fusion yet;
+- no claim that the bring-up RoPE/SiLU numerical approximation is final;
+- no optimization decision from the matrix-subgraph PPA alone.
 
 ## 4. Verification / 验证测试
 

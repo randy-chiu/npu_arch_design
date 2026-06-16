@@ -81,6 +81,83 @@ def plan_matmul_k_stream(
     }
 
 
+def plan_tiled_matmul(
+    a: list[list[int]],
+    b: list[list[int]],
+    *,
+    tile_m: int = 8,
+    tile_n: int = 8,
+    tile_k: int = 8,
+) -> dict[str, Any]:
+    """Lower one logical matmul into one K-stream job per output tile.
+
+    Boundary tiles are zero-filled. The returned jobs are Compiler output; the
+    Runtime is expected only to bind and submit them.
+    """
+
+    if not a or not b or not a[0] or not b[0]:
+        raise ValueError("matmul inputs must be non-empty")
+    m_size = len(a)
+    k_size = len(a[0])
+    n_size = len(b[0])
+    if any(len(row) != k_size for row in a):
+        raise ValueError("A rows must have a consistent K dimension")
+    if len(b) != k_size or any(len(row) != n_size for row in b):
+        raise ValueError("B shape must match A K dimension")
+
+    padded_m = _round_up(m_size, tile_m)
+    padded_n = _round_up(n_size, tile_n)
+    padded_k = _round_up(k_size, tile_k)
+    padded_a = [
+        [int(a[row][col]) if row < m_size and col < k_size else 0 for col in range(padded_k)]
+        for row in range(padded_m)
+    ]
+    padded_b = [
+        [int(b[row][col]) if row < k_size and col < n_size else 0 for col in range(padded_n)]
+        for row in range(padded_k)
+    ]
+    expected = matmul(a, b)
+    jobs = []
+    for m_offset in range(0, padded_m, tile_m):
+        a_rows = padded_a[m_offset : m_offset + tile_m]
+        for n_offset in range(0, padded_n, tile_n):
+            k_plan = plan_matmul_k_stream(
+                a_rows,
+                padded_b,
+                n_offset=n_offset,
+                tile_m=tile_m,
+                tile_n=tile_n,
+                tile_k=tile_k,
+            )
+            valid_m = min(tile_m, m_size - m_offset)
+            valid_n = min(tile_n, n_size - n_offset)
+            valid_k = min(tile_k, k_size % tile_k or tile_k)
+            jobs.append(
+                {
+                    "job_index": len(jobs),
+                    "descriptor_op": "matmul_k_stream",
+                    "m_offset": m_offset,
+                    "n_offset": n_offset,
+                    "valid_m": valid_m,
+                    "valid_n": valid_n,
+                    "last_k_valid": valid_k,
+                    **k_plan,
+                }
+            )
+    physical_invocations = len(jobs) * (padded_k // tile_k)
+    return {
+        "logical_shape": {"m": m_size, "n": n_size, "k": k_size},
+        "tile_shape": {"m": tile_m, "n": tile_n, "k": tile_k},
+        "output_tile_jobs": jobs,
+        "output_tile_count": len(jobs),
+        "physical_tile_invocations": physical_invocations,
+        "theoretical_matrix_cycles": physical_invocations * tile_k,
+        "useful_mac_ops": m_size * n_size * k_size,
+        "issued_mac_capacity": physical_invocations * tile_m * tile_n * tile_k,
+        "expected_c": expected,
+    }
+
+
 def _validate_inputs(
     a: list[list[int]],
     b: list[list[int]],
@@ -116,3 +193,9 @@ def _is_useful_nonzero_chunk(a_tile: list[list[int]], expected_tile: list[list[i
     return any(value != 0 for row in a_tile for value in row) and any(
         value != 0 for row in expected_tile for value in row
     )
+
+
+def _round_up(value: int, multiple: int) -> int:
+    if multiple <= 0:
+        raise ValueError("tile dimensions must be positive")
+    return ((value + multiple - 1) // multiple) * multiple

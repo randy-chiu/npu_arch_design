@@ -381,6 +381,8 @@ module soc_cpu_tb;
                 print_csr_perf_job("attention_softmax_v1", sram_write_words);
             end else if (csr_op_type == SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1) begin
                 print_csr_perf_job("attention_scale_mask_v1", sram_write_words);
+            end else if (csr_op_type == SOC_NPU_JOB_OP_DESC_VECTOR_TILE_V1) begin
+                print_csr_perf_job("desc_vector_tile_v1", sram_write_words);
             end else begin
                 print_csr_perf_job("unknown", sram_write_words);
             end

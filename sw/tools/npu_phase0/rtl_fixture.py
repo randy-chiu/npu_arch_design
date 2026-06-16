@@ -59,6 +59,17 @@ def generate_default_fixtures(
         ),
         8,
     )
+    _write_hex(
+        out_dir / "vector_tile_vadd_program.hex",
+        _pad_program(
+            [
+                encode_uop(arch, "VADD", 0, 0),
+                encode_uop(arch, "HALT"),
+            ],
+            arch,
+        ),
+        8,
+    )
     attention_softmax_program = build_softmax_expanded_primitive_program(
         rows=arch["rtl"]["softmax_vector_len"],
         elements=arch["rtl"]["softmax_vector_len"],

@@ -15,7 +15,7 @@
   "scope": {
     // Keep Phase 0 intentionally small. These are the only graph operators the
     // compiler is allowed to lower today.
-    "operators": ["matmul", "softmax"],
+    "operators": ["matmul", "softmax", "vector_tile"],
 
     // Dynamic shapes are disabled so compiler legality and RTL storage sizing
     // are deterministic.
@@ -62,6 +62,9 @@
         "VSCALE_FIXED": 9,
         "VCLAMP": 10,
         "VNORM": 11,
+        "VADD": 12,
+        "VMUL": 13,
+        "VREQUANT": 14,
         "HALT": 15
       },
       "tensors": {
@@ -92,6 +95,9 @@
       "VSCALE_FIXED",
       "VCLAMP",
       "VNORM",
+      "VADD",
+      "VMUL",
+      "VREQUANT",
       "HALT"
     ]
   },
@@ -193,6 +199,18 @@
       "feed_cycles_per_k_slice": 1,
       "a_read_bus_bits": 128,
       "b_read_bus_bits": 64
+    },
+    "vector_tile_storage": {
+      "implementation_assumption": "two_32bit_source_rows_plus_32bit_destination_row",
+      "elements_per_segment": 8,
+      "element_bits": 32,
+      "source_count": 2,
+      "read_elements_per_cycle": 16,
+      "write_elements_per_cycle": 8,
+      "source_read_cycles": 1,
+      "destination_write_cycles": 1,
+      "read_bus_bits": 512,
+      "write_bus_bits": 256
     }
   },
 
@@ -267,7 +285,9 @@
       "c": {"base_word": 512, "words": 64},
       "mask": {"base_word": 768, "words": 2},
       "program": {"base_word": 1024, "words": 128},
-      "control": {"base_word": 1280, "words": 1}
+      "control": {"base_word": 1280, "words": 1},
+      "vector_src0": {"base_word": 1536, "words": 8},
+      "vector_src1": {"base_word": 1544, "words": 8}
     },
     "control_bits": {
       "accumulate_enable": 0,
