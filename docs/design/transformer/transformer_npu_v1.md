@@ -378,7 +378,8 @@ input is legal. Block-level reporting must preserve stage identity as
 
 #### Current executable subset / 当前可执行子集
 
-The first executable subsets are the B0 matrix subgraph and the B0 residual
+The first executable subsets are the B0 matrix subgraph, RMSNorm vector
+subgraph, Attention-head subgraph, gate-multiply vector subgraph, and residual
 vector subgraph. The matrix subgraph intentionally covers only the seven
 matrix stages:
 
@@ -392,8 +393,8 @@ matches the Compiler golden for every tile.
 
 This subset is useful because it makes projection and FFN movement/control cost
 visible before complete B0 is ready. It is not accepted as complete B0 because
-RMSNorm, RoPE, Attention head composition, SiLU, and gate multiply still lack
-measured RTL provenance.
+RoPE and SiLU still lack measured RTL provenance, and the executable subgraphs
+are still submitted as separate groups rather than one block execution package.
 
 Measured matrix-subgraph evidence:
 
@@ -412,6 +413,108 @@ Measured matrix-subgraph evidence:
 The conclusion is functional, not yet an optimization decision: the Matrix
 Engine is fully utilized while active, but the current per-tile descriptor and
 external SRAM movement boundaries dominate elapsed cycles.
+
+The RMSNorm vector subgraph covers `rmsnorm_attn` and `rmsnorm_ffn` through
+32 `DESC_VECTOR_TILE_V1` descriptor jobs. Each output segment job loads both
+`H=16` row segments, runs `SUMSQ_SRC0 + SUMSQ_SRC1 + RSQRT + SCALE_SRCx`, and
+stores one eight-lane output segment. Measured RTL evidence:
+
+| Metric | Value |
+| --- | ---: |
+| descriptor jobs | 32 |
+| effective vector lane ops | 256 |
+| theoretical Reduction cycles | 64 |
+| theoretical SFU cycles | 32 |
+| theoretical Vector cycles | 32 |
+| measured compute cycles | 128 |
+| total cycles | 1344 |
+| Data Mover active cycles | 320 |
+| primitive compute efficiency | 1.0 |
+| end-to-end efficiency | 0.095238 |
+
+中文说明：RMSNorm现在已经通过Reduction、SFU和Vector三个执行单元完成，
+不是CPU预先计算`inv_rms`后塞给硬件。当前baseline每个输出segment都重复
+计算整行`sumsq/rsqrt`，性能不优，但这正好给后续row-state cache或
+command-list fanout提供了可量化基线。
+
+The Attention-head subgraph covers the two B0 query heads with shared K/V
+head. For each head, firmware submits the measured stage sequence:
+
+```text
+QK matmul -> Scale/Mask -> Softmax -> PV matmul
+```
+
+The Q and K inputs are currently `rope_q` and `rope_k` from the compiler
+golden, so this subgraph does not prove RoPE execution. Softmax expected output
+uses the current RTL bring-up LUT contract, not the final BlockPlan fixed-spec
+golden. It does prove that the B0 two-head causal Attention dataflow can run
+through the existing Matrix, Vector, Reduction, SFU, Data Mover, Scheduler, and
+Command Processor paths and can be attributed as one B0 Attention workload in
+PPA.
+
+中文说明：B0 Attention子图把两个query head都跑过QK、Scale/Mask、Softmax、
+PV，并在PPA中聚合显示该子图的模块开销。但它的输入仍是compiler golden生成的
+`rope_q/rope_k`，Softmax数值也仍是当前RTL bring-up LUT合同，因此RoPE和最终
+Softmax数值仍是完整B0的缺口，不能把这个子图说成完整Attention Block已经闭合。
+
+Measured Attention-subgraph evidence:
+
+| Metric | Value |
+| --- | ---: |
+| descriptor jobs | 8 |
+| heads | 2 |
+| effective MAC ops | 2048 |
+| theoretical Matrix cycles | 32 |
+| measured Matrix cycles | 32 |
+| total cycles | 1550 |
+| Data Mover active cycles | 406 |
+| SFU active cycles | 144 |
+| Matrix utilization | 1.0 |
+| end-to-end efficiency | 0.020645 |
+
+Per head, the measured stage costs are `QK=83 cycles`,
+`Scale/Mask=85 cycles`, `Softmax=526 cycles`, and `PV=81 cycles`. This makes
+the current bottleneck explicit: Matrix work is not the limiting factor for
+the fixed `S=8,D=8` B0 Attention subgraph; separate descriptor boundaries and
+serialized row Softmax dominate elapsed cycles.
+
+中文说明：B0 Attention子图的Matrix部分活跃时利用率为1.0，问题不在QK/PV矩阵
+乘本身，而在每个stage单独提交带来的搬运/控制开销，以及当前Softmax逐行串行
+执行。后续优化应先完成完整B0功能闭环，再用这个PPA基线判断是否需要Softmax
+row pipeline、command-list或stage fusion。
+
+The gate-multiply vector subgraph covers `gate_mul_up` through 32
+`DESC_VECTOR_TILE_V1` descriptor jobs. Each FFN row has width 32 and is split
+into four eight-lane jobs. The primitive program is:
+
+```text
+VMUL silu_gate_segment, up_segment
+VREQUANT arg1=INT8_SHIFT4_CLAMP
+HALT
+```
+
+This does not make the preceding `silu_gate` stage executable. SiLU still needs
+a reviewed SFU/vector approximation before complete B0 acceptance. The gate
+multiply slice is still valuable because it exposes the FFN elementwise
+multiply/requant movement and control cost instead of hiding it in the Python
+golden.
+
+Measured gate-multiply evidence:
+
+| Metric | Value |
+| --- | ---: |
+| descriptor jobs | 32 |
+| effective vector lane ops | 256 |
+| theoretical Vector cycles | 64 |
+| measured Vector cycles | 64 |
+| total cycles | 1088 |
+| Data Mover active cycles | 320 |
+| Vector compute efficiency | 1.0 |
+| end-to-end efficiency | 0.058824 |
+
+中文说明：`gate_mul_up`已经由NPU执行乘法和`>>4`后int8 clamp，不再由Python
+直接生成该stage结果。但`SiLU(gate)`本身仍是前置golden输入；后续必须评审
+SiLU近似的SFU/Vector primitive序列，才能把完整SwiGLU标为NPU执行。
 
 The residual vector subgraph covers `residual_attn` and `residual_ffn` through
 32 `DESC_VECTOR_TILE_V1` descriptor jobs. Each `H=16` row is split into two
@@ -437,11 +540,12 @@ descriptor，导致Vector Engine实际只工作32 cycle，但端到端耗时960 
 
 #### Problem / 要解决的问题
 
-B0 now has measured matrix and residual-vector subgraphs, but the remaining
+B0 now has measured matrix, RMSNorm, gate-multiply, and residual-vector
+subgraphs, but the remaining
 stages still cannot be accepted as executable:
 
 ```text
-RMSNorm, RoPE, Attention head composition, SiLU, gate multiply
+RoPE, Attention head composition, SiLU
 ```
 
 These stages are not Matrix Engine work. They are row/vector operations over
@@ -517,6 +621,70 @@ The first implementation may materialize `row_sumsq` and `inv_rms` in SRAM or
 a small local scalar file. It must report that movement/storage explicitly.
 Keeping these scalars resident is a later optimization candidate.
 
+#### Workload/planner contract check / Workload与Planner一致性检查
+
+B0/B1 deliberately do not use a general graph parser yet. The checked-in
+workload JSONC declares the reviewed shape, topology summary, and planner
+entry point; `npu_compiler.block` expands that fixed workload into the
+BlockPlan, golden tensors, tile jobs, and primitive segment jobs. To prevent
+two independent definitions from drifting apart, the compiler regression
+validates:
+
+- B0/B1 JSONC shape equals the generated planner shape;
+- B0 topology summary equals the expanded stage order;
+- planner names and execution states match the invoked planner;
+- B1 boundary metadata matches the generated two-block plan.
+
+中文说明：这里不做通用graph parser，但必须防止“workload里一套图、compiler里
+另一套图”。后续修改B0/B1网络结构时，JSONC声明和planner展开逻辑必须一起改；
+否则contract test会失败。
+
+#### RMSNorm primitive lowering boundary / RMSNorm primitive降低边界
+
+RMSNorm is the next B0 blocker after residual add. The Reduction Engine already
+supports `REDUCE_SUMSQ`, and the SFU already supports `SFU_RSQRT`, but the
+current `npu_v0` 4-bit UOP encoding does not expose these two operations
+through `DESC_VECTOR_TILE_V1`. Therefore the compiler may emit a planned
+RMSNorm segmented-row plan, but it must remain non-executable until the
+primitive ISA/descriptor extension is reviewed and implemented.
+
+The first executable baseline for one `H=16` row uses two descriptor jobs, one
+per output segment. Each job loads both row segments, recomputes the full
+row sum of squares, computes `rsqrt`, and scales only the selected output
+segment:
+
+```text
+job for output segment0:
+  input0 = row[0:8], input1 = row[8:16]
+  VREDSUM arg1=SUMSQ_SRC0
+  VREDSUM arg1=SUMSQ_SRC1
+  VDIV    arg1=RSQRT_ROW_ACCUM
+  VNORM   arg1=SCALE_SRC0_BY_SFU -> output segment0
+
+job for output segment1:
+  input0 = row[0:8], input1 = row[8:16]
+  VREDSUM arg1=SUMSQ_SRC0
+  VREDSUM arg1=SUMSQ_SRC1
+  VDIV    arg1=RSQRT_ROW_ACCUM
+  VNORM   arg1=SCALE_SRC1_BY_SFU -> output segment1
+```
+
+The first accepted RTL path must expose these as measured Reduction, SFU, and
+Vector cycles. A dedicated `RMSNORM_OP` FSM is rejected for the same reason
+dedicated Softmax sequencing was rejected: it would hide primitive scheduling
+and make PPA less useful.
+
+This baseline intentionally repeats `SUMSQ/RSQRT` for each output segment. It
+does not hide row-state in CPU preprocessing, and it creates a clear PPA
+baseline for later row-state caching or command-list fanout.
+
+中文说明：RMSNorm不能通过新增一个黑盒`RMSNORM`硬件状态机来绕过。正确方向是
+让compiler生成`REDUCE_SUMSQ -> SFU_RSQRT -> VEC_SCALE`这类primitive序列，
+PPA中能看到Reduction、SFU、Vector分别工作了多少cycle。当前先生成
+每个输出segment一个descriptor job的baseline：每个job都加载同一行的两个
+segment，在NPU里重复计算完整row的`sumsq/rsqrt`，然后只输出当前segment。
+这样性能不最优，但不会把`inv_rms`藏在CPU里，PPA也能真实显示后续优化空间。
+
 #### B0 stage mapping / B0阶段映射
 
 | Stage | Width | First `DESC_VECTOR_TILE_V1` mapping | Whole-row state |
@@ -527,7 +695,7 @@ Keeping these scalars resident is a later optimization candidate.
 | `residual_attn` | 16 | `VEC_ADD` per segment | none |
 | `rmsnorm_ffn` | 16 | same as `rmsnorm_attn` | `sumsq`, `inv_rms` |
 | `silu_gate` | 32 | bring-up LUT/approximation through SFU or reviewed vector approximation | none across segments |
-| `gate_mul_up` | 32 | `VEC_MUL`/requant per segment | none |
+| `gate_mul_up` | 32 | `VEC_MUL` + `VEC_REQUANT arg1=INT8_SHIFT4_CLAMP` per segment | none |
 | `residual_ffn` | 16 | `VEC_ADD` per segment | none |
 
 RoPE and SiLU require reviewed numerical approximations before they are marked
@@ -580,10 +748,10 @@ DESC_VECTOR_TILE_V1 op_type
   program -> existing 16-word primitive instruction memory
 ```
 
-This first boundary supports simple 8-lane segment programs such as `VADD`.
-It does not yet claim complete RMSNorm row-state, RoPE swizzle, or SiLU
-approximation support. Those remain explicit lowering steps after the carrier
-path is proven.
+This boundary now supports simple 8-lane `VADD`, segmented RMSNorm
+Reduction/SFU/Vector programs, and `VMUL + VREQUANT` gate-multiply programs.
+It does not yet claim RoPE swizzle or SiLU approximation support. Those remain
+explicit lowering steps after the vector-tile carrier path is proven.
 
 #### PPA acceptance / PPA验收
 

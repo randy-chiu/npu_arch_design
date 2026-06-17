@@ -188,6 +188,22 @@ tiling. B0 already exercises N-axis tiling (`H=16`, `FFN=32`) and K-axis
 streaming (`H=16` or `FFN=32`); B1 additionally proves that the first block's
 actual output buffer is the second block's input.
 
+The checked-in workload JSONC is the reviewed architecture-driver declaration,
+not a general graph language. For B0/B1 it names the shape, scenario, topology
+summary, and planner entry point. The fixed planner still expands that
+declaration into the detailed BlockPlan and tile/primitive jobs. To avoid two
+independent sources of truth, the compiler test path validates that:
+
+- workload shape matches the planner shape;
+- workload planner name matches the invoked planner;
+- B0 topology summary matches the planner's expanded stage order;
+- B1 boundary metadata matches the generated two-block plan.
+
+修改B0/B1网络结构时，不能只改`workloads/transformer/block/*.jsonc`或只改
+`npu_compiler.block`。两者必须同时更新；否则contract test会失败。这里刻意
+不实现通用graph parser，避免把近期工作变成大而全软件框架，但必须用自动化
+校验防止workload声明和compiler生成逻辑漂移。
+
 Acceptance state is explicit:
 
 | State | Meaning |
@@ -203,6 +219,18 @@ Current executable subset:
 
 - `transformer_tinyllama_b0_matrix_subgraph` executes the seven B0 matrix
   stages through NPU RTL as 16 `MATMUL_K_STREAM` descriptor jobs.
+- `transformer_tinyllama_b0_rmsnorm_vector_subgraph` executes the two B0
+  RMSNorm stages through NPU RTL as 32 `DESC_VECTOR_TILE_V1` descriptor jobs
+  using Reduction `SUMSQ`, SFU `RSQRT`, and Vector scale primitives.
+- `transformer_tinyllama_b0_attention_subgraph` executes two B0 causal
+  Attention heads as eight descriptor jobs:
+  `QK -> Scale/Mask -> Softmax -> PV` for each head. Its `rope_q/rope_k`
+  inputs are still compiler golden data, so it is not full B0 acceptance.
+  Current measured PPA is `total_cycles=1550` for the subgraph, with per-head
+  stage costs `QK=83`, `Scale/Mask=85`, `Softmax=526`, and `PV=81` cycles.
+- `transformer_tinyllama_b0_gate_mul_vector_subgraph` executes the B0
+  `gate_mul_up` stage through NPU RTL as 32 `DESC_VECTOR_TILE_V1` descriptor
+  jobs using `VMUL -> VREQUANT arg1=INT8_SHIFT4_CLAMP`.
 - `transformer_tinyllama_b0_residual_vector_subgraph` executes the two B0
   residual-add stages through NPU RTL as 32 `DESC_VECTOR_TILE_V1` descriptor
   jobs, each running an eight-lane `VADD + HALT` primitive program.

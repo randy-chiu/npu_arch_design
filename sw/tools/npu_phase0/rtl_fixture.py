@@ -70,6 +70,21 @@ def generate_default_fixtures(
         ),
         8,
     )
+    _write_hex(
+        out_dir / "vector_tile_rmsnorm_src0_program.hex",
+        _pad_program(_rmsnorm_segment_program(arch, scale_mode="SCALE_SRC0_BY_SFU"), arch),
+        8,
+    )
+    _write_hex(
+        out_dir / "vector_tile_rmsnorm_src1_program.hex",
+        _pad_program(_rmsnorm_segment_program(arch, scale_mode="SCALE_SRC1_BY_SFU"), arch),
+        8,
+    )
+    _write_hex(
+        out_dir / "vector_tile_gate_mul_program.hex",
+        _pad_program(_gate_mul_program(arch), arch),
+        8,
+    )
     attention_softmax_program = build_softmax_expanded_primitive_program(
         rows=arch["rtl"]["softmax_vector_len"],
         elements=arch["rtl"]["softmax_vector_len"],
@@ -160,6 +175,9 @@ def _write_sv_spec_include(path: Path, arch: dict[str, Any]) -> None:
     ]
     for op, value in encoding["opcodes"].items():
         lines.append(f"localparam [3:0] UOP_{op} = 4'h{value:x};")
+    for opcode, modes in arch.get("isa", {}).get("primitive_arg1_modes", {}).items():
+        for mode, value in modes.items():
+            lines.append(f"localparam [3:0] UOP_MODE_{_sv_name(opcode)}_{_sv_name(mode)} = 4'h{int(value):x};")
     for idx, value in enumerate(arch["vector_sfu"]["sfu_bringup_exp_q15_segments"]):
         lines.append(f"localparam int RTL_SFU_BRINGUP_EXP_SEG_{idx} = {int(value)};")
     for tensor, value in encoding["tensors"].items():
@@ -195,6 +213,26 @@ def _encode_attention_softmax_uop(arch: dict[str, Any], inst: dict[str, Any]) ->
     }
     opcode = op_map[inst["op"]]
     return encode_uop(arch, opcode, int(inst.get("row", 0)), int(inst.get("lane", 0)))
+
+
+def _rmsnorm_segment_program(arch: dict[str, Any], *, scale_mode: str) -> list[int]:
+    modes = arch["isa"]["primitive_arg1_modes"]
+    return [
+        encode_uop(arch, "VREDSUM", 0, modes["VREDSUM"]["SUMSQ_SRC0"]),
+        encode_uop(arch, "VREDSUM", 0, modes["VREDSUM"]["SUMSQ_SRC1"]),
+        encode_uop(arch, "VDIV", 0, modes["VDIV"]["RSQRT_ROW_ACCUM"]),
+        encode_uop(arch, "VNORM", 0, modes["VNORM"][scale_mode]),
+        encode_uop(arch, "HALT"),
+    ]
+
+
+def _gate_mul_program(arch: dict[str, Any]) -> list[int]:
+    modes = arch["isa"]["primitive_arg1_modes"]
+    return [
+        encode_uop(arch, "VMUL", 0, 0),
+        encode_uop(arch, "VREQUANT", 0, modes["VREQUANT"]["INT8_SHIFT4_CLAMP"]),
+        encode_uop(arch, "HALT"),
+    ]
 
 
 def _sv_signed_decimal(value: int, width: int) -> str:

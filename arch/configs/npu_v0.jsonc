@@ -80,6 +80,23 @@
       "buffer_aliases": {}
     },
 
+    // v0 keeps the 4-bit opcode field. Generic segmented-row primitives that
+    // need more engine modes use arg1 as an explicit primitive mode where the
+    // legacy mode remains zero:
+    //   VREDSUM arg1=0 -> REDUCE_SUM,  arg1=1 -> REDUCE_SUMSQ over vector_src0,
+    //          arg1=2 -> REDUCE_SUMSQ over vector_src1.
+    //   VDIV    arg1=0 -> SFU_RECIP,   arg1=1 -> SFU_RSQRT of accumulated row sum.
+    //   VNORM   arg1=0 -> existing softmax normalize, arg1=1/2 -> VEC_SCALE
+    //          vector_src0/vector_src1 by the most recent SFU scalar for RMSNorm.
+    //   VREQUANT arg1=0 -> legacy int32 pass-through shift, arg1=1 -> B0 gate
+    //          multiply narrowing: arithmetic >>4 then clamp to signed int8.
+    "primitive_arg1_modes": {
+      "VREDSUM": {"SUM": 0, "SUMSQ_SRC0": 1, "SUMSQ_SRC1": 2},
+      "VDIV": {"RECIP": 0, "RSQRT_ROW_ACCUM": 1},
+      "VNORM": {"SOFTMAX_NORMALIZE": 0, "SCALE_SRC0_BY_SFU": 1, "SCALE_SRC1_BY_SFU": 2},
+      "VREQUANT": {"INT32_SHIFT0": 0, "INT8_SHIFT4_CLAMP": 1}
+    },
+
     // Shared micro-op set required for matmul and Attention primitives.
     // Agents must update compiler, simulator, RTL decoder/control, and tests
     // whenever this list changes.

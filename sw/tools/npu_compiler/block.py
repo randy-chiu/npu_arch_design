@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import math
+import json
+import re
+from pathlib import Path
 from typing import Any
 
 from npu_compiler.k_stream import plan_tiled_matmul
 from transformer.golden import deterministic_i8_matrix, matmul_i8_i32
-from transformer.micro_golden import attention_head_fixed_spec, rmsnorm_primitive_sequence
+from transformer.micro_golden import (
+    SOFTMAX_NEG_INF,
+    attention_head_fixed_spec,
+    attention_qk_scores_i8_i32,
+    rmsnorm_primitive_sequence,
+    scale_scores_fixed_multiplier,
+    softmax_row_primitive_lut_q15,
+    transpose,
+)
 
 
 B0_SHAPE = {
@@ -28,6 +39,8 @@ MATRIX_STAGE_IDS = {
     "down_proj",
 }
 VECTOR_SEGMENT_WIDTH = 8
+B0_WORKLOAD_SPEC_PATH = Path("workloads/transformer/block/tinyllama_derived_b0.jsonc")
+B1_WORKLOAD_SPEC_PATH = Path("workloads/transformer/block/tinyllama_derived_b1.jsonc")
 
 
 def build_b0_block_plan(seed: int = 1, input_x: list[list[int]] | None = None, block_index: int = 0) -> dict[str, Any]:
@@ -51,6 +64,51 @@ def build_b1_two_block_plan(seed: int = 1) -> dict[str, Any]:
         "execution_state": "planned_not_executable",
         "block_output": block1["golden"]["block_output"],
     }
+
+
+def load_block_workload_spec(path: Path | str) -> dict[str, Any]:
+    spec_path = Path(path)
+    text = spec_path.read_text(encoding="utf-8")
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    text = re.sub(r"//.*$", "", text, flags=re.MULTILINE)
+    return json.loads(text)
+
+
+def validate_b0_workload_contract(
+    spec: dict[str, Any] | None = None,
+    plan: dict[str, Any] | None = None,
+) -> None:
+    """Validate that the B0 workload declaration matches the compiler planner.
+
+    This is intentionally a contract check, not a general graph importer.
+    B0 remains a fixed architecture-driver workload, but the checked-in
+    workload declaration must not drift away from the BlockPlan generator.
+    """
+
+    if spec is None:
+        spec = load_block_workload_spec(B0_WORKLOAD_SPEC_PATH)
+    if plan is None:
+        plan = build_b0_block_plan()
+    _validate_workload_shape(spec, plan["shape"], expected_blocks=1)
+    _require_equal(spec.get("planner"), "npu_compiler.block.build_b0_block_plan", "B0 planner")
+    _require_equal(spec.get("execution_state"), plan["execution_state"], "B0 execution_state")
+    _require_equal(spec.get("topology"), _aggregate_stage_topology(plan["stages"]), "B0 topology")
+
+
+def validate_b1_workload_contract(
+    spec: dict[str, Any] | None = None,
+    plan: dict[str, Any] | None = None,
+) -> None:
+    if spec is None:
+        spec = load_block_workload_spec(B1_WORKLOAD_SPEC_PATH)
+    if plan is None:
+        plan = build_b1_two_block_plan()
+    _validate_workload_shape(spec, plan["shape"], expected_blocks=2)
+    _require_equal(spec.get("planner"), "npu_compiler.block.build_b1_two_block_plan", "B1 planner")
+    _require_equal(spec.get("execution_state"), plan["execution_state"], "B1 execution_state")
+    _require_equal(spec.get("block_boundary"), "block0/block_output -> block1/input_x", "B1 block_boundary")
+    _require_equal(bool(spec.get("cpu_recomputation")), False, "B1 cpu_recomputation")
+    _require_equal(bool(spec.get("fixture_replacement")), False, "B1 fixture_replacement")
 
 
 def build_b0_matrix_subgraph_workload(seed: int = 1) -> dict[str, Any]:
@@ -189,6 +247,254 @@ def build_b0_residual_vector_subgraph_workload(seed: int = 1) -> dict[str, Any]:
     }
 
 
+def build_b0_rmsnorm_vector_subgraph_workload(seed: int = 1) -> dict[str, Any]:
+    """Return executable DESC_VECTOR_TILE_V1 jobs for B0 RMSNorm stages."""
+
+    plan = build_b0_block_plan(seed=seed)
+    tile_jobs = []
+    for stage in plan["stages"]:
+        rmsnorm_plan = stage.get("rmsnorm_plan")
+        if rmsnorm_plan is None:
+            continue
+        for job in rmsnorm_plan["jobs"]:
+            tile_jobs.append(
+                {
+                    "stage_id": stage["stage_id"],
+                    "logical_op": stage["logical_op"],
+                    "tile_job_index": len(tile_jobs),
+                    "row": job["row"],
+                    "segment": job["segment"],
+                    "segment_offset": job["segment_offset"],
+                    "program_select": job["program_select"],
+                    "input0": job["input0"],
+                    "input1": job["input1"],
+                    "expected_output": job["expected_output"],
+                    "ppa_theory": job["ppa_theory"],
+                }
+            )
+    return {
+        "name": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+        "kind": "transformer_block",
+        "op": "block_desc_vector_tile_group",
+        "role": "transformer_block_rmsnorm_vector_subgraph",
+        "metadata": {
+            "scenario": "transformer_prefill",
+            "logical_op": "tinyllama_decoder_block_rmsnorm_vector_subgraph",
+            "block": "B0",
+            "block_execution_state": "partially_executable",
+            "full_block_execution_state": "planned_not_executable",
+            "shape": dict(B0_SHAPE),
+            "stage_count": 2,
+            "tile_jobs": len(tile_jobs),
+            "descriptor_op": "desc_vector_tile_v1",
+            "primitive_program": "SUMSQ_SRC0 + SUMSQ_SRC1 + RSQRT + SCALE_SRCx + HALT",
+            "effective_vector_lane_ops": sum(job["ppa_theory"]["useful_vector_lane_ops"] for job in tile_jobs),
+            "theoretical_reduction_cycles": sum(job["ppa_theory"]["theoretical_reduction_cycles"] for job in tile_jobs),
+            "theoretical_sfu_cycles": sum(job["ppa_theory"]["theoretical_sfu_cycles"] for job in tile_jobs),
+            "theoretical_vector_cycles": sum(job["ppa_theory"]["theoretical_vector_cycles"] for job in tile_jobs),
+            "shape_class": "mixed_block_rmsnorm_vector_subgraph",
+            "provenance": "measured_current_desc_vector_tile_path",
+            "non_matrix_gap": [
+                "rope_q",
+                "rope_k",
+                "attention_head0",
+                "attention_head1",
+                "concat_heads",
+                "silu_gate",
+                "gate_mul_up",
+            ],
+        },
+        "tile_jobs": tile_jobs,
+        "tile_words": VECTOR_SEGMENT_WIDTH,
+    }
+
+
+def build_b0_gate_mul_vector_subgraph_workload(seed: int = 1) -> dict[str, Any]:
+    """Return executable DESC_VECTOR_TILE_V1 jobs for B0 gate multiply."""
+
+    plan = build_b0_block_plan(seed=seed)
+    tile_jobs = []
+    for stage in plan["stages"]:
+        gate_mul_plan = stage.get("gate_mul_plan")
+        if gate_mul_plan is None:
+            continue
+        for job in gate_mul_plan["jobs"]:
+            tile_jobs.append(
+                {
+                    "stage_id": stage["stage_id"],
+                    "logical_op": stage["logical_op"],
+                    "tile_job_index": len(tile_jobs),
+                    "row": job["row"],
+                    "segment": job["segment"],
+                    "segment_offset": job["segment_offset"],
+                    "valid_lanes": job["valid_lanes"],
+                    "input0": job["input0"],
+                    "input1": job["input1"],
+                    "expected_output": job["expected_output"],
+                    "primitive_program": job["primitive_program"],
+                    "ppa_theory": job["ppa_theory"],
+                }
+            )
+    return {
+        "name": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+        "kind": "transformer_block",
+        "op": "block_desc_vector_tile_group",
+        "role": "transformer_block_gate_mul_vector_subgraph",
+        "metadata": {
+            "scenario": "transformer_prefill",
+            "logical_op": "tinyllama_decoder_block_gate_mul_vector_subgraph",
+            "block": "B0",
+            "block_execution_state": "partially_executable",
+            "full_block_execution_state": "planned_not_executable",
+            "shape": dict(B0_SHAPE),
+            "stage_count": 1,
+            "tile_jobs": len(tile_jobs),
+            "descriptor_op": "desc_vector_tile_v1",
+            "primitive_program": "VMUL + VREQUANT(INT8_SHIFT4_CLAMP) + HALT",
+            "effective_vector_lane_ops": sum(job["valid_lanes"] for job in tile_jobs),
+            "theoretical_vector_cycles": sum(job["ppa_theory"]["theoretical_vector_cycles"] for job in tile_jobs),
+            "shape_class": "mixed_block_gate_mul_vector_subgraph",
+            "provenance": "measured_current_desc_vector_tile_path",
+            "explicit_gap": [
+                "silu_gate is still compiler golden input for this subgraph",
+            ],
+            "non_matrix_gap": [
+                "rope_q",
+                "rope_k",
+                "attention_head0",
+                "attention_head1",
+                "concat_heads",
+                "silu_gate",
+            ],
+        },
+        "tile_jobs": tile_jobs,
+        "tile_words": VECTOR_SEGMENT_WIDTH,
+    }
+
+
+def build_b0_attention_subgraph_workload(seed: int = 1) -> dict[str, Any]:
+    """Return executable stage jobs for the two B0 causal Attention heads."""
+
+    plan = build_b0_block_plan(seed=seed)
+    shape = plan["shape"]
+    golden = plan["golden"]
+    valid_lane_masks = [sum(1 << key for key in range(query + 1)) for query in range(shape["seq_len"])]
+    row_mask_words = [
+        sum(valid_lane_masks[row + offset] << (offset * 8) for offset in range(4))
+        for row in range(0, shape["seq_len"], 4)
+    ]
+    heads = []
+    stage_jobs = []
+    for head in range(shape["query_heads"]):
+        q_head = _slice_cols(golden["rope_q"], head * shape["head_dim"], shape["head_dim"])
+        k_head = golden["rope_k"]
+        v_head = golden["v"]
+        scores = attention_qk_scores_i8_i32(q_head, k_head)
+        scaled_info = scale_scores_fixed_multiplier(scores, shape["head_dim"], shift=15)
+        scaled = scaled_info["scaled"]
+        assert isinstance(scaled, list)
+        masked_scores = [
+            [
+                value if valid_lane_masks[row_idx] & (1 << lane) else SOFTMAX_NEG_INF
+                for lane, value in enumerate(scaled_row)
+            ]
+            for row_idx, scaled_row in enumerate(scaled)
+        ]
+        probabilities = [
+            softmax_row_primitive_lut_q15(
+                row,
+                [bool(valid_lane_masks[row_idx] & (1 << lane)) for lane in range(shape["seq_len"])],
+            )["output_q15"]
+            for row_idx, row in enumerate(masked_scores)
+        ]
+        pv_output = _attention_pv_q15_i8_shift15(probabilities, v_head)
+        head_jobs = [
+            {
+                "stage": "qk",
+                "op": "matmul_k_stream",
+                "head": head,
+                "a_stream": [_flatten(q_head)],
+                "b_stream": [_flatten(transpose(k_head))],
+                "expected_output": _flatten(scores),
+                "k_chunks": 1,
+            },
+            {
+                "stage": "scale_mask",
+                "op": "attention_scale_mask_v1",
+                "head": head,
+                "expected_output": _flatten(masked_scores),
+            },
+            {
+                "stage": "softmax",
+                "op": "attention_softmax_v1",
+                "head": head,
+                "expected_output": _flatten(probabilities),
+            },
+            {
+                "stage": "pv",
+                "op": "matmul_u16s8_q15",
+                "head": head,
+                "a_stream": [_flatten(probabilities)],
+                "b_stream": [_flatten(v_head)],
+                "expected_output": _flatten(pv_output),
+                "k_chunks": 1,
+            },
+        ]
+        for job in head_jobs:
+            job["stage_job_index"] = len(stage_jobs)
+            stage_jobs.append(job)
+        heads.append(
+            {
+                "head": head,
+                "q_input_source": "compiler_golden_rope_q",
+                "k_input_source": "compiler_golden_rope_k",
+                "v_input_source": "compiler_golden_v_projection",
+                "stages": [job["stage"] for job in head_jobs],
+            }
+        )
+    return {
+        "name": "transformer_tinyllama_b0_attention_subgraph",
+        "kind": "transformer_block",
+        "op": "block_attention_head_group",
+        "role": "transformer_block_attention_subgraph",
+        "metadata": {
+            "scenario": "transformer_prefill",
+            "logical_op": "tinyllama_decoder_block_attention_subgraph",
+            "block": "B0",
+            "block_execution_state": "partially_executable",
+            "full_block_execution_state": "planned_not_executable",
+            "shape": dict(B0_SHAPE),
+            "stage_count": 4,
+            "heads": shape["query_heads"],
+            "stage_jobs": len(stage_jobs),
+            "attention_group": "tinyllama_b0_attention",
+            "attention_stage": "block_attention_subgraph",
+            "shape_class": "mixed_block_attention_subgraph",
+            "provenance": "measured_current_attention_stage_paths",
+            "effective_mac_ops": shape["query_heads"] * 2 * shape["seq_len"] * shape["seq_len"] * shape["head_dim"],
+            "theoretical_matrix_cycles": shape["query_heads"] * 2 * 8,
+            "theoretical_scale_mask_vector_cycles": shape["query_heads"] * 8,
+            "theoretical_softmax_cycles": shape["query_heads"] * 112,
+            "valid_lane_masks": valid_lane_masks,
+            "row_mask_words": row_mask_words,
+            "explicit_gap": [
+                "rope_q and rope_k are compiler golden inputs for this subgraph",
+                "softmax uses current RTL bring-up LUT contract, not final BlockPlan fixed-spec golden",
+            ],
+            "non_matrix_gap": [
+                "rope_q",
+                "rope_k",
+                "concat_heads",
+                "silu_gate",
+            ],
+        },
+        "heads": heads,
+        "stage_jobs": stage_jobs,
+        "row_mask_words": row_mask_words,
+        "tile_words": 64,
+    }
+
+
 def lower_residual_add_vector_tiles(
     lhs: list[list[int]],
     rhs: list[list[int]],
@@ -247,6 +553,70 @@ def lower_residual_add_vector_tiles(
     }
 
 
+def lower_gate_mul_vector_tiles(
+    silu_gate: list[list[int]],
+    up: list[list[int]],
+    *,
+    stage_id: str = "gate_mul_up",
+    segment_width: int = VECTOR_SEGMENT_WIDTH,
+) -> dict[str, Any]:
+    """Lower B0 SwiGLU gate multiply into VMUL/VREQUANT primitive jobs."""
+
+    _validate_same_shape(silu_gate, up, "silu_gate", "up")
+    if segment_width != VECTOR_SEGMENT_WIDTH:
+        raise ValueError(f"v0 gate multiply segment width must be {VECTOR_SEGMENT_WIDTH}")
+    rows = len(silu_gate)
+    width = len(silu_gate[0]) if rows else 0
+    if width == 0 or width % segment_width:
+        raise ValueError("gate multiply lowering requires a non-empty width that is a multiple of 8")
+
+    jobs = []
+    for row_idx in range(rows):
+        for segment_idx, offset in enumerate(range(0, width, segment_width)):
+            lhs_segment = silu_gate[row_idx][offset : offset + segment_width]
+            rhs_segment = up[row_idx][offset : offset + segment_width]
+            jobs.append(
+                {
+                    "stage_id": stage_id,
+                    "logical_op": "vector_mul_requant",
+                    "descriptor_op": "desc_vector_tile_v1",
+                    "row": row_idx,
+                    "segment": segment_idx,
+                    "segment_offset": offset,
+                    "valid_lanes": segment_width,
+                    "input0": lhs_segment,
+                    "input1": rhs_segment,
+                    "expected_output": [_sat_i8((a * b) >> 4) for a, b in zip(lhs_segment, rhs_segment)],
+                    "primitive_program": [
+                        {"op": "VMUL", "row": 0, "segment": 0},
+                        {"op": "VREQUANT", "mode": "INT8_SHIFT4_CLAMP"},
+                        {"op": "HALT"},
+                    ],
+                    "ppa_theory": {
+                        "useful_vector_lane_ops": segment_width,
+                        "theoretical_vector_cycles": 2,
+                        "primitive_passes": 2,
+                    },
+                }
+            )
+    return {
+        "stage_id": stage_id,
+        "logical_op": "vector_mul_requant",
+        "descriptor_op": "desc_vector_tile_v1",
+        "segment_width": segment_width,
+        "rows": rows,
+        "row_width": width,
+        "segment_count": len(jobs),
+        "execution_state": "compiler_lowered_executable_subgraph",
+        "required_primitives": ["VEC_MUL", "VEC_REQUANT"],
+        "jobs": jobs,
+        "ppa_theory": {
+            "theoretical_vector_cycles": len(jobs) * 2,
+            "effective_vector_lane_ops": rows * width,
+        },
+    }
+
+
 def _build_block_plan(*, seed: int, input_x: list[list[int]] | None, block_index: int) -> dict[str, Any]:
     shape = dict(B0_SHAPE)
     if input_x is None:
@@ -268,10 +638,22 @@ def _build_block_plan(*, seed: int, input_x: list[list[int]] | None, block_index
             matrix_input, weight_name = _matrix_stage_operands(stage_id, golden, weights)
             stage["matrix_plan"] = plan_tiled_matmul(matrix_input, weights[weight_name])
             stage["provenance"] = "compiler_tiled_current_matrix_contract_not_submitted"
+        elif logical_op == "rmsnorm":
+            source, expected = _rmsnorm_stage_operands(stage_id, golden)
+            stage["rmsnorm_plan"] = lower_rmsnorm_segmented_rows(
+                source,
+                expected,
+                stage_id=stage_id,
+            )
+            stage["provenance"] = "compiler_desc_vector_tile_rmsnorm_lowered_not_full_block_submitted"
         elif logical_op == "vector_add":
             lhs, rhs = _vector_add_stage_operands(stage_id, golden)
             stage["vector_plan"] = lower_residual_add_vector_tiles(lhs, rhs, stage_id=stage_id)
             stage["provenance"] = "compiler_desc_vector_tile_lowered_not_submitted"
+        elif logical_op == "vector_mul":
+            lhs, rhs = _gate_mul_stage_operands(stage_id, golden)
+            stage["gate_mul_plan"] = lower_gate_mul_vector_tiles(lhs, rhs, stage_id=stage_id)
+            stage["provenance"] = "compiler_desc_vector_tile_gate_mul_lowered_not_full_block_submitted"
         stages.append(stage)
     return {
         "name": f"tinyllama_derived_b0_block{block_index}_prefill",
@@ -284,6 +666,119 @@ def _build_block_plan(*, seed: int, input_x: list[list[int]] | None, block_index
         "buffers": _buffers(shape),
         "weights": weights,
         "golden": golden,
+    }
+
+
+def lower_rmsnorm_segmented_rows(
+    source: list[list[int]],
+    expected: list[list[int]],
+    *,
+    stage_id: str = "rmsnorm",
+    segment_width: int = VECTOR_SEGMENT_WIDTH,
+) -> dict[str, Any]:
+    _validate_same_shape(source, expected, "source", "expected")
+    if segment_width != VECTOR_SEGMENT_WIDTH:
+        raise ValueError(f"v0 RMSNorm segment width must be {VECTOR_SEGMENT_WIDTH}")
+    rows = len(source)
+    width = len(source[0]) if rows else 0
+    if width == 0 or width % segment_width:
+        raise ValueError("RMSNorm lowering requires a non-empty width that is a multiple of 8")
+
+    row_plans = []
+    jobs = []
+    total_segments = 0
+    for row_idx, row in enumerate(source):
+        sequence = rmsnorm_primitive_sequence(row)
+        reduce_segments = []
+        scale_segments = []
+        for segment_idx, offset in enumerate(range(0, width, segment_width)):
+            segment = row[offset : offset + segment_width]
+            expected_segment = expected[row_idx][offset : offset + segment_width]
+            reduce_segments.append(
+                {
+                    "segment": segment_idx,
+                    "segment_offset": offset,
+                    "input": segment,
+                    "primitive": "REDUCE_SUMSQ",
+                    "partial_sumsq": sum(int(value) * int(value) for value in segment),
+                }
+            )
+            scale_segments.append(
+                {
+                    "segment": segment_idx,
+                    "segment_offset": offset,
+                    "input": segment,
+                    "scalar": sequence["rsqrt_q24"],
+                    "primitive_program": [
+                        {"op": "VEC_SCALE", "scalar": "row_rsqrt_q24", "shift": sequence["shift"]},
+                        {"op": "HALT"},
+                    ],
+                    "expected_output": expected_segment,
+                }
+            )
+            jobs.append(
+                {
+                    "stage_id": stage_id,
+                    "logical_op": "rmsnorm",
+                    "descriptor_op": "desc_vector_tile_v1",
+                    "row": row_idx,
+                    "segment": segment_idx,
+                    "segment_offset": offset,
+                    "program_select": "src0" if segment_idx == 0 else "src1",
+                    "input0": row[0:segment_width],
+                    "input1": row[segment_width : segment_width * 2],
+                    "expected_output": expected_segment,
+                    "primitive_program": [
+                        {"op": "VREDSUM", "mode": "SUMSQ_SRC0"},
+                        {"op": "VREDSUM", "mode": "SUMSQ_SRC1"},
+                        {"op": "VDIV", "mode": "RSQRT_ROW_ACCUM"},
+                        {"op": "VNORM", "mode": "SCALE_SRC0_BY_SFU" if segment_idx == 0 else "SCALE_SRC1_BY_SFU"},
+                        {"op": "HALT"},
+                    ],
+                    "ppa_theory": {
+                        "useful_vector_lane_ops": segment_width,
+                        "theoretical_reduction_cycles": 2,
+                        "theoretical_sfu_cycles": 1,
+                        "theoretical_vector_cycles": 1,
+                    },
+                }
+            )
+            total_segments += 1
+        row_plans.append(
+            {
+                "row": row_idx,
+                "sumsq": sequence["sumsq"],
+                "rsqrt_q24": sequence["rsqrt_q24"],
+                "shift": sequence["shift"],
+                "reduce_segments": reduce_segments,
+                "sfu": {"primitive": "SFU_RSQRT", "input": sequence["sumsq"], "output": sequence["rsqrt_q24"]},
+                "scale_segments": scale_segments,
+            }
+        )
+
+    return {
+        "stage_id": stage_id,
+        "logical_op": "rmsnorm",
+        "descriptor_op": "desc_vector_tile_v1",
+        "execution_state": "compiler_lowered_executable_subgraph",
+        "required_primitives": ["REDUCE_SUMSQ", "SFU_RSQRT", "VEC_SCALE"],
+        "arg1_mode_extension": {
+            "VREDSUM": ["SUMSQ_SRC0", "SUMSQ_SRC1"],
+            "VDIV": ["RSQRT_ROW_ACCUM"],
+            "VNORM": ["SCALE_SRC0_BY_SFU", "SCALE_SRC1_BY_SFU"],
+        },
+        "segment_width": segment_width,
+        "rows": rows,
+        "row_width": width,
+        "segment_count": total_segments,
+        "jobs": jobs,
+        "row_plans": row_plans,
+        "ppa_theory": {
+            "theoretical_reduction_cycles": total_segments * 2,
+            "theoretical_sfu_cycles": total_segments,
+            "theoretical_vector_cycles": total_segments,
+            "effective_vector_lane_ops": rows * width,
+        },
     }
 
 
@@ -387,6 +882,17 @@ def _slice_cols(matrix: list[list[int]], offset: int, width: int) -> list[list[i
     return [row[offset : offset + width] for row in matrix]
 
 
+def _attention_pv_q15_i8_shift15(prob_q15: list[list[int]], v: list[list[int]]) -> list[list[int]]:
+    output = []
+    for prob_row in prob_q15:
+        out_row = []
+        for dim in range(len(v[0])):
+            acc = sum(int(prob_row[j]) * int(v[j][dim]) for j in range(len(prob_row)))
+            out_row.append(acc >> 15)
+        output.append(out_row)
+    return output
+
+
 def _concat_cols(matrices: list[list[list[int]]]) -> list[list[int]]:
     return [sum((matrix[row] for matrix in matrices), []) for row in range(len(matrices[0]))]
 
@@ -413,6 +919,17 @@ def _matrix_stage_operands(
     return golden[input_name], weight_name
 
 
+def _rmsnorm_stage_operands(stage_id: str, golden: dict[str, Any]) -> tuple[list[list[int]], list[list[int]]]:
+    mapping = {
+        "rmsnorm_attn": ("input_x", "rmsnorm_attn"),
+        "rmsnorm_ffn": ("residual_attn", "rmsnorm_ffn"),
+    }
+    if stage_id not in mapping:
+        raise ValueError(f"unsupported RMSNorm stage {stage_id!r}")
+    input_name, output_name = mapping[stage_id]
+    return golden[input_name], golden[output_name]
+
+
 def _vector_add_stage_operands(stage_id: str, golden: dict[str, Any]) -> tuple[list[list[int]], list[list[int]]]:
     mapping = {
         "residual_attn": ("input_x", "attention_projected"),
@@ -420,6 +937,16 @@ def _vector_add_stage_operands(stage_id: str, golden: dict[str, Any]) -> tuple[l
     }
     if stage_id not in mapping:
         raise ValueError(f"unsupported vector add stage {stage_id!r}")
+    lhs_name, rhs_name = mapping[stage_id]
+    return golden[lhs_name], golden[rhs_name]
+
+
+def _gate_mul_stage_operands(stage_id: str, golden: dict[str, Any]) -> tuple[list[list[int]], list[list[int]]]:
+    mapping = {
+        "gate_mul_up": ("silu_gate", "up"),
+    }
+    if stage_id not in mapping:
+        raise ValueError(f"unsupported gate multiply stage {stage_id!r}")
     lhs_name, rhs_name = mapping[stage_id]
     return golden[lhs_name], golden[rhs_name]
 
@@ -445,6 +972,36 @@ def _stage_defs() -> list[tuple[str, str, list[str], list[str]]]:
         ("down_proj", "matmul", ["gated", "w_down"], ["down"]),
         ("residual_ffn", "vector_add", ["residual_attn", "down"], ["block_output"]),
     ]
+
+
+def _aggregate_stage_topology(stages: list[dict[str, Any]]) -> list[str]:
+    stage_ids = [stage["stage_id"] for stage in stages]
+    expected_stage_ids = [stage_id for stage_id, _, _, _ in _stage_defs()]
+    _require_equal(stage_ids, expected_stage_ids, "BlockPlan stage order")
+    return [
+        "rmsnorm",
+        "qkv_linear_projection",
+        "rope",
+        "causal_gqa_attention",
+        "output_projection",
+        "residual_add",
+        "rmsnorm",
+        "swiglu",
+        "down_projection",
+        "residual_add",
+    ]
+
+
+def _validate_workload_shape(spec: dict[str, Any], shape: dict[str, int], *, expected_blocks: int) -> None:
+    spec_shape = dict(spec.get("shape", {}))
+    blocks = spec_shape.pop("blocks", None)
+    _require_equal(blocks, expected_blocks, f"{spec.get('name', '<unnamed>')} blocks")
+    _require_equal(spec_shape, shape, f"{spec.get('name', '<unnamed>')} shape")
+
+
+def _require_equal(actual: Any, expected: Any, label: str) -> None:
+    if actual != expected:
+        raise ValueError(f"{label} mismatch: {actual!r} != {expected!r}")
 
 
 def _buffers(shape: dict[str, int]) -> list[dict[str, Any]]:

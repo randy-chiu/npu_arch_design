@@ -439,19 +439,52 @@ class PerfReportTests(unittest.TestCase):
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(len(manifest["jobs"]), 122)
+        self.assertEqual(len(manifest["jobs"]), 194)
         self.assertEqual(manifest["manifest_id"], "soc_cpu_smoke_quick_v0")
-        self.assertEqual(manifest["jobs"][-54]["workload"], "transformer_prefill_gemm_tiny")
-        self.assertEqual(manifest["jobs"][-53]["workload"], "transformer_attention_qk_s8_d8")
-        self.assertEqual(manifest["jobs"][-52]["workload"], "transformer_attention_scale_mask_s8_d8")
-        self.assertEqual(manifest["jobs"][-51]["workload"], "transformer_attention_softmax_s8")
-        self.assertEqual(manifest["jobs"][-50]["workload"], "transformer_attention_pv_s8_d8")
-        self.assertEqual(manifest["jobs"][-49]["workload"], "transformer_decode_skinny_gemm_m8_compat")
+        self.assertEqual(manifest["jobs"][-126]["workload"], "transformer_prefill_gemm_tiny")
+        self.assertEqual(manifest["jobs"][-125]["workload"], "transformer_attention_qk_s8_d8")
+        self.assertEqual(manifest["jobs"][-124]["workload"], "transformer_attention_scale_mask_s8_d8")
+        self.assertEqual(manifest["jobs"][-123]["workload"], "transformer_attention_softmax_s8")
+        self.assertEqual(manifest["jobs"][-122]["workload"], "transformer_attention_pv_s8_d8")
+        self.assertEqual(manifest["jobs"][-121]["workload"], "transformer_decode_skinny_gemm_m8_compat")
         self.assertTrue(
             all(
                 job["workload"] == "transformer_tinyllama_b0_matrix_subgraph"
                 and job["op"] == "matmul_k_stream"
-                for job in manifest["jobs"][-48:-32]
+                for job in manifest["jobs"][-120:-104]
+            )
+        )
+        self.assertTrue(
+            all(
+                job["workload"] == "transformer_tinyllama_b0_rmsnorm_vector_subgraph"
+                and job["op"] == "desc_vector_tile_v1"
+                for job in manifest["jobs"][-104:-72]
+            )
+        )
+        self.assertEqual(
+            [job["op"] for job in manifest["jobs"][-72:-64]],
+            [
+                "matmul_k_stream",
+                "attention_scale_mask_v1",
+                "attention_softmax_v1",
+                "matmul_u16s8_q15",
+                "matmul_k_stream",
+                "attention_scale_mask_v1",
+                "attention_softmax_v1",
+                "matmul_u16s8_q15",
+            ],
+        )
+        self.assertTrue(
+            all(
+                job["workload"] == "transformer_tinyllama_b0_attention_subgraph"
+                for job in manifest["jobs"][-72:-64]
+            )
+        )
+        self.assertTrue(
+            all(
+                job["workload"] == "transformer_tinyllama_b0_gate_mul_vector_subgraph"
+                and job["op"] == "desc_vector_tile_v1"
+                for job in manifest["jobs"][-64:-32]
             )
         )
         self.assertTrue(
@@ -487,6 +520,14 @@ class PerfReportTests(unittest.TestCase):
         self.assertEqual(
             manifest["workload_metadata"]["transformer_tinyllama_b0_residual_vector_subgraph"]["metadata"]["tile_jobs"],
             32,
+        )
+        self.assertEqual(
+            manifest["workload_metadata"]["transformer_tinyllama_b0_rmsnorm_vector_subgraph"]["metadata"]["theoretical_reduction_cycles"],
+            64,
+        )
+        self.assertEqual(
+            manifest["workload_metadata"]["transformer_tinyllama_b0_gate_mul_vector_subgraph"]["metadata"]["theoretical_vector_cycles"],
+            64,
         )
 
     def test_manifest_groups_jobs_by_job_id_not_log_order(self):

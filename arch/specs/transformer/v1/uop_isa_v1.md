@@ -136,13 +136,22 @@ Compute cluster responsibilities:
 RMSNorm over one row of width 16:
 
 ```text
-segment0: REDUCE_SUMSQ row, segment0 -> partial0
-segment1: REDUCE_SUMSQ row, segment1 -> partial1
-row_sum = partial0 + partial1
-SFU_RSQRT row_sum -> inv_rms
-segment0: VEC_SCALE segment0 by inv_rms -> out0
-segment1: VEC_SCALE segment1 by inv_rms -> out1
+job for output segment0:
+  VREDSUM arg1=SUMSQ_SRC0
+  VREDSUM arg1=SUMSQ_SRC1
+  VDIV    arg1=RSQRT_ROW_ACCUM
+  VNORM   arg1=SCALE_SRC0_BY_SFU -> out0
+
+job for output segment1:
+  VREDSUM arg1=SUMSQ_SRC0
+  VREDSUM arg1=SUMSQ_SRC1
+  VDIV    arg1=RSQRT_ROW_ACCUM
+  VNORM   arg1=SCALE_SRC1_BY_SFU -> out1
 ```
+
+This repeats row reduction for each output segment. It is intentionally a
+simple executable baseline so PPA can expose the cost of not having a row-state
+cache or command-list output fanout.
 
 Residual add over width 16:
 
@@ -156,7 +165,7 @@ Gate multiply over FFN width 32:
 ```text
 for segment in 0..3:
   VEC_MUL silu_gate_segment, up_segment
-  VEC_REQUANT or VEC_SCALE to target int8 domain
+  VEC_REQUANT arg1=INT8_SHIFT4_CLAMP -> target int8 domain
 ```
 
 v0 bring-up opcode allocation:
@@ -171,6 +180,35 @@ The 4-bit v0 opcode space is now exhausted except `HALT`. Any additional
 primitive such as lane permutation, scalar-register addressing, or pairwise
 RoPE rotate must be treated as an ISA extension rather than another silent RTL
 local code.
+
+The first accepted v0 extension keeps the 4-bit opcode field and uses `arg1`
+as a primitive mode for opcodes whose legacy behavior did not consume `arg1`.
+This is narrower than widening every instruction word and preserves existing
+Softmax programs:
+
+| Uop | `arg1` | Primitive meaning |
+| --- | ---: | --- |
+| `VREDSUM` | `0` | legacy `REDUCE_SUM` over current row/vector state |
+| `VREDSUM` | `1` | `REDUCE_SUMSQ` over `vector_src0` and add into row accumulator |
+| `VREDSUM` | `2` | `REDUCE_SUMSQ` over `vector_src1` and add into row accumulator |
+| `VDIV` | `0` | legacy `SFU_RECIP` for Softmax |
+| `VDIV` | `1` | `SFU_RSQRT(row_accumulator)` and capture scalar |
+| `VNORM` | `0` | legacy Softmax normalize |
+| `VNORM` | `1` | `VEC_SCALE(vector_src0, captured_scalar, shift=20)` |
+| `VNORM` | `2` | `VEC_SCALE(vector_src1, captured_scalar, shift=20)` |
+| `VREQUANT` | `0` | legacy int32 pass-through shift used by bring-up tests |
+| `VREQUANT` | `1` | arithmetic shift right by 4 and clamp to signed int8 for B0 gate multiply |
+
+This mode extension is only legal under reviewed compiler-generated primitive
+programs. It is not a general graph runtime feature. PPA must label the
+underlying Reduction, SFU, and Vector engine spans, not just the reused
+`VREDSUM/VDIV/VNORM/VREQUANT` opcode names.
+
+The executable RTL source of truth is `arch/configs/npu_v0.jsonc` because the
+current SoC still instantiates the v0 core. `arch/configs/npu_transformer_v1.jsonc`
+also records the same mode names under `primitive_uop_modes` so the
+Transformer v1 planning contract does not diverge from the v0 bring-up
+encoding.
 
 RoPE and SiLU require a reviewed numerical approximation before executable
 B0 acceptance. Their first programs may use generated constant tables, but the

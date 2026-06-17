@@ -577,7 +577,11 @@ or descriptor/movement overhead.
 - Probability-to-int8 policy for PV is superseded for the first measured path
   by mixed `Q0.15 x int8` matrix mode, but final output requant policy remains
   undefined.
-- First `DESC_VECTOR_TILE_V1 + VADD` carrier smoke is integrated and measured.
-- B0 residual stages are compiler-lowered into segment jobs but are not yet
-  submitted as part of the executable B0 run.
-- No B0 RoPE/SiLU/gate-multiply executable stage yet.
+- `DESC_VECTOR_TILE_V1 + VADD` carrier smoke is integrated and measured.
+- B0 residual stages execute as `VADD + HALT` segment jobs and appear in PPA.
+- B0 RMSNorm scale executes through Reduction/SFU/Vector primitive programs and
+  appears in PPA; the current baseline repeats row reduction per output
+  segment.
+- B0 `gate_mul_up` executes as `VMUL + VREQUANT(INT8_SHIFT4_CLAMP) + HALT` and
+  appears in PPA.
+- No B0 RoPE or SiLU executable stage yet.

@@ -514,14 +514,32 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
                 4: f"Fetch/decode/issue reduction max row {row}",
                 5: f"Fetch/decode/issue vector subtract row {row}",
                 6: f"Fetch/decode/issue SFU EXP row {row}, lane {lane}",
-                7: f"Fetch/decode/issue reduction sum row {row}",
-                8: f"Fetch/decode/issue SFU reciprocal row {row}",
+                7: (
+                    "Fetch/decode/issue reduction sumsq over vector_src0"
+                    if lane == 1 else (
+                        "Fetch/decode/issue reduction sumsq over vector_src1"
+                        if lane == 2 else f"Fetch/decode/issue reduction sum row {row}"
+                    )
+                ),
+                8: (
+                    "Fetch/decode/issue SFU reciprocal-sqrt of row accumulator"
+                    if lane == 1 else f"Fetch/decode/issue SFU reciprocal row {row}"
+                ),
                 9: f"Fetch/decode/issue fixed score scale row {row}",
                 10: f"Fetch/decode/issue vector clamp row {row}",
-                11: f"Fetch/decode/issue vector normalize row {row}",
+                11: (
+                    "Fetch/decode/issue vector scale vector_src0 by SFU scalar"
+                    if lane == 1 else (
+                        "Fetch/decode/issue vector scale vector_src1 by SFU scalar"
+                        if lane == 2 else f"Fetch/decode/issue vector normalize row {row}"
+                    )
+                ),
                 12: "Fetch/decode/issue vector add segment",
                 13: "Fetch/decode/issue vector multiply segment",
-                14: "Fetch/decode/issue vector requant segment",
+                14: (
+                    "Fetch/decode/issue vector requant segment to int8 domain"
+                    if lane == 1 else "Fetch/decode/issue vector requant segment"
+                ),
             }
             return labels.get(opcode, f"Fetch/decode/issue primitive opcode {opcode}")
         if event["uop_store"]:
@@ -572,7 +590,7 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
             1: "Vector subtract row {row}: score - row maximum",
             2: "Vector multiply segment: src0 * src1",
             3: "Vector normalize row {row}: exp * reciprocal(sum)",
-            4: "Vector requant segment",
+            4: "Vector requant segment: shift/round/clamp product",
             5: "Vector clamp row {row}: limit shifted scores to EXP input range",
             6: "Vector fixed scale row {row}: apply 1/sqrt(head_dim)",
         }
@@ -627,27 +645,20 @@ def _cycle_trace_timeline(job: dict, cpu_lane: dict) -> list[dict]:
                 },
             ]
         )
-        if job_name != "desc_vector_tile_v1":
-            module_lanes.extend(
-                [
-                    {
-                        "module": "Reduction engine",
-                        "spans": _event_spans(
-                            trace,
-                            lambda event: primitive_label(
-                                event, "reduction_active", "reduction_op", reduction_names
-                            ),
-                        ),
-                    },
-                    {
-                        "module": "SFU",
-                        "spans": _event_spans(
-                            trace,
-                            lambda event: primitive_label(event, "sfu_active", "sfu_op", sfu_names),
-                        ),
-                    },
-                ]
-            )
+        reduction_spans = _event_spans(
+            trace,
+            lambda event: primitive_label(
+                event, "reduction_active", "reduction_op", reduction_names
+            ),
+        )
+        sfu_spans = _event_spans(
+            trace,
+            lambda event: primitive_label(event, "sfu_active", "sfu_op", sfu_names),
+        )
+        if reduction_spans:
+            module_lanes.append({"module": "Reduction engine", "spans": reduction_spans})
+        if sfu_spans:
+            module_lanes.append({"module": "SFU", "spans": sfu_spans})
 
     base_lanes = [
         cpu_lane,
@@ -1508,6 +1519,23 @@ def _transformer_cycle_analysis(
             "REDUCE_MAX+VEC_SUB+VEC_CLAMP+REDUCE_SUM+RECIP+VEC_SCALE=6)"
         )
         measured_provenance = "measured_core_active_cycles_aggregate"
+    elif metadata.get("theoretical_reduction_cycles") is not None or metadata.get("theoretical_sfu_cycles") is not None:
+        theoretical = (
+            int(metadata.get("theoretical_reduction_cycles", 0))
+            + int(metadata.get("theoretical_sfu_cycles", 0))
+            + int(metadata.get("theoretical_vector_cycles", 0))
+        )
+        measured_compute = (
+            int(core.get("reduction", 0))
+            + int(core.get("sfu", 0))
+            + int(core.get("vector", 0))
+        )
+        basis = (
+            f"reduction={int(metadata.get('theoretical_reduction_cycles', 0))}+"
+            f"sfu={int(metadata.get('theoretical_sfu_cycles', 0))}+"
+            f"vector={int(metadata.get('theoretical_vector_cycles', 0))}"
+        )
+        measured_provenance = "measured_reduction_sfu_vector_engine_active_cycles"
     elif metadata.get("theoretical_vector_cycles") is not None:
         theoretical = int(metadata["theoretical_vector_cycles"])
         measured_compute = int(core.get("vector", 0))

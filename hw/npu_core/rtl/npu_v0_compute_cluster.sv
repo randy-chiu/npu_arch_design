@@ -121,6 +121,7 @@ module npu_v0_compute_cluster #(
     logic matrix_datapath_active;
     logic [3:0] primitive_lane_idx;
     logic [3:0] primitive_row_idx;
+    logic signed [63:0] primitive_row_accum;
     local_route_state_t local_route_state;
     logic [3:0] local_route_opcode;
     logic [3:0] local_route_row;
@@ -375,6 +376,7 @@ module npu_v0_compute_cluster #(
             primitive_sfu_x <= '0;
             primitive_lane_idx <= '0;
             primitive_row_idx <= '0;
+            primitive_row_accum <= '0;
         end else begin
             acc_clear_request <= 1'b0;
             for (host_lane_idx = 0; host_lane_idx < CORE_HOST_LANES; host_lane_idx = host_lane_idx + 1) begin
@@ -486,16 +488,45 @@ module npu_v0_compute_cluster #(
                         primitive_sfu_x <= primitive_vector_a_flat[(uop_sched_buffer * 32) +: 32];
                     end
                     UOP_VREDSUM: begin
-                        primitive_reduction_op <= 2'd1;
-                        primitive_reduction_x_flat <= primitive_vector_a_flat;
+                        if (op_is_vector_tile &&
+                            (uop_sched_buffer == UOP_MODE_VREDSUM_SUMSQ_SRC0 ||
+                             uop_sched_buffer == UOP_MODE_VREDSUM_SUMSQ_SRC1)) begin
+                            primitive_reduction_op <= 2'd2;
+                            for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
+                                primitive_reduction_x_flat[(idx * 32) +: 32] <=
+                                    (uop_sched_buffer == UOP_MODE_VREDSUM_SUMSQ_SRC0) ?
+                                    vector_src0[idx] : vector_src1[idx];
+                            end
+                            primitive_reduction_valid_mask <= {RTL_SOFTMAX_LEN{1'b1}};
+                        end else begin
+                            primitive_reduction_op <= 2'd1;
+                            primitive_reduction_x_flat <= primitive_vector_a_flat;
+                        end
                     end
                     UOP_VDIV: begin
-                        primitive_sfu_op <= 2'd1;
-                        primitive_sfu_x <= primitive_reduction_result[31:0];
+                        if (op_is_vector_tile && uop_sched_buffer == UOP_MODE_VDIV_RSQRT_ROW_ACCUM) begin
+                            primitive_sfu_op <= 2'd2;
+                            primitive_sfu_x <= primitive_row_accum[31:0];
+                        end else begin
+                            primitive_sfu_op <= 2'd1;
+                            primitive_sfu_x <= primitive_reduction_result[31:0];
+                        end
                     end
                     UOP_VNORM: begin
                         primitive_vector_op <= 3'd3;
-                        primitive_vector_shift <= RTL_SOFTMAX_NORMALIZE_SHIFT;
+                        if (op_is_vector_tile &&
+                            (uop_sched_buffer == UOP_MODE_VNORM_SCALE_SRC0_BY_SFU ||
+                             uop_sched_buffer == UOP_MODE_VNORM_SCALE_SRC1_BY_SFU)) begin
+                            for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
+                                primitive_vector_a_flat[(idx * 32) +: 32] <=
+                                    (uop_sched_buffer == UOP_MODE_VNORM_SCALE_SRC0_BY_SFU) ?
+                                    vector_src0[idx] : vector_src1[idx];
+                            end
+                            primitive_vector_valid_mask <= {RTL_SOFTMAX_LEN{1'b1}};
+                            primitive_vector_shift <= 5'd20;
+                        end else begin
+                            primitive_vector_shift <= RTL_SOFTMAX_NORMALIZE_SHIFT;
+                        end
                     end
                     UOP_VSCALE_FIXED: begin
                         for (idx = 0; idx < RTL_SOFTMAX_LEN; idx = idx + 1) begin
@@ -527,9 +558,16 @@ module npu_v0_compute_cluster #(
                     end
                     UOP_VREQUANT: begin
                         primitive_vector_op <= 3'd4;
-                        primitive_vector_shift <= 5'd0;
-                        primitive_vector_clamp_low <= 32'sh8000_0000;
-                        primitive_vector_clamp_high <= 32'sh7fff_ffff;
+                        if (op_is_vector_tile &&
+                            uop_sched_buffer == UOP_MODE_VREQUANT_INT8_SHIFT4_CLAMP) begin
+                            primitive_vector_shift <= 5'd4;
+                            primitive_vector_clamp_low <= -32'sd128;
+                            primitive_vector_clamp_high <= 32'sd127;
+                        end else begin
+                            primitive_vector_shift <= 5'd0;
+                            primitive_vector_clamp_low <= 32'sh8000_0000;
+                            primitive_vector_clamp_high <= 32'sh7fff_ffff;
+                        end
                         primitive_vector_valid_mask <= {RTL_SOFTMAX_LEN{1'b1}};
                     end
                     default: begin
@@ -573,6 +611,11 @@ module npu_v0_compute_cluster #(
                         end
                         UOP_VREDSUM: begin
                             if (primitive_reduction_done) begin
+                                if (op_is_vector_tile &&
+                                    (local_route_lane == UOP_MODE_VREDSUM_SUMSQ_SRC0 ||
+                                     local_route_lane == UOP_MODE_VREDSUM_SUMSQ_SRC1)) begin
+                                    primitive_row_accum <= primitive_row_accum + primitive_reduction_result;
+                                end
                                 uop_sched_local_rsp_valid <= 1'b1;
                                 local_route_state <= LOCAL_ROUTE_IDLE;
                             end
@@ -609,6 +652,7 @@ module npu_v0_compute_cluster #(
             endcase
             if (start) begin
                 compute_bank_active <= compute_bank_select;
+                primitive_row_accum <= '0;
             end
             if (uop_sched_done) begin
                 done <= 1'b1;

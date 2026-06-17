@@ -53,6 +53,9 @@ class TransformerMicroFixtureTests(unittest.TestCase):
                 "transformer_attention_pv_s8_d8",
                 "transformer_decode_skinny_gemm_m8_compat",
                 "transformer_tinyllama_b0_matrix_subgraph",
+                "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+                "transformer_tinyllama_b0_attention_subgraph",
+                "transformer_tinyllama_b0_gate_mul_vector_subgraph",
                 "transformer_tinyllama_b0_residual_vector_subgraph",
             ],
         )
@@ -101,9 +104,36 @@ class TransformerMicroFixtureTests(unittest.TestCase):
         self.assertEqual(executable[7]["op"], "block_desc_vector_tile_group")
         self.assertEqual(executable[7]["metadata"]["tile_jobs"], 32)
         self.assertEqual(executable[7]["metadata"]["effective_vector_lane_ops"], 256)
+        self.assertEqual(executable[7]["metadata"]["theoretical_reduction_cycles"], 64)
+        self.assertEqual(executable[7]["metadata"]["theoretical_sfu_cycles"], 32)
+        self.assertEqual(executable[7]["metadata"]["theoretical_vector_cycles"], 32)
         self.assertEqual(executable[7]["tile_words"], 8)
-        self.assertEqual(executable[7]["tile_jobs"][0]["stage_id"], "residual_attn")
-        self.assertEqual(executable[7]["tile_jobs"][-1]["stage_id"], "residual_ffn")
+        self.assertEqual(executable[7]["tile_jobs"][0]["stage_id"], "rmsnorm_attn")
+        self.assertEqual(executable[7]["tile_jobs"][-1]["stage_id"], "rmsnorm_ffn")
+        self.assertEqual(executable[8]["op"], "block_attention_head_group")
+        self.assertEqual(executable[8]["metadata"]["heads"], 2)
+        self.assertEqual(executable[8]["metadata"]["stage_jobs"], 8)
+        self.assertEqual([job["stage"] for job in executable[8]["stage_jobs"][:4]], ["qk", "scale_mask", "softmax", "pv"])
+        self.assertEqual(
+            executable[8]["metadata"]["explicit_gap"],
+            [
+                "rope_q and rope_k are compiler golden inputs for this subgraph",
+                "softmax uses current RTL bring-up LUT contract, not final BlockPlan fixed-spec golden",
+            ],
+        )
+        self.assertEqual(executable[9]["op"], "block_desc_vector_tile_group")
+        self.assertEqual(executable[9]["metadata"]["tile_jobs"], 32)
+        self.assertEqual(executable[9]["metadata"]["effective_vector_lane_ops"], 256)
+        self.assertEqual(executable[9]["metadata"]["theoretical_vector_cycles"], 64)
+        self.assertEqual(executable[9]["tile_words"], 8)
+        self.assertEqual(executable[9]["tile_jobs"][0]["stage_id"], "gate_mul_up")
+        self.assertEqual(executable[9]["tile_jobs"][-1]["stage_id"], "gate_mul_up")
+        self.assertEqual(executable[10]["op"], "block_desc_vector_tile_group")
+        self.assertEqual(executable[10]["metadata"]["tile_jobs"], 32)
+        self.assertEqual(executable[10]["metadata"]["effective_vector_lane_ops"], 256)
+        self.assertEqual(executable[10]["tile_words"], 8)
+        self.assertEqual(executable[10]["tile_jobs"][0]["stage_id"], "residual_attn")
+        self.assertEqual(executable[10]["tile_jobs"][-1]["stage_id"], "residual_ffn")
         self.assertTrue(any(item["name"] == "transformer_softmax_row" for item in model_only))
         self.assertTrue(any(item["name"] == "transformer_attention_prefill_s8_d8" for item in model_only))
         parent = next(item for item in model_only if item["name"] == "transformer_attention_prefill_s8_d8")

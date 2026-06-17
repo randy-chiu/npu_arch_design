@@ -8,7 +8,10 @@ from typing import Any
 from npu_compiler.attention import build_attention_plan_from_manifest
 from npu_compiler.block import (
     build_b0_block_plan,
+    build_b0_attention_subgraph_workload,
+    build_b0_gate_mul_vector_subgraph_workload,
     build_b0_matrix_subgraph_workload,
+    build_b0_rmsnorm_vector_subgraph_workload,
     build_b0_residual_vector_subgraph_workload,
     build_b1_two_block_plan,
 )
@@ -98,6 +101,9 @@ def generate_transformer_micro_fixtures(spec_path: Path = TRANSFORMER_SPEC_PATH)
             model_only.append(_model_only_metadata(workload, precision))
     _attach_attention_plan_metadata(executable, attention_plans)
     executable.append(build_b0_matrix_subgraph_workload())
+    executable.append(build_b0_rmsnorm_vector_subgraph_workload())
+    executable.append(build_b0_attention_subgraph_workload())
+    executable.append(build_b0_gate_mul_vector_subgraph_workload())
     executable.append(build_b0_residual_vector_subgraph_workload())
     _attach_attention_plan_metadata(model_only, attention_plans)
     return {

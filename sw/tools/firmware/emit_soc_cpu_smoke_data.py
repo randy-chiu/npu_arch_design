@@ -49,6 +49,9 @@ DATASETS = (
     ("attention_scale_mask_program", "attention_scale_mask_program.hex"),
     ("attention_softmax_program", "attention_softmax_program.hex"),
     ("vector_tile_vadd_program", "vector_tile_vadd_program.hex"),
+    ("vector_tile_rmsnorm_src0_program", "vector_tile_rmsnorm_src0_program.hex"),
+    ("vector_tile_rmsnorm_src1_program", "vector_tile_rmsnorm_src1_program.hex"),
+    ("vector_tile_gate_mul_program", "vector_tile_gate_mul_program.hex"),
 )
 
 
@@ -460,6 +463,20 @@ def _build_workload_jobs(
     add("real_mnist_cnn_fc1_full_k_stream_layer", "matmul_k_stream", "regression", fc1_full_jobs, tiled=True)
     add("real_mnist_cnn_fc2", "matmul", "regression", fc2_jobs, tiled=True)
     for workload in transformer_workloads or []:
+        if workload["op"] == "block_attention_head_group":
+            for job in workload["stage_jobs"]:
+                jobs.append(
+                    {
+                        "job_id": len(jobs) + 1,
+                        "workload": workload["name"],
+                        "op": job["op"],
+                        "role": workload["role"],
+                        "tile_id": job["stage_job_index"],
+                        "attention_head": job["head"],
+                        "attention_stage": job["stage"],
+                    }
+                )
+            continue
         job_op = {
             "block_matmul_k_stream_group": "matmul_k_stream",
             "block_desc_vector_tile_group": "desc_vector_tile_v1",
@@ -513,12 +530,34 @@ def _append_transformer_micro_data(lines: list[str]) -> dict:
             lines.append("")
             _append_2d_array(lines, f"{workload['name']}_input0", [job["input0"] for job in tile_jobs], bits=32)
             _append_2d_array(lines, f"{workload['name']}_input1", [job["input1"] for job in tile_jobs], bits=32)
+            if any("program_select" in job for job in tile_jobs):
+                select_values = [0 if job.get("program_select") == "src0" else 1 for job in tile_jobs]
+                _append_flat_array(lines, f"{workload['name']}_program_select", select_values, bits=32)
             _append_2d_array(
                 lines,
                 f"{workload['name']}_expected_output",
                 [job["expected_output"] for job in tile_jobs],
                 bits=32,
             )
+        elif workload["op"] == "block_attention_head_group":
+            heads = workload["heads"]
+            lines.append(f"#define {macro}_HEADS {len(heads)}u")
+            lines.append(f"#define {macro}_STAGE_JOBS {len(workload['stage_jobs'])}u")
+            lines.append(f"#define {macro}_TILE_WORDS {workload['tile_words']}u")
+            lines.append(f"#define {macro}_MASK_WORDS {len(workload['row_mask_words'])}u")
+            lines.append("")
+            qk_jobs = [job for job in workload["stage_jobs"] if job["stage"] == "qk"]
+            scale_jobs = [job for job in workload["stage_jobs"] if job["stage"] == "scale_mask"]
+            softmax_jobs = [job for job in workload["stage_jobs"] if job["stage"] == "softmax"]
+            pv_jobs = [job for job in workload["stage_jobs"] if job["stage"] == "pv"]
+            _append_flat_array(lines, f"{workload['name']}_row_mask_words", workload["row_mask_words"], bits=32)
+            _append_2d_array(lines, f"{workload['name']}_qk_a", [job["a_stream"][0] for job in qk_jobs], bits=8)
+            _append_2d_array(lines, f"{workload['name']}_qk_b", [job["b_stream"][0] for job in qk_jobs], bits=8)
+            _append_2d_array(lines, f"{workload['name']}_qk_expected", [job["expected_output"] for job in qk_jobs], bits=32)
+            _append_2d_array(lines, f"{workload['name']}_scale_expected", [job["expected_output"] for job in scale_jobs], bits=32)
+            _append_2d_array(lines, f"{workload['name']}_softmax_expected", [job["expected_output"] for job in softmax_jobs], bits=32)
+            _append_2d_array(lines, f"{workload['name']}_pv_b", [job["b_stream"][0] for job in pv_jobs], bits=8)
+            _append_2d_array(lines, f"{workload['name']}_pv_expected", [job["expected_output"] for job in pv_jobs], bits=32)
         elif workload["op"] == "attention_softmax_v1":
             lines.append(f"#define {macro}_X_WORDS {workload['x_words']}u")
             lines.append(f"#define {macro}_Y_WORDS {workload['y_words']}u")

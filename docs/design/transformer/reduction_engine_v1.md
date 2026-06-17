@@ -279,6 +279,7 @@ still uses start/done.
 - No explicit attention mask semantics.
 - Valid-lane semantics are documented and accepted as the architecture
   direction but not implemented.
-- No segmented-row scheduler contract.
+- Segmented-row RMSNorm is executable through `DESC_VECTOR_TILE_V1`, but the
+  first baseline repeats row reduction for each output segment instead of
+  sharing a cached row state.
 - No measured `reduction_element_ops` counter.
-- No B0 RMSNorm complete row-state path yet.

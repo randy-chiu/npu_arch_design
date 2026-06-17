@@ -332,13 +332,21 @@ gated = SiLU(gate) * up
 
 `gate` and `up` are `S=8, FFN=32`, so each row has four vector segments.
 
-First lowering:
+First accepted partial lowering:
 
 ```text
 for segment in 0..3:
-  SFU/Vector approximation for SiLU(gate_segment) -> silu_segment
+  input0 = compiler-golden silu_segment
+  input1 = up_segment
   VEC_MUL silu_segment, up_segment -> product
-  VEC_REQUANT product -> gated_segment
+  VEC_REQUANT arg1=INT8_SHIFT4_CLAMP -> gated_segment
+```
+
+This makes `gate_mul_up` executable and measurable, but it does not make the
+preceding `silu_gate` stage executable. Complete B0 still requires:
+
+```text
+SFU/Vector approximation for SiLU(gate_segment) -> silu_segment
 ```
 
 SiLU approximation must be named in the numerical contract. A coarse LUT or
@@ -358,9 +366,9 @@ The Compiler must reject or mark `planned_not_executable` when:
 
 ### First coding order
 
-1. residual add, because it proves generic binary vector segment routing;
-2. gate multiply without SiLU, as a second binary vector/requant check;
-3. RMSNorm segmented row-state;
+1. complete: residual add, because it proves generic binary vector segment routing;
+2. complete: RMSNorm segmented row-state through repeated per-segment row reduction;
+3. complete: gate multiply without SiLU, as a second binary vector/requant check;
 4. RoPE lane-pair support;
 5. SiLU approximation;
 6. full B0 connection and PPA.

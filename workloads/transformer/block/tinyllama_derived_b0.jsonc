@@ -13,7 +13,7 @@
   },
   "topology": [
     "rmsnorm",
-    "q_k_v_projection",
+    "qkv_linear_projection",
     "rope",
     "causal_gqa_attention",
     "output_projection",

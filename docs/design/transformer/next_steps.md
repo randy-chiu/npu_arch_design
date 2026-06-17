@@ -338,7 +338,7 @@ The immediate work proceeds on two coordinated tracks:
 | Order | Track | Deliverable | Why it is required now |
 | --- | --- | --- | --- |
 | 1 | Decision framework | freeze an initial LLM decision suite and report scorecard covering causal Attention, projection/FFN-shaped GEMM, decode skinny GEMM/KV traffic, and CNN regression | prevents optimization against only the current favorable `8x8` case |
-| 2 | P3b complete one-block baseline | implement the missing RMSNorm, projection, residual, FFN, activation/gating, and block-plan execution path using existing shared engines where possible | creates the first honest full-block bottleneck profile |
+| 2 | P3b complete one-block baseline | implement the missing projection, RMSNorm, residual, FFN gate multiply, RoPE, SiLU, Attention composition, and block-plan execution path using existing shared engines where possible | creates the first honest full-block bottleneck profile |
 | 3 | P8a physical feasibility | executable mapped area/timing view for the current retained baseline, with module hierarchy and SRAM-accounting policy | establishes a physical cost baseline before fusion, wider ports, or larger arrays |
 | 4 | P3c two-block and shape expansion | chain two complete blocks, then add multi-tile dimensions and a first Decode path | supplies representative measured evidence for architecture choices |
 | 5 | Candidate optimization | Softmax parallelism, residency, command-list, buffering, fusion, or datapath candidates selected from measured block bottlenecks | ensures mechanisms are evidence-driven rather than roadmap-driven |
@@ -517,6 +517,11 @@ Current P3b implementation status:
 
 - B0/B1 are frozen as the TinyLlama-derived shape
   `S=8,H=16,Q_heads=2,KV_heads=1,head_dim=8,FFN=32`;
+- B0/B1 workload JSONC declarations are now contract-checked against the
+  compiler planner. Shape, topology summary, planner name, execution state, and
+  B1 block-boundary metadata must match generated BlockPlan data; this prevents
+  workload declarations and compiler lowering from drifting apart without
+  introducing a general graph parser.
 - the Compiler emits an 18-stage BlockPlan with explicit inputs, outputs,
   provenance, and execution state;
 - generic M/N/K tiling now emits one K-stream job per output tile, including
@@ -526,8 +531,8 @@ Current P3b implementation status:
   cycles;
 - deterministic fixed-point golden carries the real Block 0 output into
   Block 1 without CPU recomputation or fixture replacement;
-- B0/B1 remain `planned_not_executable`. RMSNorm, RoPE, SwiGLU,
-  multi-head Attention grouping, and complete block-level submission still need
+- B0/B1 remain `planned_not_executable`. RoPE, SiLU, and complete block-level
+  submission still need
   measured RTL paths. This state is intentional and must not be presented as
   completed block execution.
 - B0 matrix subgraph is now executable through the CPU-to-NPU descriptor path:
@@ -542,8 +547,9 @@ Current P3b implementation status:
   This proves the Matrix Engine math is fully utilized for these tile shapes,
   but descriptor/data-movement boundaries dominate elapsed cycles.
 - Complete B0 remains incomplete. The remaining non-matrix stages still
-  require hardware-visible segmented-row primitive sequences; Python golden
-  intermediates are not substituted into the executable workload.
+  require hardware-visible primitive sequences or composition paths; Python
+  golden intermediates are not substituted into an accepted complete-block
+  workload.
 - The first `DESC_VECTOR_TILE_V1 + VADD` carrier slice is now implemented and
   measured as `operator_smoke_vector_tile_vadd`. It proves descriptor-driven
   program movement, two 32-bit vector input segments, Scheduler primitive
@@ -566,6 +572,47 @@ Current P3b implementation status:
   This proves the Vector Engine primitive math is correct and fully utilized
   for each segment, but the current per-segment descriptor boundary dominates
   elapsed cycles.
+- RMSNorm stages now execute through the CPU-to-NPU descriptor path using the
+  `DESC_VECTOR_TILE_V1` arg1-mode primitive extension. `rmsnorm_attn` and
+  `rmsnorm_ffn` lower to 32 descriptor jobs: each output segment job loads both
+  `H=16` row segments, executes `SUMSQ_SRC0 + SUMSQ_SRC1 + RSQRT + SCALE_SRCx`,
+  and checks RTL output against the Compiler golden.
+- Measured B0 RMSNorm-vector subgraph PPA:
+  `effective_vector_lane_ops=256`, `theoretical_reduction_cycles=64`,
+  `theoretical_sfu_cycles=32`, `theoretical_vector_cycles=32`,
+  `measured_compute_cycles=128`, `total_cycles=1344`,
+  `data_mover_active_cycles=320`, `compute_efficiency=1.0`,
+  `end_to_end_efficiency=0.095238`.
+  This baseline intentionally repeats row reduction for each output segment so
+  later row-state caching or command-list fanout has a measured reference.
+- B0 gate-multiply vector subgraph is now executable through the CPU-to-NPU
+  descriptor path: 32 `DESC_VECTOR_TILE_V1` jobs cover `gate_mul_up` across
+  `S=8,FFN=32` using `VMUL + VREQUANT(INT8_SHIFT4_CLAMP) + HALT`. The input
+  `silu_gate` is still a compiler golden input for this subgraph, so this does
+  not complete the SiLU stage or full SwiGLU.
+- Measured B0 gate-multiply subgraph PPA:
+  `effective_vector_lane_ops=256`, `theoretical_vector_cycles=64`,
+  `measured_vector_cycles=64`, `total_cycles=1088`,
+  `data_mover_active_cycles=320`, `compute_efficiency=1.0`,
+  `end_to_end_efficiency=0.058824`.
+  This proves the multiply/requant portion of FFN gating is executable and
+  exposes the current per-segment descriptor overhead.
+- B0 two-head Attention subgraph is now executable through the CPU-to-NPU
+  descriptor path as eight stage jobs: `QK -> Scale/Mask -> Softmax -> PV` for
+  each query head with shared K/V. This uses B0 `rope_q/rope_k/v` tensors from
+  the compiler golden and the current RTL Softmax bring-up LUT numerical
+  contract, so it proves multi-head Attention stage composition and PPA
+  attribution, not RoPE execution or final Softmax numerical closure.
+- Measured B0 Attention subgraph PPA:
+  `stage_jobs=8`, `effective_mac_ops=2048`,
+  `theoretical_matrix_cycles=32`, `measured_matrix_cycles=32`,
+  `total_cycles=1550`, `data_mover_active_cycles=406`,
+  `sfu_active_cycles=144`, `compute_efficiency=1.0`,
+  `end_to_end_efficiency=0.020645`. Per head, the measured stages are
+  `QK=83 cycles`, `Scale/Mask=85 cycles`, `Softmax=526 cycles`, and
+  `PV=81 cycles`. The immediate bottleneck remains the current Softmax path:
+  Matrix work is fully utilized while active, but elapsed cycles are dominated
+  by separate descriptor boundaries and serialized row Softmax work.
 
 Immediate next implementation order:
 
@@ -579,11 +626,13 @@ Immediate next implementation order:
    jobs so rows wider than
    eight lanes can execute through Vector/Reduction/SFU without CPU
    materialization;
-4. add RMSNorm primitive uops (`SUMSQ -> RSQRT -> scale`) over `H=16` using
-   segmented row reduction;
-5. add RoPE and SwiGLU primitive sequences;
-6. compose the two measured Attention heads and complete B0;
-7. submit Block 0 output directly as Block 1 input and publish B1 PPA.
+4. complete: execute RMSNorm primitive sequence over segmented `H=16` rows and
+   publish Reduction/SFU/Vector PPA;
+5. complete: execute `gate_mul_up` through `VMUL + VREQUANT` and publish Vector PPA;
+6. complete: compose the two measured Attention heads as a B0 Attention subgraph;
+7. add RoPE and SiLU primitive sequences;
+8. submit one complete B0 execution package without CPU-filled intermediate stages;
+9. submit Block 0 output directly as Block 1 input and publish B1 PPA.
 
 Coding gate:
 

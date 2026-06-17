@@ -13,6 +13,9 @@ static uint32_t matmul_c_sram[MATMUL_EXPECTED_C_LEN];
 static uint32_t attention_scale_mask_program_sram[ATTENTION_SCALE_MASK_PROGRAM_LEN];
 static uint32_t attention_softmax_program_sram[ATTENTION_SOFTMAX_PROGRAM_LEN];
 static uint32_t vector_tile_vadd_program_sram[VECTOR_TILE_VADD_PROGRAM_LEN];
+static uint32_t vector_tile_rmsnorm_src0_program_sram[VECTOR_TILE_RMSNORM_SRC0_PROGRAM_LEN];
+static uint32_t vector_tile_rmsnorm_src1_program_sram[VECTOR_TILE_RMSNORM_SRC1_PROGRAM_LEN];
+static uint32_t vector_tile_gate_mul_program_sram[VECTOR_TILE_GATE_MUL_PROGRAM_LEN];
 static uint32_t vector_tile_vadd_lhs_sram[VECTOR_TILE_VADD_WORDS];
 static uint32_t vector_tile_vadd_rhs_sram[VECTOR_TILE_VADD_WORDS];
 static uint32_t vector_tile_vadd_output_sram[VECTOR_TILE_VADD_WORDS];
@@ -71,6 +74,23 @@ static uint32_t transformer_decode_skinny_gemm_m8_compat_c_sram[TRANSFORMER_DECO
 static uint32_t transformer_tinyllama_b0_matrix_subgraph_a_sram[TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_MAX_CHUNKS][TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_TILE_WORDS];
 static uint32_t transformer_tinyllama_b0_matrix_subgraph_b_sram[TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_MAX_CHUNKS][TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_TILE_WORDS];
 static uint32_t transformer_tinyllama_b0_matrix_subgraph_c_sram[TRANSFORMER_TINYLLAMA_B0_MATRIX_SUBGRAPH_TILE_WORDS];
+
+static uint32_t transformer_tinyllama_b0_rmsnorm_vector_subgraph_input0_sram[TRANSFORMER_TINYLLAMA_B0_RMSNORM_VECTOR_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_rmsnorm_vector_subgraph_input1_sram[TRANSFORMER_TINYLLAMA_B0_RMSNORM_VECTOR_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_rmsnorm_vector_subgraph_output_sram[TRANSFORMER_TINYLLAMA_B0_RMSNORM_VECTOR_SUBGRAPH_TILE_WORDS];
+
+static uint32_t transformer_tinyllama_b0_attention_subgraph_qk_a_sram[TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_attention_subgraph_qk_b_sram[TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_attention_subgraph_qk_c_sram[TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_attention_subgraph_mask_sram[TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_MASK_WORDS];
+static uint32_t transformer_tinyllama_b0_attention_subgraph_scale_sram[TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_attention_subgraph_softmax_sram[TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_attention_subgraph_pv_b_sram[TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_attention_subgraph_pv_c_sram[TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS];
+
+static uint32_t transformer_tinyllama_b0_gate_mul_vector_subgraph_input0_sram[TRANSFORMER_TINYLLAMA_B0_GATE_MUL_VECTOR_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_gate_mul_vector_subgraph_input1_sram[TRANSFORMER_TINYLLAMA_B0_GATE_MUL_VECTOR_SUBGRAPH_TILE_WORDS];
+static uint32_t transformer_tinyllama_b0_gate_mul_vector_subgraph_output_sram[TRANSFORMER_TINYLLAMA_B0_GATE_MUL_VECTOR_SUBGRAPH_TILE_WORDS];
 
 static uint32_t transformer_tinyllama_b0_residual_vector_subgraph_input0_sram[TRANSFORMER_TINYLLAMA_B0_RESIDUAL_VECTOR_SUBGRAPH_TILE_WORDS];
 static uint32_t transformer_tinyllama_b0_residual_vector_subgraph_input1_sram[TRANSFORMER_TINYLLAMA_B0_RESIDUAL_VECTOR_SUBGRAPH_TILE_WORDS];
@@ -554,6 +574,175 @@ static int run_transformer_tinyllama_b0_residual_vector_subgraph(void)
     return 1;
 }
 
+static int run_transformer_tinyllama_b0_rmsnorm_vector_subgraph(void)
+{
+    for (uint32_t tile = 0u; tile < TRANSFORMER_TINYLLAMA_B0_RMSNORM_VECTOR_SUBGRAPH_TILE_JOBS; ++tile) {
+        copy_words(transformer_tinyllama_b0_rmsnorm_vector_subgraph_input0_sram,
+                   transformer_tinyllama_b0_rmsnorm_vector_subgraph_input0[tile],
+                   TRANSFORMER_TINYLLAMA_B0_RMSNORM_VECTOR_SUBGRAPH_TILE_WORDS);
+        copy_words(transformer_tinyllama_b0_rmsnorm_vector_subgraph_input1_sram,
+                   transformer_tinyllama_b0_rmsnorm_vector_subgraph_input1[tile],
+                   TRANSFORMER_TINYLLAMA_B0_RMSNORM_VECTOR_SUBGRAPH_TILE_WORDS);
+
+        job_desc.op_type = SOC_NPU_JOB_OP_DESC_VECTOR_TILE_V1;
+        job_desc.job_id = JOB_ID_TRANSFORMER_TINYLLAMA_B0_RMSNORM_VECTOR_SUBGRAPH_BASE + tile;
+        if (transformer_tinyllama_b0_rmsnorm_vector_subgraph_program_select[tile] == 0u) {
+            job_desc.program_addr = ptr32(vector_tile_rmsnorm_src0_program_sram);
+            job_desc.program_words = VECTOR_TILE_RMSNORM_SRC0_PROGRAM_LEN;
+        } else {
+            job_desc.program_addr = ptr32(vector_tile_rmsnorm_src1_program_sram);
+            job_desc.program_words = VECTOR_TILE_RMSNORM_SRC1_PROGRAM_LEN;
+        }
+        job_desc.input0_addr = ptr32(transformer_tinyllama_b0_rmsnorm_vector_subgraph_input0_sram);
+        job_desc.input0_words = TRANSFORMER_TINYLLAMA_B0_RMSNORM_VECTOR_SUBGRAPH_TILE_WORDS;
+        job_desc.input1_addr = ptr32(transformer_tinyllama_b0_rmsnorm_vector_subgraph_input1_sram);
+        job_desc.input1_words = TRANSFORMER_TINYLLAMA_B0_RMSNORM_VECTOR_SUBGRAPH_TILE_WORDS;
+        job_desc.output_addr = ptr32(transformer_tinyllama_b0_rmsnorm_vector_subgraph_output_sram);
+        job_desc.output_words = TRANSFORMER_TINYLLAMA_B0_RMSNORM_VECTOR_SUBGRAPH_TILE_WORDS;
+        job_desc.k_chunks = 0u;
+        run_job();
+
+        if (!check_words(transformer_tinyllama_b0_rmsnorm_vector_subgraph_output_sram,
+                         transformer_tinyllama_b0_rmsnorm_vector_subgraph_expected_output[tile],
+                         TRANSFORMER_TINYLLAMA_B0_RMSNORM_VECTOR_SUBGRAPH_TILE_WORDS,
+                         0x970u | (tile & 0x7fu))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int run_transformer_tinyllama_b0_gate_mul_vector_subgraph(void)
+{
+    for (uint32_t tile = 0u; tile < TRANSFORMER_TINYLLAMA_B0_GATE_MUL_VECTOR_SUBGRAPH_TILE_JOBS; ++tile) {
+        copy_words(transformer_tinyllama_b0_gate_mul_vector_subgraph_input0_sram,
+                   transformer_tinyllama_b0_gate_mul_vector_subgraph_input0[tile],
+                   TRANSFORMER_TINYLLAMA_B0_GATE_MUL_VECTOR_SUBGRAPH_TILE_WORDS);
+        copy_words(transformer_tinyllama_b0_gate_mul_vector_subgraph_input1_sram,
+                   transformer_tinyllama_b0_gate_mul_vector_subgraph_input1[tile],
+                   TRANSFORMER_TINYLLAMA_B0_GATE_MUL_VECTOR_SUBGRAPH_TILE_WORDS);
+
+        job_desc.op_type = SOC_NPU_JOB_OP_DESC_VECTOR_TILE_V1;
+        job_desc.job_id = JOB_ID_TRANSFORMER_TINYLLAMA_B0_GATE_MUL_VECTOR_SUBGRAPH_BASE + tile;
+        job_desc.program_addr = ptr32(vector_tile_gate_mul_program_sram);
+        job_desc.program_words = VECTOR_TILE_GATE_MUL_PROGRAM_LEN;
+        job_desc.input0_addr = ptr32(transformer_tinyllama_b0_gate_mul_vector_subgraph_input0_sram);
+        job_desc.input0_words = TRANSFORMER_TINYLLAMA_B0_GATE_MUL_VECTOR_SUBGRAPH_TILE_WORDS;
+        job_desc.input1_addr = ptr32(transformer_tinyllama_b0_gate_mul_vector_subgraph_input1_sram);
+        job_desc.input1_words = TRANSFORMER_TINYLLAMA_B0_GATE_MUL_VECTOR_SUBGRAPH_TILE_WORDS;
+        job_desc.output_addr = ptr32(transformer_tinyllama_b0_gate_mul_vector_subgraph_output_sram);
+        job_desc.output_words = TRANSFORMER_TINYLLAMA_B0_GATE_MUL_VECTOR_SUBGRAPH_TILE_WORDS;
+        job_desc.k_chunks = 0u;
+        run_job();
+
+        if (!check_words(transformer_tinyllama_b0_gate_mul_vector_subgraph_output_sram,
+                         transformer_tinyllama_b0_gate_mul_vector_subgraph_expected_output[tile],
+                         TRANSFORMER_TINYLLAMA_B0_GATE_MUL_VECTOR_SUBGRAPH_TILE_WORDS,
+                         0x990u | (tile & 0x7fu))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int run_transformer_tinyllama_b0_attention_subgraph(void)
+{
+    copy_words(transformer_tinyllama_b0_attention_subgraph_mask_sram,
+               transformer_tinyllama_b0_attention_subgraph_row_mask_words,
+               TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_MASK_WORDS);
+
+    for (uint32_t head = 0u; head < TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_HEADS; ++head) {
+        uint32_t job_base = JOB_ID_TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_BASE + (head * 4u);
+
+        copy_words(transformer_tinyllama_b0_attention_subgraph_qk_a_sram,
+                   transformer_tinyllama_b0_attention_subgraph_qk_a[head],
+                   TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS);
+        copy_words(transformer_tinyllama_b0_attention_subgraph_qk_b_sram,
+                   transformer_tinyllama_b0_attention_subgraph_qk_b[head],
+                   TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS);
+        job_desc.op_type = SOC_NPU_JOB_OP_MATMUL_K_STREAM;
+        job_desc.job_id = job_base;
+        job_desc.program_addr = ptr32(matmul_program_sram);
+        job_desc.program_words = MATMUL_PROGRAM_LEN;
+        job_desc.input0_addr = ptr32(transformer_tinyllama_b0_attention_subgraph_qk_a_sram);
+        job_desc.input0_words = TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS;
+        job_desc.input1_addr = ptr32(transformer_tinyllama_b0_attention_subgraph_qk_b_sram);
+        job_desc.input1_words = TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS;
+        job_desc.output_addr = ptr32(transformer_tinyllama_b0_attention_subgraph_qk_c_sram);
+        job_desc.output_words = TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS;
+        job_desc.k_chunks = 1u;
+        run_job();
+        if (!check_words(transformer_tinyllama_b0_attention_subgraph_qk_c_sram,
+                         transformer_tinyllama_b0_attention_subgraph_qk_expected[head],
+                         TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS,
+                         0xb00u | (head & 0xfu))) {
+            return 0;
+        }
+
+        job_desc.op_type = SOC_NPU_JOB_OP_ATTENTION_SCALE_MASK_V1;
+        job_desc.job_id = job_base + 1u;
+        job_desc.program_addr = ptr32(attention_scale_mask_program_sram);
+        job_desc.program_words = ATTENTION_SCALE_MASK_PROGRAM_LEN;
+        job_desc.input0_addr = ptr32(transformer_tinyllama_b0_attention_subgraph_qk_c_sram);
+        job_desc.input0_words = TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS;
+        job_desc.input1_addr = ptr32(transformer_tinyllama_b0_attention_subgraph_mask_sram);
+        job_desc.input1_words = TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_MASK_WORDS;
+        job_desc.output_addr = ptr32(transformer_tinyllama_b0_attention_subgraph_scale_sram);
+        job_desc.output_words = TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS;
+        job_desc.k_chunks = 0u;
+        run_job();
+        if (!check_words(transformer_tinyllama_b0_attention_subgraph_scale_sram,
+                         transformer_tinyllama_b0_attention_subgraph_scale_expected[head],
+                         TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS,
+                         0xb20u | (head & 0xfu))) {
+            return 0;
+        }
+
+        job_desc.op_type = SOC_NPU_JOB_OP_ATTENTION_SOFTMAX_V1;
+        job_desc.job_id = job_base + 2u;
+        job_desc.program_addr = ptr32(attention_softmax_program_sram);
+        job_desc.program_words = ATTENTION_SOFTMAX_PROGRAM_LEN;
+        job_desc.input0_addr = ptr32(transformer_tinyllama_b0_attention_subgraph_scale_sram);
+        job_desc.input0_words = TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS;
+        job_desc.input1_addr = ptr32(transformer_tinyllama_b0_attention_subgraph_mask_sram);
+        job_desc.input1_words = TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_MASK_WORDS;
+        job_desc.output_addr = ptr32(transformer_tinyllama_b0_attention_subgraph_softmax_sram);
+        job_desc.output_words = TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS;
+        job_desc.k_chunks = 0u;
+        run_job();
+        if (!check_words_abs_tol(transformer_tinyllama_b0_attention_subgraph_softmax_sram,
+                                 transformer_tinyllama_b0_attention_subgraph_softmax_expected[head],
+                                 TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS,
+                                 128u,
+                                 0xb40u | (head & 0xfu))) {
+            return 0;
+        }
+
+        copy_words(transformer_tinyllama_b0_attention_subgraph_pv_b_sram,
+                   transformer_tinyllama_b0_attention_subgraph_pv_b[head],
+                   TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS);
+        job_desc.op_type = SOC_NPU_JOB_OP_MATMUL_U16S8_Q15;
+        job_desc.job_id = job_base + 3u;
+        job_desc.program_addr = ptr32(matmul_program_sram);
+        job_desc.program_words = MATMUL_PROGRAM_LEN;
+        job_desc.input0_addr = ptr32(transformer_tinyllama_b0_attention_subgraph_softmax_sram);
+        job_desc.input0_words = TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS;
+        job_desc.input1_addr = ptr32(transformer_tinyllama_b0_attention_subgraph_pv_b_sram);
+        job_desc.input1_words = TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS;
+        job_desc.output_addr = ptr32(transformer_tinyllama_b0_attention_subgraph_pv_c_sram);
+        job_desc.output_words = TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS;
+        job_desc.k_chunks = 0u;
+        run_job();
+        if (!check_words(transformer_tinyllama_b0_attention_subgraph_pv_c_sram,
+                         transformer_tinyllama_b0_attention_subgraph_pv_expected[head],
+                         TRANSFORMER_TINYLLAMA_B0_ATTENTION_SUBGRAPH_TILE_WORDS,
+                         0xb60u | (head & 0xfu))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int run_transformer_attention_runtime_job(const transformer_runtime_job_t *runtime_job)
 {
     if (runtime_job->stage == TRANSFORMER_RUNTIME_STAGE_QK) {
@@ -683,6 +872,12 @@ int main(void)
                ATTENTION_SOFTMAX_PROGRAM_LEN);
     copy_words(vector_tile_vadd_program_sram, vector_tile_vadd_program,
                VECTOR_TILE_VADD_PROGRAM_LEN);
+    copy_words(vector_tile_rmsnorm_src0_program_sram, vector_tile_rmsnorm_src0_program,
+               VECTOR_TILE_RMSNORM_SRC0_PROGRAM_LEN);
+    copy_words(vector_tile_rmsnorm_src1_program_sram, vector_tile_rmsnorm_src1_program,
+               VECTOR_TILE_RMSNORM_SRC1_PROGRAM_LEN);
+    copy_words(vector_tile_gate_mul_program_sram, vector_tile_gate_mul_program,
+               VECTOR_TILE_GATE_MUL_PROGRAM_LEN);
 
     if (!run_operator_smoke_vector_tile_vadd()) {
         return 1;
@@ -727,6 +922,15 @@ int main(void)
         return 1;
     }
     if (!run_transformer_tinyllama_b0_matrix_subgraph()) {
+        return 1;
+    }
+    if (!run_transformer_tinyllama_b0_rmsnorm_vector_subgraph()) {
+        return 1;
+    }
+    if (!run_transformer_tinyllama_b0_attention_subgraph()) {
+        return 1;
+    }
+    if (!run_transformer_tinyllama_b0_gate_mul_vector_subgraph()) {
         return 1;
     }
     if (!run_transformer_tinyllama_b0_residual_vector_subgraph()) {

@@ -84,6 +84,26 @@
       "SFU_RSQRT": 2
     }
   },
+  "primitive_uop_modes": {
+    "VREDSUM": {
+      "SUM": 0,
+      "SUMSQ_SRC0": 1,
+      "SUMSQ_SRC1": 2
+    },
+    "VDIV": {
+      "RECIP": 0,
+      "RSQRT_ROW_ACCUM": 1
+    },
+    "VNORM": {
+      "SOFTMAX_NORMALIZE": 0,
+      "SCALE_SRC0_BY_SFU": 1,
+      "SCALE_SRC1_BY_SFU": 2
+    },
+    "VREQUANT": {
+      "INT32_SHIFT0": 0,
+      "INT8_SHIFT4_CLAMP": 1
+    }
+  },
   "perf_metrics": {
     "active_stall_idle_semantics": true,
     "required": [
