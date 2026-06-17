@@ -1,0 +1,2777 @@
+{
+  "schema": "npu_workload_manifest_v0",
+  "manifest_id": "soc_cpu_smoke_quick_v0",
+  "run_name": "soc_cpu_smoke",
+  "generated_by": "sw/tools/firmware/emit_soc_cpu_smoke_data.py",
+  "workload_profile": "quick",
+  "workload_metadata": {
+    "operator_smoke_matmul": {
+      "kind": "operator_smoke"
+    },
+    "digits_linear_classifier": {
+      "kind": "model",
+      "metadata": {
+        "input": "test/assets/digits_realistic/digit_2_gray.pgm",
+        "graph": "test/graphs/digits_classifier.json",
+        "tile_graph": "test/graphs/digits_classifier_rtl_tile.json",
+        "tile_jobs": 16,
+        "description": "8x8 grayscale digit image, tiled matmul regression with CPU-side accumulation"
+      }
+    },
+    "real_mnist_cnn_fc1_tile0": {
+      "kind": "model_layer_tile",
+      "metadata": {
+        "tile_jobs": 0
+      }
+    },
+    "real_mnist_cnn_fc1_k_stream_smoke": {
+      "kind": "model_layer_tile",
+      "metadata": {
+        "tile_jobs": 0
+      }
+    },
+    "real_mnist_cnn_fc1_full_k_stream_layer": {
+      "kind": "model_layer",
+      "metadata": {
+        "tile_jobs": 0,
+        "k_chunks": 0,
+        "comparison_baseline": {
+          "id": "npu_v0_a2_serial_k_stream_proxy",
+          "cycles_per_job": 58784
+        }
+      }
+    },
+    "real_mnist_cnn_fc2": {
+      "kind": "model_layer",
+      "metadata": {
+        "tile_jobs": 0
+      }
+    },
+    "transformer_prefill_gemm_tiny": {
+      "kind": "transformer_micro",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "projection_gemm",
+        "logical_shape": {
+          "m": 8,
+          "n": 8,
+          "k": 16
+        },
+        "workload_family": "transformer_prefill",
+        "shape_class": "skinny_gemm",
+        "rtl_tile_shape": {
+          "m": 8,
+          "n": 8,
+          "k": 8
+        },
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 128,
+          "activation_write_bytes": 256,
+          "weight_read_bytes": 128,
+          "kv_cache_read_bytes": 0,
+          "kv_cache_write_bytes": 0
+        },
+        "attention_group": null,
+        "attention_stage": null,
+        "numerical_contract": null,
+        "stage_provenance": "measured_current_matmul_path",
+        "kv_read_bytes": 0,
+        "kv_write_bytes": 0,
+        "k_chunks": 2,
+        "tile_jobs": 1
+      }
+    },
+    "transformer_attention_qk_s8_d8": {
+      "kind": "transformer_micro",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "attention_qk_score",
+        "logical_shape": {
+          "m": 8,
+          "n": 8,
+          "k": 8
+        },
+        "workload_family": "transformer_prefill",
+        "shape_class": "skinny_gemm",
+        "rtl_tile_shape": {
+          "m": 8,
+          "n": 8,
+          "k": 8
+        },
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 64,
+          "activation_write_bytes": 256,
+          "weight_read_bytes": 64,
+          "kv_cache_read_bytes": 0,
+          "kv_cache_write_bytes": 0
+        },
+        "attention_group": "attention_prefill_s8_d8",
+        "attention_stage": "qk",
+        "numerical_contract": "attention_bringup_v0_qk_exact",
+        "stage_provenance": "measured_current_matmul_path",
+        "kv_read_bytes": 0,
+        "kv_write_bytes": 0,
+        "k_chunks": 1,
+        "tile_jobs": 1,
+        "attention": {
+          "q_layout": "row_major_s_by_d",
+          "k_runtime_layout": "transposed_d_by_s",
+          "score_dtype": "int32"
+        },
+        "attention_plan": {
+          "workload_name": "transformer_attention_prefill_s8_d8",
+          "attention_group": "attention_prefill_s8_d8",
+          "group_state": "software_group_measured_stages",
+          "group_cycle_policy": "sum_measured_stages",
+          "execution_state": "executable",
+          "mask_policy": "causal"
+        },
+        "attention_plan_stage": {
+          "stage_index": 0,
+          "operator": "matmul_s8s8_i32_tile",
+          "inputs": [
+            "q_tile",
+            "k_t_tile"
+          ],
+          "outputs": [
+            "score_raw"
+          ],
+          "execution": "descriptor_job"
+        },
+        "attention_plan_runtime_job": {
+          "job_id_symbol": "JOB_ID_TRANSFORMER_ATTENTION_QK_S8_D8",
+          "descriptor_op": "matmul_k_stream",
+          "input0": "q_tile",
+          "input1": "k_t_tile",
+          "output": "score_raw",
+          "perf_scope": "attention_prefill_s8_d8/qk"
+        }
+      }
+    },
+    "transformer_attention_scale_mask_s8_d8": {
+      "kind": "transformer_micro",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "attention_score_scale_mask",
+        "logical_shape": {
+          "m": 8,
+          "n": 8,
+          "head_dim": 8
+        },
+        "workload_family": "transformer_prefill",
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 256,
+          "activation_write_bytes": 256,
+          "weight_read_bytes": 0,
+          "kv_cache_read_bytes": 0,
+          "kv_cache_write_bytes": 0
+        },
+        "attention_group": "attention_prefill_s8_d8",
+        "attention_stage": "scale_mask",
+        "numerical_contract": "attention_numerical_v1_score_scale_d8_mul11585_shift15_unmasked",
+        "stage_provenance": "measured_npu_vector_bridge",
+        "attention": {
+          "scale_policy": "fixed_multiplier_shift",
+          "scale_multiplier": 11585,
+          "scale_shift": 15,
+          "rounding": "round_nearest_away_from_zero",
+          "mask_policy": "causal",
+          "valid_lane_masks": [
+            1,
+            3,
+            7,
+            15,
+            31,
+            63,
+            127,
+            255
+          ]
+        },
+        "attention_plan": {
+          "workload_name": "transformer_attention_prefill_s8_d8",
+          "attention_group": "attention_prefill_s8_d8",
+          "group_state": "software_group_measured_stages",
+          "group_cycle_policy": "sum_measured_stages",
+          "execution_state": "executable",
+          "mask_policy": "causal"
+        },
+        "attention_plan_stage": {
+          "stage_index": 1,
+          "operator": "attention_score_scale_mask_v1",
+          "inputs": [
+            "score_raw",
+            "row_mask"
+          ],
+          "outputs": [
+            "score_softmax_in"
+          ],
+          "execution": "descriptor_job"
+        },
+        "attention_plan_runtime_job": {
+          "job_id_symbol": "JOB_ID_TRANSFORMER_ATTENTION_SCALE_MASK_S8_D8",
+          "descriptor_op": "attention_scale_mask_v1",
+          "input0": "score_raw",
+          "input1": "row_mask",
+          "output": "score_softmax_in",
+          "perf_scope": "attention_prefill_s8_d8/scale_mask"
+        }
+      }
+    },
+    "transformer_attention_softmax_s8": {
+      "kind": "transformer_micro",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "attention_row_softmax",
+        "logical_shape": {
+          "rows": 8,
+          "elements": 8,
+          "seq_len": 8
+        },
+        "workload_family": "transformer_prefill",
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 256,
+          "activation_write_bytes": 128,
+          "weight_read_bytes": 0,
+          "kv_cache_read_bytes": 0,
+          "kv_cache_write_bytes": 0
+        },
+        "attention_group": "attention_prefill_s8_d8",
+        "attention_stage": "softmax",
+        "numerical_contract": "attention_bringup_v0_shift_scale_sfu9seg",
+        "stage_provenance": "measured_current_softmax_path",
+        "kv_read_bytes": 0,
+        "kv_write_bytes": 0,
+        "softmax": {
+          "input_dtype": "int32",
+          "output_dtype": "q0.15_uint16",
+          "row_count_measured": 8,
+          "row_count_logical": 8,
+          "implementation": "npu_v1_vector_reduction_sfu_sequence"
+        },
+        "attention_plan": {
+          "workload_name": "transformer_attention_prefill_s8_d8",
+          "attention_group": "attention_prefill_s8_d8",
+          "group_state": "software_group_measured_stages",
+          "group_cycle_policy": "sum_measured_stages",
+          "execution_state": "executable",
+          "mask_policy": "causal"
+        },
+        "attention_plan_stage": {
+          "stage_index": 2,
+          "operator": "attention_softmax_q15_v1",
+          "inputs": [
+            "score_softmax_in",
+            "row_mask"
+          ],
+          "outputs": [
+            "prob_q15"
+          ],
+          "execution": "descriptor_job"
+        },
+        "attention_plan_runtime_job": {
+          "job_id_symbol": "JOB_ID_TRANSFORMER_ATTENTION_SOFTMAX_S8",
+          "descriptor_op": "attention_softmax_v1",
+          "input0": "score_softmax_in",
+          "input1": "row_mask",
+          "output": "prob_q15",
+          "perf_scope": "attention_prefill_s8_d8/softmax"
+        }
+      }
+    },
+    "transformer_attention_pv_s8_d8": {
+      "kind": "transformer_micro",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "attention_probability_value",
+        "logical_shape": {
+          "m": 8,
+          "n": 8,
+          "k": 8
+        },
+        "workload_family": "transformer_prefill",
+        "shape_class": "skinny_gemm",
+        "rtl_tile_shape": {
+          "m": 8,
+          "n": 8,
+          "k": 8
+        },
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 128,
+          "activation_write_bytes": 64,
+          "weight_read_bytes": 64,
+          "kv_cache_read_bytes": 0,
+          "kv_cache_write_bytes": 0
+        },
+        "attention_group": "attention_prefill_s8_d8",
+        "attention_stage": "pv",
+        "numerical_contract": "attention_numerical_v1_q15_prob_q24_recip_lut257",
+        "stage_provenance": "measured_mixed_matrix_path",
+        "kv_read_bytes": 0,
+        "kv_write_bytes": 0,
+        "k_chunks": 1,
+        "tile_jobs": 1,
+        "attention": {
+          "probability_policy": "q0.15_u16",
+          "p_layout": "row_major_s_by_s",
+          "v_runtime_layout": "row_major_s_by_d",
+          "output_dtype": "int32_after_q15_shift"
+        },
+        "attention_plan": {
+          "workload_name": "transformer_attention_prefill_s8_d8",
+          "attention_group": "attention_prefill_s8_d8",
+          "group_state": "software_group_measured_stages",
+          "group_cycle_policy": "sum_measured_stages",
+          "execution_state": "executable",
+          "mask_policy": "causal"
+        },
+        "attention_plan_stage": {
+          "stage_index": 3,
+          "operator": "matmul_u16s8_q15_i32_tile",
+          "inputs": [
+            "prob_q15",
+            "v_tile"
+          ],
+          "outputs": [
+            "o_i32"
+          ],
+          "execution": "descriptor_job"
+        },
+        "attention_plan_runtime_job": {
+          "job_id_symbol": "JOB_ID_TRANSFORMER_ATTENTION_PV_S8_D8",
+          "descriptor_op": "matmul_u16s8_q15",
+          "input0": "prob_q15",
+          "input1": "v_tile",
+          "output": "o_i32",
+          "perf_scope": "attention_prefill_s8_d8/pv"
+        }
+      }
+    },
+    "transformer_decode_skinny_gemm_m8_compat": {
+      "kind": "transformer_micro",
+      "metadata": {
+        "scenario": "transformer_decode",
+        "logical_op": "decode_skinny_gemm_m8_compat",
+        "logical_shape": {
+          "m": 8,
+          "n": 8,
+          "k": 8
+        },
+        "workload_family": "transformer_decode",
+        "shape_class": "skinny_gemm",
+        "rtl_tile_shape": {
+          "m": 8,
+          "n": 8,
+          "k": 8
+        },
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 64,
+          "activation_write_bytes": 256,
+          "weight_read_bytes": 64,
+          "kv_cache_read_bytes": 0,
+          "kv_cache_write_bytes": 0
+        },
+        "attention_group": null,
+        "attention_stage": null,
+        "numerical_contract": null,
+        "stage_provenance": "measured_current_matmul_path",
+        "kv_read_bytes": 0,
+        "kv_write_bytes": 0,
+        "k_chunks": 1,
+        "tile_jobs": 1
+      }
+    },
+    "transformer_tinyllama_b0_matrix_subgraph": {
+      "kind": "transformer_block",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "tinyllama_decoder_block_matrix_subgraph",
+        "block": "B0",
+        "block_execution_state": "partially_executable",
+        "full_block_execution_state": "planned_not_executable",
+        "shape": {
+          "seq_len": 8,
+          "hidden": 16,
+          "query_heads": 2,
+          "kv_heads": 1,
+          "head_dim": 8,
+          "ffn_intermediate": 32
+        },
+        "stage_count": 18,
+        "matrix_stage_count": 7,
+        "tile_jobs": 16,
+        "physical_tile_invocations": 36,
+        "effective_mac_ops": 18432,
+        "shape_class": "mixed_block_matrix_subgraph",
+        "provenance": "measured_current_matmul_k_stream_path",
+        "non_matrix_gap": [
+          "rmsnorm_attn",
+          "rope_q",
+          "rope_k",
+          "attention_head0",
+          "attention_head1",
+          "concat_heads",
+          "residual_attn",
+          "rmsnorm_ffn",
+          "silu_gate",
+          "gate_mul_up",
+          "residual_ffn"
+        ]
+      }
+    },
+    "transformer_tinyllama_b0_rmsnorm_vector_subgraph": {
+      "kind": "transformer_block",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "tinyllama_decoder_block_rmsnorm_vector_subgraph",
+        "block": "B0",
+        "block_execution_state": "partially_executable",
+        "full_block_execution_state": "planned_not_executable",
+        "shape": {
+          "seq_len": 8,
+          "hidden": 16,
+          "query_heads": 2,
+          "kv_heads": 1,
+          "head_dim": 8,
+          "ffn_intermediate": 32
+        },
+        "stage_count": 2,
+        "tile_jobs": 32,
+        "descriptor_op": "desc_vector_tile_v1",
+        "primitive_program": "SUMSQ_SRC0 + SUMSQ_SRC1 + RSQRT + SCALE_SRCx + HALT",
+        "effective_vector_lane_ops": 256,
+        "theoretical_reduction_cycles": 64,
+        "theoretical_sfu_cycles": 32,
+        "theoretical_vector_cycles": 32,
+        "shape_class": "mixed_block_rmsnorm_vector_subgraph",
+        "provenance": "measured_current_desc_vector_tile_path",
+        "non_matrix_gap": [
+          "rope_q",
+          "rope_k",
+          "attention_head0",
+          "attention_head1",
+          "concat_heads",
+          "silu_gate",
+          "gate_mul_up"
+        ]
+      }
+    },
+    "transformer_tinyllama_b0_attention_subgraph": {
+      "kind": "transformer_block",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "tinyllama_decoder_block_attention_subgraph",
+        "block": "B0",
+        "block_execution_state": "partially_executable",
+        "full_block_execution_state": "planned_not_executable",
+        "shape": {
+          "seq_len": 8,
+          "hidden": 16,
+          "query_heads": 2,
+          "kv_heads": 1,
+          "head_dim": 8,
+          "ffn_intermediate": 32
+        },
+        "stage_count": 4,
+        "heads": 2,
+        "stage_jobs": 8,
+        "attention_group": "tinyllama_b0_attention",
+        "attention_stage": "block_attention_subgraph",
+        "shape_class": "mixed_block_attention_subgraph",
+        "provenance": "measured_current_attention_stage_paths",
+        "effective_mac_ops": 2048,
+        "theoretical_matrix_cycles": 32,
+        "theoretical_scale_mask_vector_cycles": 16,
+        "theoretical_softmax_cycles": 224,
+        "valid_lane_masks": [
+          1,
+          3,
+          7,
+          15,
+          31,
+          63,
+          127,
+          255
+        ],
+        "row_mask_words": [
+          252117761,
+          4286529311
+        ],
+        "explicit_gap": [
+          "rope_q and rope_k are compiler golden inputs for this subgraph",
+          "softmax uses current RTL bring-up LUT contract, not final BlockPlan fixed-spec golden"
+        ],
+        "non_matrix_gap": [
+          "rope_q",
+          "rope_k",
+          "concat_heads",
+          "silu_gate"
+        ]
+      }
+    },
+    "transformer_tinyllama_b0_gate_mul_vector_subgraph": {
+      "kind": "transformer_block",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "tinyllama_decoder_block_gate_mul_vector_subgraph",
+        "block": "B0",
+        "block_execution_state": "partially_executable",
+        "full_block_execution_state": "planned_not_executable",
+        "shape": {
+          "seq_len": 8,
+          "hidden": 16,
+          "query_heads": 2,
+          "kv_heads": 1,
+          "head_dim": 8,
+          "ffn_intermediate": 32
+        },
+        "stage_count": 1,
+        "tile_jobs": 32,
+        "descriptor_op": "desc_vector_tile_v1",
+        "primitive_program": "VMUL + VREQUANT(INT8_SHIFT4_CLAMP) + HALT",
+        "effective_vector_lane_ops": 256,
+        "theoretical_vector_cycles": 64,
+        "shape_class": "mixed_block_gate_mul_vector_subgraph",
+        "provenance": "measured_current_desc_vector_tile_path",
+        "explicit_gap": [
+          "silu_gate is still compiler golden input for this subgraph"
+        ],
+        "non_matrix_gap": [
+          "rope_q",
+          "rope_k",
+          "attention_head0",
+          "attention_head1",
+          "concat_heads",
+          "silu_gate"
+        ]
+      }
+    },
+    "transformer_tinyllama_b0_residual_vector_subgraph": {
+      "kind": "transformer_block",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "tinyllama_decoder_block_residual_vector_subgraph",
+        "block": "B0",
+        "block_execution_state": "partially_executable",
+        "full_block_execution_state": "planned_not_executable",
+        "shape": {
+          "seq_len": 8,
+          "hidden": 16,
+          "query_heads": 2,
+          "kv_heads": 1,
+          "head_dim": 8,
+          "ffn_intermediate": 32
+        },
+        "stage_count": 2,
+        "tile_jobs": 32,
+        "descriptor_op": "desc_vector_tile_v1",
+        "primitive_program": "VADD + HALT",
+        "effective_vector_lane_ops": 256,
+        "theoretical_vector_cycles": 32,
+        "shape_class": "mixed_block_residual_vector_subgraph",
+        "provenance": "measured_current_desc_vector_tile_path",
+        "non_matrix_gap": [
+          "rmsnorm_attn",
+          "rope_q",
+          "rope_k",
+          "attention_head0",
+          "attention_head1",
+          "concat_heads",
+          "rmsnorm_ffn",
+          "silu_gate",
+          "gate_mul_up"
+        ]
+      }
+    },
+    "transformer_qkv_projection": {
+      "kind": "transformer_model_only",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "qkv_projection",
+        "logical_shape": {
+          "m": 16,
+          "n": 64,
+          "k": 64
+        },
+        "workload_family": "transformer_prefill",
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 1024,
+          "activation_write_bytes": 3072,
+          "weight_read_bytes": 12288,
+          "kv_cache_read_bytes": 0,
+          "kv_cache_write_bytes": 0
+        },
+        "attention_group": null,
+        "attention_stage": null,
+        "numerical_contract": null,
+        "kv_read_bytes": 0,
+        "kv_write_bytes": 0,
+        "model_only": true,
+        "status": "golden_model_only_v1",
+        "shape_class": "full_tile_gemm"
+      }
+    },
+    "transformer_qk_matmul": {
+      "kind": "transformer_model_only",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "qk_attention_score",
+        "logical_shape": {
+          "m": 16,
+          "n": 16,
+          "k": 16
+        },
+        "workload_family": "transformer_prefill",
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 512,
+          "activation_write_bytes": 1024,
+          "weight_read_bytes": 0,
+          "kv_cache_read_bytes": 256,
+          "kv_cache_write_bytes": 0
+        },
+        "attention_group": null,
+        "attention_stage": null,
+        "numerical_contract": null,
+        "kv_read_bytes": 256,
+        "kv_write_bytes": 0,
+        "model_only": true,
+        "status": "golden_model_only_v1",
+        "shape_class": "full_tile_gemm"
+      }
+    },
+    "transformer_softmax_row": {
+      "kind": "transformer_model_only",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "softmax_row_micro_kernel",
+        "logical_shape": {
+          "elements": 16
+        },
+        "workload_family": "transformer_prefill",
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 64,
+          "activation_write_bytes": 32,
+          "weight_read_bytes": 0,
+          "kv_cache_read_bytes": 0,
+          "kv_cache_write_bytes": 0
+        },
+        "attention_group": null,
+        "attention_stage": null,
+        "numerical_contract": null,
+        "kv_read_bytes": 0,
+        "kv_write_bytes": 0,
+        "model_only": true,
+        "status": "golden_model_only_v1"
+      }
+    },
+    "transformer_attn_pv": {
+      "kind": "transformer_model_only",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "attention_probability_value",
+        "logical_shape": {
+          "m": 16,
+          "n": 16,
+          "k": 16
+        },
+        "workload_family": "transformer_prefill",
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 512,
+          "activation_write_bytes": 512,
+          "weight_read_bytes": 0,
+          "kv_cache_read_bytes": 256,
+          "kv_cache_write_bytes": 0
+        },
+        "attention_group": null,
+        "attention_stage": null,
+        "numerical_contract": "attention_numerical_v1_q15_prob_q24_recip_lut257",
+        "kv_read_bytes": 256,
+        "kv_write_bytes": 0,
+        "model_only": true,
+        "status": "golden_model_only_v1",
+        "shape_class": "full_tile_gemm",
+        "stage_provenance": "model_only_pv_policy_pending"
+      }
+    },
+    "transformer_attention_prefill_s8_d8": {
+      "kind": "transformer_model_only",
+      "metadata": {
+        "scenario": "transformer_prefill",
+        "logical_op": "scaled_dot_product_attention",
+        "logical_shape": {
+          "seq_len": 8,
+          "head_dim": 8
+        },
+        "workload_family": "transformer_prefill",
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_group",
+        "external_memory": {
+          "activation_read_bytes": 192,
+          "activation_write_bytes": 64,
+          "weight_read_bytes": 0,
+          "kv_cache_read_bytes": 0,
+          "kv_cache_write_bytes": 0
+        },
+        "attention_group": "attention_prefill_s8_d8",
+        "attention_stage": "full_attention",
+        "numerical_contract": "attention_bringup_v0_qk_measured_softmax_pv_model_only",
+        "kv_read_bytes": 0,
+        "kv_write_bytes": 0,
+        "model_only": true,
+        "status": "model_only_v1",
+        "golden": {
+          "contract": "attention_numerical_v1_q15_prob_q24_recip_lut257",
+          "scores": [
+            [
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93
+            ],
+            [
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93
+            ],
+            [
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93
+            ],
+            [
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93
+            ],
+            [
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93
+            ],
+            [
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93
+            ],
+            [
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93
+            ],
+            [
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93,
+              -93
+            ]
+          ],
+          "score_scale": {
+            "policy": "fixed_multiplier_shift",
+            "multiplier": 11585,
+            "shift": 15
+          },
+          "scaled_scores": [
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ]
+          ],
+          "masked_scores": [
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ],
+            [
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33,
+              -33
+            ]
+          ],
+          "softmax": {
+            "contract": "attention_numerical_v1_q15_prob_q24_recip_lut257",
+            "rows": [
+              {
+                "contract": "attention_numerical_v1_q15_prob_q24_recip_lut257",
+                "max": -33,
+                "shifted": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "clamped": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "exp_q15": [
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767
+                ],
+                "sum": 262136,
+                "recip_q24": 64,
+                "output_q15": [
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096
+                ]
+              },
+              {
+                "contract": "attention_numerical_v1_q15_prob_q24_recip_lut257",
+                "max": -33,
+                "shifted": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "clamped": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "exp_q15": [
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767
+                ],
+                "sum": 262136,
+                "recip_q24": 64,
+                "output_q15": [
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096
+                ]
+              },
+              {
+                "contract": "attention_numerical_v1_q15_prob_q24_recip_lut257",
+                "max": -33,
+                "shifted": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "clamped": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "exp_q15": [
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767
+                ],
+                "sum": 262136,
+                "recip_q24": 64,
+                "output_q15": [
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096
+                ]
+              },
+              {
+                "contract": "attention_numerical_v1_q15_prob_q24_recip_lut257",
+                "max": -33,
+                "shifted": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "clamped": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "exp_q15": [
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767
+                ],
+                "sum": 262136,
+                "recip_q24": 64,
+                "output_q15": [
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096
+                ]
+              },
+              {
+                "contract": "attention_numerical_v1_q15_prob_q24_recip_lut257",
+                "max": -33,
+                "shifted": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "clamped": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "exp_q15": [
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767
+                ],
+                "sum": 262136,
+                "recip_q24": 64,
+                "output_q15": [
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096
+                ]
+              },
+              {
+                "contract": "attention_numerical_v1_q15_prob_q24_recip_lut257",
+                "max": -33,
+                "shifted": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "clamped": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "exp_q15": [
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767
+                ],
+                "sum": 262136,
+                "recip_q24": 64,
+                "output_q15": [
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096
+                ]
+              },
+              {
+                "contract": "attention_numerical_v1_q15_prob_q24_recip_lut257",
+                "max": -33,
+                "shifted": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "clamped": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "exp_q15": [
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767
+                ],
+                "sum": 262136,
+                "recip_q24": 64,
+                "output_q15": [
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096
+                ]
+              },
+              {
+                "contract": "attention_numerical_v1_q15_prob_q24_recip_lut257",
+                "max": -33,
+                "shifted": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "clamped": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "exp_q15": [
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767,
+                  32767
+                ],
+                "sum": 262136,
+                "recip_q24": 64,
+                "output_q15": [
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096,
+                  4096
+                ]
+              }
+            ],
+            "prob_q15": [
+              [
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096
+              ],
+              [
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096
+              ],
+              [
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096
+              ],
+              [
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096
+              ],
+              [
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096
+              ],
+              [
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096
+              ],
+              [
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096
+              ],
+              [
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096,
+                4096
+              ]
+            ]
+          },
+          "output": [
+            [
+              -2,
+              -5,
+              -8,
+              6,
+              3,
+              0,
+              -3,
+              -6
+            ],
+            [
+              -2,
+              -5,
+              -8,
+              6,
+              3,
+              0,
+              -3,
+              -6
+            ],
+            [
+              -2,
+              -5,
+              -8,
+              6,
+              3,
+              0,
+              -3,
+              -6
+            ],
+            [
+              -2,
+              -5,
+              -8,
+              6,
+              3,
+              0,
+              -3,
+              -6
+            ],
+            [
+              -2,
+              -5,
+              -8,
+              6,
+              3,
+              0,
+              -3,
+              -6
+            ],
+            [
+              -2,
+              -5,
+              -8,
+              6,
+              3,
+              0,
+              -3,
+              -6
+            ],
+            [
+              -2,
+              -5,
+              -8,
+              6,
+              3,
+              0,
+              -3,
+              -6
+            ],
+            [
+              -2,
+              -5,
+              -8,
+              6,
+              3,
+              0,
+              -3,
+              -6
+            ]
+          ]
+        },
+        "stage_provenance": "model_only_full_attention",
+        "attention_plan": {
+          "workload_name": "transformer_attention_prefill_s8_d8",
+          "attention_group": "attention_prefill_s8_d8",
+          "group_state": "software_group_measured_stages",
+          "group_cycle_policy": "sum_measured_stages",
+          "execution_state": "executable",
+          "mask_policy": "causal",
+          "stages": [
+            "qk",
+            "scale_mask",
+            "softmax",
+            "pv"
+          ],
+          "runtime_jobs": [
+            "qk",
+            "scale_mask",
+            "softmax",
+            "pv"
+          ]
+        }
+      }
+    },
+    "transformer_rmsnorm_row": {
+      "kind": "transformer_model_only",
+      "metadata": {
+        "scenario": "transformer_decode",
+        "logical_op": "rmsnorm_row_micro_kernel",
+        "logical_shape": {
+          "elements": 64
+        },
+        "workload_family": "transformer_decode",
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 64,
+          "activation_write_bytes": 64,
+          "weight_read_bytes": 64,
+          "kv_cache_read_bytes": 0,
+          "kv_cache_write_bytes": 0
+        },
+        "attention_group": null,
+        "attention_stage": null,
+        "numerical_contract": null,
+        "kv_read_bytes": 0,
+        "kv_write_bytes": 0,
+        "model_only": true,
+        "status": "golden_model_only_v1"
+      }
+    },
+    "transformer_ffn_up_down": {
+      "kind": "transformer_model_only",
+      "metadata": {
+        "scenario": "transformer_decode",
+        "logical_op": "ffn_up_down",
+        "logical_shape": {
+          "m": 1,
+          "n": 256,
+          "k": 64
+        },
+        "workload_family": "transformer_decode",
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 64,
+          "activation_write_bytes": 256,
+          "weight_read_bytes": 16384,
+          "kv_cache_read_bytes": 0,
+          "kv_cache_write_bytes": 0
+        },
+        "attention_group": null,
+        "attention_stage": null,
+        "numerical_contract": null,
+        "kv_read_bytes": 0,
+        "kv_write_bytes": 0,
+        "model_only": true,
+        "status": "golden_model_only_v1",
+        "shape_class": "gemv"
+      }
+    },
+    "transformer_kv_cache_traffic_tiny": {
+      "kind": "transformer_model_only",
+      "metadata": {
+        "scenario": "transformer_decode",
+        "logical_op": "memory_traffic",
+        "logical_shape": {
+          "hidden_size": 256,
+          "heads": 4,
+          "head_dim": 64,
+          "context_lengths": [
+            128,
+            512
+          ]
+        },
+        "workload_family": "transformer_decode",
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 0,
+          "activation_write_bytes": 0,
+          "weight_read_bytes": 0,
+          "kv_cache_read_bytes": 131072,
+          "kv_cache_write_bytes": 512
+        },
+        "attention_group": null,
+        "attention_stage": null,
+        "numerical_contract": null,
+        "kv_read_bytes": 131072,
+        "kv_write_bytes": 512,
+        "model_only": true,
+        "status": "model_only_initially",
+        "bytes_per_token": 131584
+      }
+    },
+    "transformer_kv_cache_read_write": {
+      "kind": "transformer_model_only",
+      "metadata": {
+        "scenario": "transformer_decode",
+        "logical_op": "kv_cache_read_write",
+        "logical_shape": {
+          "seq_len": 32,
+          "heads": 4,
+          "head_dim": 16,
+          "bytes_per_elem": 1
+        },
+        "workload_family": "transformer_decode",
+        "precision": {
+          "activation": "int8",
+          "weight": "int8",
+          "accumulator": "int32",
+          "kv_cache": "int8"
+        },
+        "activity_scope": "kernel_only",
+        "external_memory": {
+          "activation_read_bytes": 0,
+          "activation_write_bytes": 0,
+          "weight_read_bytes": 0,
+          "kv_cache_read_bytes": 2048,
+          "kv_cache_write_bytes": 128
+        },
+        "attention_group": null,
+        "attention_stage": null,
+        "numerical_contract": null,
+        "kv_read_bytes": 2048,
+        "kv_write_bytes": 128,
+        "model_only": true,
+        "status": "model_only_v1",
+        "bytes_per_token": 2176
+      }
+    }
+  },
+  "jobs": [
+    {
+      "job_id": 1,
+      "workload": "operator_smoke_matmul",
+      "op": "matmul",
+      "role": "smoke"
+    },
+    {
+      "job_id": 2,
+      "workload": "operator_smoke_vector_tile_vadd",
+      "op": "desc_vector_tile_v1",
+      "role": "smoke"
+    },
+    {
+      "job_id": 3,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 0
+    },
+    {
+      "job_id": 4,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 1
+    },
+    {
+      "job_id": 5,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 2
+    },
+    {
+      "job_id": 6,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 3
+    },
+    {
+      "job_id": 7,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 4
+    },
+    {
+      "job_id": 8,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 5
+    },
+    {
+      "job_id": 9,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 6
+    },
+    {
+      "job_id": 10,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 7
+    },
+    {
+      "job_id": 11,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 8
+    },
+    {
+      "job_id": 12,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 9
+    },
+    {
+      "job_id": 13,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 10
+    },
+    {
+      "job_id": 14,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 11
+    },
+    {
+      "job_id": 15,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 12
+    },
+    {
+      "job_id": 16,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 13
+    },
+    {
+      "job_id": 17,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 14
+    },
+    {
+      "job_id": 18,
+      "workload": "digits_linear_classifier",
+      "op": "matmul",
+      "role": "regression",
+      "tile_id": 15
+    },
+    {
+      "job_id": 19,
+      "workload": "transformer_prefill_gemm_tiny",
+      "op": "matmul_k_stream",
+      "role": "transformer_micro",
+      "tile_id": 0
+    },
+    {
+      "job_id": 20,
+      "workload": "transformer_attention_qk_s8_d8",
+      "op": "matmul_k_stream",
+      "role": "transformer_micro",
+      "tile_id": 0
+    },
+    {
+      "job_id": 21,
+      "workload": "transformer_attention_scale_mask_s8_d8",
+      "op": "attention_scale_mask_v1",
+      "role": "transformer_micro",
+      "tile_id": 0
+    },
+    {
+      "job_id": 22,
+      "workload": "transformer_attention_softmax_s8",
+      "op": "attention_softmax_v1",
+      "role": "transformer_micro",
+      "tile_id": 0
+    },
+    {
+      "job_id": 23,
+      "workload": "transformer_attention_pv_s8_d8",
+      "op": "matmul_u16s8_q15",
+      "role": "transformer_micro",
+      "tile_id": 0
+    },
+    {
+      "job_id": 24,
+      "workload": "transformer_decode_skinny_gemm_m8_compat",
+      "op": "matmul_k_stream",
+      "role": "transformer_micro",
+      "tile_id": 0
+    },
+    {
+      "job_id": 25,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 0
+    },
+    {
+      "job_id": 26,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 1
+    },
+    {
+      "job_id": 27,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 2
+    },
+    {
+      "job_id": 28,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 3
+    },
+    {
+      "job_id": 29,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 4
+    },
+    {
+      "job_id": 30,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 5
+    },
+    {
+      "job_id": 31,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 6
+    },
+    {
+      "job_id": 32,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 7
+    },
+    {
+      "job_id": 33,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 8
+    },
+    {
+      "job_id": 34,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 9
+    },
+    {
+      "job_id": 35,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 10
+    },
+    {
+      "job_id": 36,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 11
+    },
+    {
+      "job_id": 37,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 12
+    },
+    {
+      "job_id": 38,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 13
+    },
+    {
+      "job_id": 39,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 14
+    },
+    {
+      "job_id": 40,
+      "workload": "transformer_tinyllama_b0_matrix_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_matrix_subgraph",
+      "tile_id": 15
+    },
+    {
+      "job_id": 41,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 0
+    },
+    {
+      "job_id": 42,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 1
+    },
+    {
+      "job_id": 43,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 2
+    },
+    {
+      "job_id": 44,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 3
+    },
+    {
+      "job_id": 45,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 4
+    },
+    {
+      "job_id": 46,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 5
+    },
+    {
+      "job_id": 47,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 6
+    },
+    {
+      "job_id": 48,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 7
+    },
+    {
+      "job_id": 49,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 8
+    },
+    {
+      "job_id": 50,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 9
+    },
+    {
+      "job_id": 51,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 10
+    },
+    {
+      "job_id": 52,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 11
+    },
+    {
+      "job_id": 53,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 12
+    },
+    {
+      "job_id": 54,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 13
+    },
+    {
+      "job_id": 55,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 14
+    },
+    {
+      "job_id": 56,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 15
+    },
+    {
+      "job_id": 57,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 16
+    },
+    {
+      "job_id": 58,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 17
+    },
+    {
+      "job_id": 59,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 18
+    },
+    {
+      "job_id": 60,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 19
+    },
+    {
+      "job_id": 61,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 20
+    },
+    {
+      "job_id": 62,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 21
+    },
+    {
+      "job_id": 63,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 22
+    },
+    {
+      "job_id": 64,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 23
+    },
+    {
+      "job_id": 65,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 24
+    },
+    {
+      "job_id": 66,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 25
+    },
+    {
+      "job_id": 67,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 26
+    },
+    {
+      "job_id": 68,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 27
+    },
+    {
+      "job_id": 69,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 28
+    },
+    {
+      "job_id": 70,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 29
+    },
+    {
+      "job_id": 71,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 30
+    },
+    {
+      "job_id": 72,
+      "workload": "transformer_tinyllama_b0_rmsnorm_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_rmsnorm_vector_subgraph",
+      "tile_id": 31
+    },
+    {
+      "job_id": 73,
+      "workload": "transformer_tinyllama_b0_attention_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_attention_subgraph",
+      "tile_id": 0,
+      "attention_head": 0,
+      "attention_stage": "qk"
+    },
+    {
+      "job_id": 74,
+      "workload": "transformer_tinyllama_b0_attention_subgraph",
+      "op": "attention_scale_mask_v1",
+      "role": "transformer_block_attention_subgraph",
+      "tile_id": 1,
+      "attention_head": 0,
+      "attention_stage": "scale_mask"
+    },
+    {
+      "job_id": 75,
+      "workload": "transformer_tinyllama_b0_attention_subgraph",
+      "op": "attention_softmax_v1",
+      "role": "transformer_block_attention_subgraph",
+      "tile_id": 2,
+      "attention_head": 0,
+      "attention_stage": "softmax"
+    },
+    {
+      "job_id": 76,
+      "workload": "transformer_tinyllama_b0_attention_subgraph",
+      "op": "matmul_u16s8_q15",
+      "role": "transformer_block_attention_subgraph",
+      "tile_id": 3,
+      "attention_head": 0,
+      "attention_stage": "pv"
+    },
+    {
+      "job_id": 77,
+      "workload": "transformer_tinyllama_b0_attention_subgraph",
+      "op": "matmul_k_stream",
+      "role": "transformer_block_attention_subgraph",
+      "tile_id": 4,
+      "attention_head": 1,
+      "attention_stage": "qk"
+    },
+    {
+      "job_id": 78,
+      "workload": "transformer_tinyllama_b0_attention_subgraph",
+      "op": "attention_scale_mask_v1",
+      "role": "transformer_block_attention_subgraph",
+      "tile_id": 5,
+      "attention_head": 1,
+      "attention_stage": "scale_mask"
+    },
+    {
+      "job_id": 79,
+      "workload": "transformer_tinyllama_b0_attention_subgraph",
+      "op": "attention_softmax_v1",
+      "role": "transformer_block_attention_subgraph",
+      "tile_id": 6,
+      "attention_head": 1,
+      "attention_stage": "softmax"
+    },
+    {
+      "job_id": 80,
+      "workload": "transformer_tinyllama_b0_attention_subgraph",
+      "op": "matmul_u16s8_q15",
+      "role": "transformer_block_attention_subgraph",
+      "tile_id": 7,
+      "attention_head": 1,
+      "attention_stage": "pv"
+    },
+    {
+      "job_id": 81,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 0
+    },
+    {
+      "job_id": 82,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 1
+    },
+    {
+      "job_id": 83,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 2
+    },
+    {
+      "job_id": 84,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 3
+    },
+    {
+      "job_id": 85,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 4
+    },
+    {
+      "job_id": 86,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 5
+    },
+    {
+      "job_id": 87,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 6
+    },
+    {
+      "job_id": 88,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 7
+    },
+    {
+      "job_id": 89,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 8
+    },
+    {
+      "job_id": 90,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 9
+    },
+    {
+      "job_id": 91,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 10
+    },
+    {
+      "job_id": 92,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 11
+    },
+    {
+      "job_id": 93,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 12
+    },
+    {
+      "job_id": 94,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 13
+    },
+    {
+      "job_id": 95,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 14
+    },
+    {
+      "job_id": 96,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 15
+    },
+    {
+      "job_id": 97,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 16
+    },
+    {
+      "job_id": 98,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 17
+    },
+    {
+      "job_id": 99,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 18
+    },
+    {
+      "job_id": 100,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 19
+    },
+    {
+      "job_id": 101,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 20
+    },
+    {
+      "job_id": 102,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 21
+    },
+    {
+      "job_id": 103,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 22
+    },
+    {
+      "job_id": 104,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 23
+    },
+    {
+      "job_id": 105,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 24
+    },
+    {
+      "job_id": 106,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 25
+    },
+    {
+      "job_id": 107,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 26
+    },
+    {
+      "job_id": 108,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 27
+    },
+    {
+      "job_id": 109,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 28
+    },
+    {
+      "job_id": 110,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 29
+    },
+    {
+      "job_id": 111,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 30
+    },
+    {
+      "job_id": 112,
+      "workload": "transformer_tinyllama_b0_gate_mul_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_gate_mul_vector_subgraph",
+      "tile_id": 31
+    },
+    {
+      "job_id": 113,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 0
+    },
+    {
+      "job_id": 114,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 1
+    },
+    {
+      "job_id": 115,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 2
+    },
+    {
+      "job_id": 116,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 3
+    },
+    {
+      "job_id": 117,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 4
+    },
+    {
+      "job_id": 118,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 5
+    },
+    {
+      "job_id": 119,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 6
+    },
+    {
+      "job_id": 120,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 7
+    },
+    {
+      "job_id": 121,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 8
+    },
+    {
+      "job_id": 122,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 9
+    },
+    {
+      "job_id": 123,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 10
+    },
+    {
+      "job_id": 124,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 11
+    },
+    {
+      "job_id": 125,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 12
+    },
+    {
+      "job_id": 126,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 13
+    },
+    {
+      "job_id": 127,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 14
+    },
+    {
+      "job_id": 128,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 15
+    },
+    {
+      "job_id": 129,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 16
+    },
+    {
+      "job_id": 130,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 17
+    },
+    {
+      "job_id": 131,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 18
+    },
+    {
+      "job_id": 132,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 19
+    },
+    {
+      "job_id": 133,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 20
+    },
+    {
+      "job_id": 134,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 21
+    },
+    {
+      "job_id": 135,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 22
+    },
+    {
+      "job_id": 136,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 23
+    },
+    {
+      "job_id": 137,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 24
+    },
+    {
+      "job_id": 138,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 25
+    },
+    {
+      "job_id": 139,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 26
+    },
+    {
+      "job_id": 140,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 27
+    },
+    {
+      "job_id": 141,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 28
+    },
+    {
+      "job_id": 142,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 29
+    },
+    {
+      "job_id": 143,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 30
+    },
+    {
+      "job_id": 144,
+      "workload": "transformer_tinyllama_b0_residual_vector_subgraph",
+      "op": "desc_vector_tile_v1",
+      "role": "transformer_block_residual_vector_subgraph",
+      "tile_id": 31
+    }
+  ]
+}

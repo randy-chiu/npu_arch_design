@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>NPU PPA Overview</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 32px; color: #17202a; }
+    .warning { background: #fff4df; border: 1px solid #dfb052; padding: 12px; }
+    .metrics { display: flex; gap: 16px; margin: 18px 0; }
+    .metric, section { border: 1px solid #d9dee8; padding: 14px; border-radius: 6px; }
+    .metric strong { display: block; font-size: 24px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 16px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #d9dee8; }
+    code { background: #f2f4f8; padding: 2px 4px; }
+  </style>
+</head>
+<body>
+  <h1>NPU PPA Overview</h1>
+  <p class="warning"><strong>Interpretation:</strong> Performance and movement are measured from architectural
+  perf CSR snapshot values carried in <code>PERF_JOB</code>. Area and energy are normalized models, not synthesized area,
+  watts, or joules.</p>
+  <section>
+    <h2>Detailed Reports</h2>
+    <p><strong>Test case:</strong> <a href="cases/transformer.html">transformer</a></p>
+    <p><a href="perf.html">Performance</a> - computation graphs, shapes, theoretical versus measured cycles, and module timelines.</p>
+    <p><a href="power.html">Power</a> - workload event and energy breakdown with current evidence level.</p>
+    <p><a href="area.html">Area</a> - resource and storage contribution breakdown with current evidence level.</p>
+  </section>
+  <div class="metrics">
+    <div class="metric">Area model<strong>7177.6</strong>normalized units</div>
+    <div class="metric">Stored bits<strong>11552</strong>current local state</div>
+    <div class="metric">MAC lanes<strong>64</strong>INT8 lanes</div>
+  </div>
+  
+  <section>
+    <h2>Candidate Versus Baseline</h2>
+    <p>Direct comparison is not valid for this report pair.</p>
+    <ul><li>workload_manifest_id differs or is missing on one report</li><li>no common workload names</li></ul>
+  </section>
+  
+  <section>
+    <h2>Workloads</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Measured total</th><th>Theoretical compute</th><th>Measured compute</th><th>Compute overhead</th><th>Compute efficiency</th><th>End-to-end efficiency</th><th>Attention stage</th><th>Derived MAC ops</th><th>Matrix util</th><th>GEMV util</th><th>KV read bytes</th><th>Moved words</th><th>Energy model</th></tr></thead>
+      <tbody><tr><td>operator_smoke_matmul</td><td>81</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>512</td><td>None</td><td>None</td><td>0</td><td>208</td><td>1428.25</td></tr><tr><td>operator_smoke_vector_tile_vadd</td><td>30</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>0</td><td>None</td><td>None</td><td>0</td><td>40</td><td>175.5</td></tr><tr><td>digits_linear_classifier</td><td>1296</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>8192</td><td>None</td><td>None</td><td>0</td><td>3328</td><td>22852.0</td></tr><tr><td>transformer_prefill_gemm_tiny</td><td>117</td><td>16</td><td>16</td><td>0</td><td>1.0</td><td>0.136752</td><td>None</td><td>1024</td><td>1.0</td><td>None</td><td>0</td><td>336</td><td>12701.25</td></tr><tr><td>transformer_attention_qk_s8_d8</td><td>83</td><td>8</td><td>8</td><td>0</td><td>1.0</td><td>0.096386</td><td>qk</td><td>512</td><td>1.0</td><td>None</td><td>0</td><td>208</td><td>9108.75</td></tr><tr><td>transformer_attention_scale_mask_s8_d8</td><td>85</td><td>8</td><td>32</td><td>24</td><td>0.25</td><td>0.094118</td><td>scale_mask</td><td>0</td><td>None</td><td>None</td><td>0</td><td>146</td><td>10909.25</td></tr><tr><td>transformer_attention_softmax_s8</td><td>526</td><td>112</td><td>448</td><td>336</td><td>0.25</td><td>0.212928</td><td>softmax</td><td>0</td><td>None</td><td>None</td><td>0</td><td>243</td><td>8847.5</td></tr><tr><td>transformer_attention_pv_s8_d8</td><td>81</td><td>8</td><td>8</td><td>0</td><td>1.0</td><td>0.098765</td><td>pv</td><td>512</td><td>1.0</td><td>None</td><td>0</td><td>208</td><td>6548.25</td></tr><tr><td>transformer_decode_skinny_gemm_m8_compat</td><td>83</td><td>8</td><td>8</td><td>0</td><td>1.0</td><td>0.096386</td><td>None</td><td>512</td><td>1.0</td><td>None</td><td>0</td><td>208</td><td>9108.75</td></tr><tr><td>transformer_tinyllama_b0_matrix_subgraph</td><td>2008</td><td>288</td><td>288</td><td>0</td><td>1.0</td><td>0.143426</td><td>None</td><td>18432</td><td>1.0</td><td>None</td><td>0</td><td>5888</td><td>43510.0</td></tr><tr><td>transformer_tinyllama_b0_rmsnorm_vector_subgraph</td><td>1344</td><td>128</td><td>128</td><td>0</td><td>1.0</td><td>0.095238</td><td>None</td><td>0</td><td>None</td><td>None</td><td>0</td><td>1280</td><td>5712.0</td></tr><tr><td>transformer_tinyllama_b0_attention_subgraph</td><td>1550</td><td>32</td><td>32</td><td>0</td><td>1.0</td><td>0.020645</td><td>block_attention_subgraph</td><td>2048</td><td>1.0</td><td>None</td><td>0</td><td>1610</td><td>9387.5</td></tr><tr><td>transformer_tinyllama_b0_gate_mul_vector_subgraph</td><td>1088</td><td>64</td><td>64</td><td>0</td><td>1.0</td><td>0.058824</td><td>None</td><td>0</td><td>None</td><td>None</td><td>0</td><td>1280</td><td>5648.0</td></tr><tr><td>transformer_tinyllama_b0_residual_vector_subgraph</td><td>960</td><td>32</td><td>32</td><td>0</td><td>1.0</td><td>0.033333</td><td>None</td><td>0</td><td>None</td><td>None</td><td>0</td><td>1280</td><td>5616.0</td></tr><tr><td>transformer_qkv_projection</td><td>0</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>0</td><td>None</td><td>None</td><td>0</td><td>0</td><td>327680.0</td></tr><tr><td>transformer_qk_matmul</td><td>0</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>0</td><td>None</td><td>None</td><td>256</td><td>0</td><td>35840.0</td></tr><tr><td>transformer_softmax_row</td><td>0</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>0</td><td>None</td><td>None</td><td>0</td><td>0</td><td>1920.0</td></tr><tr><td>transformer_attn_pv</td><td>0</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>0</td><td>None</td><td>None</td><td>256</td><td>0</td><td>25600.0</td></tr><tr><td>transformer_attention_prefill_s8_d8</td><td>0</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>full_attention</td><td>0</td><td>None</td><td>None</td><td>0</td><td>0</td><td>5120.0</td></tr><tr><td>transformer_rmsnorm_row</td><td>0</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>0</td><td>None</td><td>None</td><td>0</td><td>0</td><td>3840.0</td></tr><tr><td>transformer_ffn_up_down</td><td>0</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>0</td><td>None</td><td>None</td><td>0</td><td>0</td><td>334080.0</td></tr><tr><td>transformer_kv_cache_traffic_tiny</td><td>0</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>0</td><td>None</td><td>None</td><td>131072</td><td>0</td><td>2631680.0</td></tr><tr><td>transformer_kv_cache_read_write</td><td>0</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>None</td><td>0</td><td>None</td><td>None</td><td>2048</td><td>0</td><td>43520.0</td></tr></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>Limitations</h2>
+    <ul><li>Normalized area units are not synthesized cell area or physical area.</li><li>Normalized energy units are not joules or measured power.</li><li>External-memory byte events are modeled from workload manifests, not measured RTL power.</li></ul>
+  </section>
+</body>
+</html>

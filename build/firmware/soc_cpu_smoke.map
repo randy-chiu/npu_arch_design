@@ -1,0 +1,75 @@
+
+There are no discarded input sections
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+ROM              0x00000000         0x00800000         xr
+SRAM             0x00800000         0x00400000         xrw
+*default*        0x00000000         0xffffffff
+
+Linker script and memory map
+
+LOAD /tmp/cclqR2kp.o
+LOAD /tmp/ccconHN2.o
+LOAD /tmp/ccoiRWvf.o
+
+.text           0x00000000    0x10bd8
+ *(.text.start)
+ .text.start    0x00000000       0x10 /tmp/cclqR2kp.o
+                0x00000000                _start
+ *(.text*)
+ .text          0x00000010        0x0 /tmp/cclqR2kp.o
+ .text          0x00000010      0x23c /tmp/ccconHN2.o
+                0x00000010                npu_write_words
+                0x00000040                npu_read_words
+                0x00000070                npu_set_desc_addr
+                0x0000007c                npu_start
+                0x0000008c                npu_status
+                0x00000098                npu_wait_done
+                0x000000b0                npu_read_perf_snapshot
+                0x000001ec                dma_copy_words
+                0x00000218                test_status_pass
+                0x00000228                test_status_fail
+                0x00000238                test_status_fail_code
+ .text          0x0000024c      0x1a4 /tmp/ccoiRWvf.o
+ .text.startup  0x000003f0      0xcf4 /tmp/ccoiRWvf.o
+                0x000003f0                main
+ *(.rodata*)
+ .rodata        0x000010e4     0xfaf4 /tmp/ccoiRWvf.o
+
+.data           0x00800000        0x0 load address 0x00010bd8
+ *(.data*)
+ .data          0x00800000        0x0 /tmp/cclqR2kp.o
+ .data          0x00800000        0x0 /tmp/ccconHN2.o
+ .data          0x00800000        0x0 /tmp/ccoiRWvf.o
+
+.bss            0x00800000     0x2c68 load address 0x00010bd8
+ *(.bss*)
+ .bss           0x00800000        0x0 /tmp/cclqR2kp.o
+ .bss           0x00800000        0x0 /tmp/ccconHN2.o
+ .bss           0x00800000     0x2c68 /tmp/ccoiRWvf.o
+ *(COMMON)
+OUTPUT(build/firmware/soc_cpu_smoke.elf elf32-littleriscv)
+
+.riscv.attributes
+                0x00000000       0x1c
+ .riscv.attributes
+                0x00000000       0x1a /tmp/cclqR2kp.o
+ .riscv.attributes
+                0x0000001a       0x1c /tmp/ccconHN2.o
+ .riscv.attributes
+                0x00000036       0x1c /tmp/ccoiRWvf.o
+
+.comment        0x00000000       0x33
+ .comment       0x00000000       0x33 /tmp/ccconHN2.o
+                                 0x34 (size before relaxing)
+ .comment       0x00000033        0x0 /tmp/ccoiRWvf.o
+                                 0x34 (size before relaxing)
+
+.note.GNU-stack
+                0x00000000        0x0
+ .note.GNU-stack
+                0x00000000        0x0 /tmp/ccconHN2.o
+ .note.GNU-stack
+                0x00000000        0x0 /tmp/ccoiRWvf.o

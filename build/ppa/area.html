@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><title>PPA Area</title><style>
+    body{font-family:system-ui,sans-serif;margin:32px;color:#17202a}
+    nav{margin-bottom:24px} section{border:1px solid #d9dee8;padding:14px;border-radius:7px;margin:16px 0}
+    table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:8px;border-bottom:1px solid #d9dee8}
+    .flow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.node{border:1px solid #7ea4d8;border-radius:6px;padding:10px;background:#f3f7fc}
+    .note{background:#fff4df;border:1px solid #dfb052;padding:12px}code{background:#f2f4f8;padding:2px 4px}
+    </style></head><body><nav><a href="ppa_overview.html">Overview</a> | <a href="perf.html">Performance</a> | <a href="power.html">Power</a> | <a href="area.html">Area</a></nav>
+        <h1>Area</h1><p class="note">Current Level 0 evidence is a structural area model in normalized units. Physical area requires synthesis or physical implementation.</p>
+        <section><h2>Contribution Breakdown</h2><table><tbody><tr><td>int8_mac_lanes</td><td>6400.0</td></tr><tr><td>stored_bits</td><td>577.6</td></tr><tr><td>data_mover_lanes</td><td>100.0</td></tr><tr><td>wrapper_control</td><td>100.0</td></tr></tbody></table></section>
+        <section><h2>Storage Bits</h2><table><tbody><tr><td>a_preload_ping_pong</td><td>1024</td></tr><tr><td>b_preload_ping_pong</td><td>1024</td></tr><tr><td>spad_a</td><td>512</td></tr><tr><td>spad_b</td><td>512</td></tr><tr><td>accumulator</td><td>2048</td></tr><tr><td>output_window</td><td>2048</td></tr><tr><td>instruction_memory</td><td>4096</td></tr><tr><td>softmax_state</td><td>288</td></tr></tbody></table></section>
+        </body></html>
